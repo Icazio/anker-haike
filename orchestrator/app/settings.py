@@ -1,0 +1,137 @@
+"""运行配置：全部来自环境变量，密钥不落日志。"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 仓库根目录：本机开发时 .env、config/、frontend/dist 都以它为基准；容器内由环境变量覆盖
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# 把 .env 也放进 os.environ：模型厂商 key 按 models.yaml 的 api_key_env 名从环境读取，已有环境变量优先
+load_dotenv(REPO_ROOT / ".env", override=False)
+
+# 配置目录。容器内 app 装在 /srv/app，REPO_ROOT 会解析成 /，必须由 CONFIG_DIR 指到 /srv/config
+# （见 orchestrator/Dockerfile）。config/ 下的加载一律以它为基准，新增配置不必再单独补环境变量。
+CONFIG_DIR = Path(os.environ.get("CONFIG_DIR") or REPO_ROOT / "config")
+
+
+class Settings(BaseSettings):
+    conversation_timezone: str = "Asia/Shanghai"
+    model_config = SettingsConfigDict(
+        env_file=(REPO_ROOT / ".env", ".env"), env_file_encoding="utf-8", extra="ignore"
+    )
+
+    app_env: str = Field(default="dev", alias="APP_ENV")
+    port: int = Field(default=8000, alias="PORT")
+
+    database_url: str = Field(
+        default="postgresql://haike:haike@localhost:5432/haike", alias="DATABASE_URL"
+    )
+    redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    weknora_base_url: str = Field(default="http://localhost:8080", alias="WEKNORA_BASE_URL")
+    weknora_api_key: str = Field(default="", alias="WEKNORA_API_KEY")
+
+    model_lane: str = Field(default="domestic", alias="MODEL_LANE")
+    models_config_path: str = Field(
+        default=str(CONFIG_DIR / "models.yaml"), alias="MODELS_CONFIG_PATH"
+    )
+
+    catalog_config_path: str = Field(
+        default=str(CONFIG_DIR / "products.yaml"), alias="CATALOG_CONFIG_PATH"
+    )
+    plans_config_path: str = Field(
+        default=str(CONFIG_DIR / "plans.yaml"), alias="PLANS_CONFIG_PATH"
+    )
+    receipt_reference_config_path: str = Field(
+        default=str(CONFIG_DIR / "receipt_reference.yaml"),
+        alias="RECEIPT_REFERENCE_CONFIG_PATH",
+    )
+    fault_cards_config_path: str = Field(
+        default=str(CONFIG_DIR / "fault_cards.yaml"), alias="FAULT_CARDS_CONFIG_PATH"
+    )
+    rules_config_path: str = Field(
+        default=str(CONFIG_DIR / "rules" / "safety_terms.yaml"), alias="RULES_CONFIG_PATH"
+    )
+
+    observability_log_path: str = Field(
+        default=str(REPO_ROOT / "logs" / "events.jsonl"), alias="OBSERVABILITY_LOG_PATH"
+    )
+    langfuse_enabled: bool = Field(default=False, alias="LANGFUSE_ENABLED")
+    langfuse_base_url: str = Field(default="http://localhost:3000", alias="LANGFUSE_BASE_URL")
+    langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
+
+    # 票 43：回放模式。REPLAY_CASE_ID 非空即启用：ReplayRouter / ReplayKnowledgeAdapter 只按 replay/<case_id>/ 录制包命中；
+    # 清单 {prompt_ver, models_ver, kb_ver, rules_ver} 与当前不符时启动报 replay_incompatible。
+    replay_case_id: str = Field(default="", alias="REPLAY_CASE_ID")
+    replay_dir: str = Field(default=str(REPO_ROOT / "replay"), alias="REPLAY_DIR")
+    # kb_ver 来源：知识库入库 manifest（票 26）；容器里没有 manifest 时可用 KB_VER 直接给出
+    kb_manifest_path: str = Field(
+        default=str(REPO_ROOT / "data" / "knowledge" / "manifest.json"), alias="KB_MANIFEST_PATH"
+    )
+    kb_ver: str = Field(default="", alias="KB_VER")
+
+    # 管理员观测台（docs/planning/2026-09-13_admin-observability-console）：旁路采集，关掉只是没有面板数据
+    analytics_enabled: bool = Field(default=True, alias="ANALYTICS_ENABLED")
+    analytics_queue_capacity: int = Field(default=2000, alias="ANALYTICS_QUEUE_CAPACITY")
+    analytics_flush_ms: int = Field(default=1000, alias="ANALYTICS_FLUSH_MS")
+    # 会话首问是否入库（脱敏后截断）；关掉则列表页只显示结构化字段
+    analytics_store_text: bool = Field(default=True, alias="ANALYTICS_STORE_TEXT")
+    # 未终结会话多久算「放弃」（查询时现算，不改库）
+    analytics_abandon_after_h: float = Field(default=6.0, alias="ANALYTICS_ABANDON_AFTER_H")
+
+    health_timeout_s: float = Field(default=2.0, alias="HEALTH_TIMEOUT_S")
+    # 票 48：数据保留（07 §12 记忆分类 TTL）与人工删除接口的口令；ADMIN_TOKEN 为空则 DELETE /sessions/{id} 关闭
+    retention_session_hours: float = Field(default=24.0, alias="RETENTION_SESSION_HOURS")
+    retention_trace_days: float = Field(default=7.0, alias="RETENTION_TRACE_DAYS")
+    retention_interval_s: float = Field(default=600.0, alias="RETENTION_INTERVAL_S")
+    admin_token: str = Field(default="", alias="ADMIN_TOKEN")
+    # 票 50：最简告警。webhook（飞书 / 钉钉 / 企业微信 / Slack 兼容 JSON）与邮件二选一或都配；阈值见 alerts.Thresholds
+    alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
+    alert_email_to: str = Field(default="", alias="ALERT_EMAIL_TO")
+    alert_smtp_host: str = Field(default="", alias="ALERT_SMTP_HOST")
+    alert_smtp_port: int = Field(default=587, alias="ALERT_SMTP_PORT")
+    alert_smtp_user: str = Field(default="", alias="ALERT_SMTP_USER")
+    alert_smtp_password: str = Field(default="", alias="ALERT_SMTP_PASSWORD")
+    alert_smtp_from: str = Field(default="", alias="ALERT_SMTP_FROM")
+    alert_smtp_tls: bool = Field(default=True, alias="ALERT_SMTP_TLS")
+    alert_cooldown_s: float = Field(default=300.0, alias="ALERT_COOLDOWN_S")
+    alert_model_fail_streak: int = Field(default=3, alias="ALERT_MODEL_FAIL_STREAK")
+    alert_retrieval_empty_rate: float = Field(default=0.5, alias="ALERT_RETRIEVAL_EMPTY_RATE")
+    alert_queue_reject_rate: float = Field(default=0.2, alias="ALERT_QUEUE_REJECT_RATE")
+    alert_health_fail_streak: int = Field(default=3, alias="ALERT_HEALTH_FAIL_STREAK")
+    alert_health_interval_s: float = Field(default=60.0, alias="ALERT_HEALTH_INTERVAL_S")
+    db_pool_max: int = Field(default=10, alias="DB_POOL_MAX")
+    static_dir: str = Field(default=str(REPO_ROOT / "frontend" / "dist"), alias="STATIC_DIR")
+
+    def redacted(self) -> dict[str, str]:
+        """用于启动日志：去掉口令与 key。"""
+        return {
+            "app_env": self.app_env,
+            "database_url": _redact_url(self.database_url),
+            "redis_url": _redact_url(self.redis_url),
+            "weknora_base_url": self.weknora_base_url,
+            "weknora_api_key": "set" if self.weknora_api_key else "missing",
+            "admin_token": "set" if self.admin_token else "missing",
+            "alerts": ",".join(
+                x for x, on in (("webhook", self.alert_webhook_url), ("email", self.alert_email_to)) if on
+            ) or "log-only",
+            "retention": f"sessions={self.retention_session_hours}h traces={self.retention_trace_days}d",
+            "model_lane": self.model_lane,
+            "replay_case_id": self.replay_case_id or "-",
+        }
+
+
+def _redact_url(url: str) -> str:
+    if "@" not in url:
+        return url
+    scheme_and_creds, rest = url.split("@", 1)
+    scheme = scheme_and_creds.split("//", 1)[0]
+    return f"{scheme}//***@{rest}"
+
+
+settings = Settings()

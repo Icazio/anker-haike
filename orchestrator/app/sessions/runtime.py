@@ -1,0 +1,87 @@
+"""应用生命周期内的会话运行时：连接池、存储、LangGraph checkpointer 与编译图。"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
+
+from app.db.migrations import SchemaOutOfDate, ensure_schema
+from app.sessions.graph import build_graph
+from app.sessions.locks import PostgresSessionLock
+from app.sessions.manager import RunManager
+from app.sessions.store import PostgresSessionStore
+from app.settings import settings
+
+log = logging.getLogger("sessions.runtime")
+
+
+async def open_session_runtime(app: FastAPI) -> None:
+    app.state.session_store = None
+    app.state.session_graph = None
+    app.state.run_manager = None
+    app.state.session_lock = None
+    app.state.session_pool = None
+    app.state.session_checkpointer_cm = None
+    try:
+        # PostgresSaver 需要 autocommit 与 dict_row（官方要求）；投影表存储用同一个池即可
+        pool = AsyncConnectionPool(
+            settings.database_url,
+            min_size=1,
+            max_size=settings.db_pool_max,
+            open=False,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": _dict_row()},
+            timeout=settings.health_timeout_s * 2,
+            # 票 47：数据库恢复 / 重启会杀掉已建连接，借出前检查，坏连接直接丢弃重建
+            check=AsyncConnectionPool.check_connection,
+        )
+        await pool.open(wait=True, timeout=settings.health_timeout_s * 2)
+        # 票 47：业务表版本校验；dev 自动 upgrade，其他环境落后即让 sessions 接口 503
+        try:
+            schema = await ensure_schema()
+            log.info("schema %s%s", schema["after"], " (upgraded)" if schema["upgraded"] else "")
+        except SchemaOutOfDate as exc:
+            log.error("%s — run `make db-upgrade`", exc)
+            await pool.close()
+            return
+        store = PostgresSessionStore(pool)
+        await store.setup()  # 幂等；结构以 migrations/ 为准
+        saver = AsyncPostgresSaver(pool)  # type: ignore[arg-type]
+        await saver.setup()
+        from app.actions.runtime import configure
+        app.state.l3_services = configure(pool)
+        app.state.session_pool = pool
+        app.state.session_store = store
+        app.state.session_graph = build_graph(saver)
+        manager = RunManager(store, app.state.session_graph)
+        app.state.run_manager = manager
+        app.state.session_lock = PostgresSessionLock(pool)
+        log.info("session runtime ready")
+    except Exception as exc:  # noqa: BLE001 - 启动期数据库故障要可见但不致命
+        log.error("session runtime unavailable: %s: %s", type(exc).__name__, str(exc)[:200])
+        return
+    # 票 08：上次进程留下的 active run 以 error → done(error) 收尾，快照恢复到可继续状态。
+    # 单独一段且不致命：依赖此时已全部就绪，收尾失败只是孤儿 run 没收掉，不该把运行时标成
+    # unavailable，更不该让失败原因被「unavailable」这句盖掉。
+    try:
+        fixed = await manager.reconcile_orphans()
+        log.info("orphan runs finalized: %d", len(fixed))
+    except Exception as exc:  # noqa: BLE001
+        log.error("orphan run reconcile aborted: %s: %s", type(exc).__name__, str(exc)[:200])
+
+
+async def close_session_runtime(app: FastAPI) -> None:
+    manager = getattr(app.state, "run_manager", None)
+    if manager is not None:
+        await manager.shutdown()
+    pool = getattr(app.state, "session_pool", None)
+    if pool is not None:
+        await pool.close()
+
+
+def _dict_row():
+    from psycopg.rows import dict_row
+
+    return dict_row

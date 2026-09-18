@@ -1,0 +1,73 @@
+[project]
+name = "haike-orchestrator"
+version = "0.1.0"
+description = "智能服务赛道编排服务：FastAPI + LangGraph"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141,<0.142",
+    "uvicorn[standard]>=0.41",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.12",
+    "httpx>=0.28",
+    "psycopg[binary,pool]>=3.2",
+    "redis>=6.4",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "langchain>=1.0",
+    "langchain-openai>=1.0",
+    "langchain-anthropic>=1.0",
+    "langchain-google-genai>=3.0",
+    "langgraph>=1.0",
+    "langgraph-checkpoint-postgres>=3.0",
+    "haike-contracts",
+    "python-multipart>=0.0.20",
+    "alembic>=1.16",
+    "tiktoken>=0.12",
+    # 读图主链路依赖：EXIF 转正、九宫格裁剪、像素层画质门控（app/images/prepare.py、quality.py）。
+    # 曾经只有评测合成图用，属 dev 组；2026-09-15 起进主链路，必须随生产镜像安装。
+    "pillow>=11",
+]
+
+[project.scripts]
+haike-taxonomy = "app.conversation.taxonomy:main"
+haike-eval = "app.evaluation.cli:main"
+haike-policy = "app.policy.cli:main"
+haike-route-table = "app.models.cli:route_table"
+haike-model-probe = "app.models.cli:probe"
+haike-sessions-rebuild = "app.sessions.cli:rebuild"
+haike-db = "app.db.cli:main"
+haike-retention = "app.retention:main"
+haike-inspect = "app.inspection.cli:main"
+haike-seed = "app.seed_cli:seed"
+haike-plans-schema = "app.seed_cli:plans_schema"
+haike-kb = "app.knowledge.cli:main"
+haike-replay = "app.replay.cli:main"
+haike-bakeoff = "app.bakeoff.cli:main"
+haike-metrics = "app.observability.metrics:main"
+haike-analytics = "app.analytics.cli:main"
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.23",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.2",
+    "ruff>=0.14",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.uv.sources]
+haike-contracts = { path = "../contracts", editable = true }

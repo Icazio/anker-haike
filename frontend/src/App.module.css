@@ -1,0 +1,29 @@
+.app { min-height: 100vh; }
+.skip { position: absolute; top: -100px; left: 16px; background: var(--surface); padding: 12px 20px; z-index: 1; }
+.skip:focus { top: 12px; }
+.main { max-width: 1072px; margin: auto; padding: 24px 36px; }
+.welcome { max-width: 720px; padding: 4px 0 20px; }
+.eyebrow { font-size: 11px; color: var(--accent); letter-spacing: 1.6px; margin: 0 0 14px; }
+.welcome h1 { font-size: clamp(28px, 3.2vw, 38px); line-height: 1.35; font-weight: 600; letter-spacing: -.8px; margin: 0 0 14px; }
+.welcome h1 span { color: var(--accent); }
+.description { font-size: 14px; line-height: 1.9; color: var(--muted); margin: 0; }
+.promises { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 12px; color: var(--muted); }
+.promises li { display: inline-flex; align-items: center; gap: 7px; }
+.promises span { background: var(--accent-soft); color: var(--accent); border-radius: 50%; width: 18px; height: 18px; display: grid; place-items: center; font-size: 11px; }
+.workspace { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+.workspaceHeading { border-bottom: 1px solid var(--border); padding: 16px 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.workspaceHeading h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 23px; font-size: 10px; color: var(--muted); letter-spacing: .8px; }
+.footer > span:last-child { font-size: 9px; letter-spacing: 1.5px; }
+@media (max-width: 660px) {
+  .main { padding: 20px 14px; }
+  .welcome { padding: 8px 4px 20px; }
+  .welcome h1 { font-size: 27px; }
+  .description { font-size: 13px; }
+  .promises { display: none; }
+  .workspaceHeading { padding: 14px; flex-wrap: wrap; }
+  .footer { flex-direction: column; align-items: center; line-height: 1.8; gap: 5px; }
+}
+
+.uiState { margin: 0; min-height: 1.2em; font-size: 12px; color: var(--muted); }
+.uiState[data-ui="failed"] { color: var(--danger); }

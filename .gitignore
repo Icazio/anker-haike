@@ -1,3 +1,8 @@
+# 环境与密钥
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]
@@ -13,11 +18,6 @@ dist/
 .vite/
 *.tsbuildinfo
 
-# 环境与密钥
-.env
-.env.*
-!.env.example
-
 # 本地数据与产物
 *.log
 tmp/
@@ -27,3 +27,35 @@ tmp/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+data/knowledge/manifest.json
+data/knowledge/snapshots/
+
+# 回滚前的 config 临时快照（票 49）
+releases/_pre-rollback/
+
+# 票 46：代理证书与口令文件只在部署机
+deploy/proxy/certs/
+deploy/proxy/.htpasswd
+
+# 会话追踪和脱敏日志（本地产物）
+logs/
+
+# 票 42：bake-off 明细报告（bakeoff.md 结论抄进 findings，JSON 不入库）
+reports/bakeoff/*.json
+# 阶段 0/1 的字段级评测：结论表 bakeoff.md 入库，逐样本明细 JSON 不入库
+reports/bakeoff-*/*.json
+# 真实评测照片只在本机
+data/bakeoff-images/
+reports/inspection/*.json
+reports/inspection/inspection-*.md
+
+# QA 录屏原始素材：帧图 174M、视频 8.6M 只留本机，文档保留结论和文本记录
+docs/planning/*_qa-video-recording/frames/
+docs/planning/*_qa-video-recording/frames.json
+docs/planning/*_qa-video-recording/video.ffconcat
+docs/planning/*_qa-video-recording/*.mp4
+docs/planning/*_qa-video-recording/*.png
+
+# 票 43：回放校验失败明细只留本机
+replay/.failures/
+data/demo-photos/
