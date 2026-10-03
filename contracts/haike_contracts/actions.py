@@ -11,6 +11,7 @@ from haike_contracts.common import Feedback, ObservationAnswer, ReceiptFields, S
 ActionKind = Literal[
     "select_product",
     "step_feedback",
+    "answer_observation",
     "confirm_receipt",
     "skip_receipt",
     "request_human",
@@ -25,7 +26,8 @@ ActionKind = Literal[
 
 
 class SelectProductPayload(Strict):
-    sku: str
+    # None = 「其他型号 / 不确定」：只在 allow_unknown 的卡片上合法，服务端退回 category_only
+    sku: str | None
 
 
 class StepFeedbackPayload(Strict):
@@ -33,6 +35,14 @@ class StepFeedbackPayload(Strict):
     note: str | None = None
     # 步骤声明了 observations 时可携带的检查结果；未携带保持 unknown，不会被写成阴性
     observations: list[ObservationAnswer] = Field(default_factory=list)
+
+
+class AnswerObservationPayload(Strict):
+    """observation_card 的作答；option_id 必须是该卡声明过的选项。
+    kind=unknown 的选项记为「答不上来」，不写成观察事实。"""
+
+    observation_id: str
+    option_id: str
 
 
 class ConfirmReceiptPayload(Strict):
@@ -72,6 +82,11 @@ class SelectProductAction(_CardAction):
 class StepFeedbackAction(_CardAction):
     kind: Literal["step_feedback"]
     payload: StepFeedbackPayload
+
+
+class AnswerObservationAction(_CardAction):
+    kind: Literal["answer_observation"]
+    payload: AnswerObservationPayload
 
 
 class ConfirmReceiptAction(_CardAction):
@@ -157,6 +172,7 @@ class RateSatisfactionAction(_CardAction):
 ActionRequest = Annotated[
     SelectProductAction
     | StepFeedbackAction
+    | AnswerObservationAction
     | ConfirmReceiptAction
     | SkipReceiptAction
     | RequestHumanAction

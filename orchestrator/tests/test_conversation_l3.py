@@ -1,11 +1,15 @@
+import asyncio
 import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import app.conversation.interpret as semantic
 from app.actions.runtime import configure
+from app.actions.store import ExecutionNeedsReview
 from app.conversation.interpret import TurnInterpretation
 from app.main import app
+from app.sessions.l3 import policy_input
 
 
 @pytest.fixture
@@ -307,6 +311,128 @@ async def test_a6_approval_restores_graph(l3_runtime, monkeypatch, edit_cost):
         assert l3_runtime.backend.create_calls == 1
 
 
+async def test_case_detail_carries_handoff_summary_and_executions(l3_runtime, monkeypatch):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = await seed_issue(client, monkeypatch, region="DE", order="DEMO-X10-001")
+        await send(client, sid, "我要换货")
+        case = next(c for c in (await client.get("/admin/api/cases/queue")).json()["items"] if c["session_id"] == sid)
+        detail = (await client.get(f"/admin/api/cases/{case['case_id']}")).json()
+        summary = detail["handoff_summary"]
+        assert summary["reason"]["text"].startswith("政策要求人工审核")
+        assert summary["product"] == "eufy X10 Pro Omni"
+        assert [o["option_id"] for o in summary["recommended_options"]] == [o["option_id"] for o in case["proposal"]["options"]]
+        assert summary["draft_reply"] and summary["receipt"]["verified_facts"]["amount"] == "449.99"
+        assert detail["executions"] == []
+        # The handoff is for the desk: the customer's timeline never shows it.
+        snap = (await client.get(f"/sessions/{sid}")).json()
+        assert not any(e["kind"] == "escalation_summary" for e in snap["timeline"])
+        response = await client.post(f"/admin/api/cases/{case['case_id']}/decision", json={
+            "decision_id": str(uuid.uuid4()), "expected_revision": detail["revision"], "decision": "approve",
+            "option_id": "replace", "override_reason": "演示跨区域特批", "note": "同意按换货方案办理",
+        })
+        assert response.status_code == 200, response.text
+        for _ in range(100):
+            if not app.state.run_manager.is_live(response.json()["run_id"]):
+                break
+            await asyncio.sleep(0.01)
+        detail = (await client.get(f"/admin/api/cases/{case['case_id']}")).json()
+        [execution] = detail["executions"]
+        assert execution["action_kind"] == "replacement.create" and execution["status"] == "succeeded"
+        assert execution["receipt"]["service_order_no"] == detail["external_refs"]["service_order_no"]
+
+
+@pytest.mark.parametrize("stage", ["awaiting_approval", "approved"])
+async def test_changed_request_pauses_pending_approval_and_its_card(l3_runtime, monkeypatch, stage):
+    original = semantic.interpret_turn
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = await seed_issue(client, monkeypatch, region="DE", order="DEMO-X10-001")
+        await send(client, sid, "我要换货")
+        queue = (await client.get("/admin/api/cases/queue")).json()["items"]
+        case = next(c for c in queue if c["session_id"] == sid)
+        card = None
+        if stage == "approved":
+            # An edited approval waits for the customer's fresh confirmation while the case stays approved.
+            response = await client.post(
+                f"/admin/api/cases/{case['case_id']}/decision",
+                json={
+                    "decision_id": str(uuid.uuid4()),
+                    "expected_revision": case["revision"],
+                    "decision": "approve",
+                    "option_id": "replace",
+                    "override_reason": "演示跨区域特批",
+                    "note": "同意换货，费用分担",
+                    "edited_option": {**next(o for o in case["proposal"]["options"] if o["option_id"] == "replace"), "cost_bearer": "shared"},
+                },
+            )
+            assert response.status_code == 200, response.text
+            run_id = response.json()["run_id"]
+            for _ in range(100):
+                if not app.state.run_manager.is_live(run_id):
+                    break
+                await asyncio.sleep(0.01)
+            card = (await client.get(f"/sessions/{sid}")).json()["pending_input"]
+            assert card["kind"] == "confirm_proposal"
+            assert (await l3_runtime.cases.store.get(case["case_id"]))["status"] == "approved"
+
+        async def refund(router, state, **kwargs):
+            if state.get("entry") == "action":
+                return await original(router, state, **kwargs)
+            return TurnInterpretation(primary_intent="refund_request", device_relation="current"), {"source": "test"}
+
+        monkeypatch.setattr(semantic, "interpret_turn", refund)
+        rows = events(await send(client, sid, "还是改成退款吧"))
+        assert not any(e["type"] == "error" for e in rows), rows
+        assert "暂停" in "".join(e.get("delta", "") for e in rows)
+        row = await l3_runtime.cases.store.get(case["case_id"])
+        assert row["status"] == "awaiting_approval"
+        change = next(e for e in row["events"] if e["type"] == "request_changed")
+        assert change["payload"]["requested"] == "refund"
+        assert change["payload"]["quote"] == "还是改成退款吧"
+        assert not row["proposal"]["user_confirmed"] and row["chosen_option_id"] is None
+        detail = (await client.get(f"/admin/api/cases/{case['case_id']}")).json()
+        assert detail["handoff_summary"]["reason"]["text"] == "客户变更诉求：还是改成退款吧"
+        snap = (await client.get(f"/sessions/{sid}")).json()
+        assert snap["pending_input"] is None
+        if card:
+            assert any(
+                e["type"] == "pending_changed" and e["pending_id"] == card["card_id"] and e["status"] == "invalidated"
+                for e in rows
+            )
+            stale = await client.post(f"/sessions/{sid}/actions", json={
+                "action_id": str(uuid.uuid4()), "expected_version": snap["version"],
+                "target_issue_id": snap["active_issue_id"], "card_id": card["card_id"],
+                "input_token": card["input_token"], "kind": "confirm_proposal", "payload": {"option_id": "replace"},
+            })
+            assert stale.status_code == 409
+        # Repeating the same change is not a second change.
+        await send(client, sid, "还是改成退款吧")
+        again = await l3_runtime.cases.store.get(case["case_id"])
+        assert [e["type"] for e in again["events"]].count("request_changed") == 1
+        assert l3_runtime.backend.create_calls == 0
+
+
+async def test_repeating_the_request_under_review_is_not_a_change(l3_runtime, monkeypatch):
+    """退款直接进人工审核、没有「已选方案」；客户再说一遍退款不是变更，不能暂停或重复记录。"""
+    original = semantic.interpret_turn
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = await seed_issue(client, monkeypatch)
+
+        async def refund(router, state, **kwargs):
+            if state.get("entry") == "action":
+                return await original(router, state, **kwargs)
+            return TurnInterpretation(primary_intent="refund_request", device_relation="current"), {"source": "test"}
+
+        monkeypatch.setattr(semantic, "interpret_turn", refund)
+        await send(client, sid, "我要退款")
+        state = (await app.state.session_graph.aget_state({"configurable": {"thread_id": sid}})).values
+        case = await l3_runtime.cases.store.get(state["case_id"])
+        assert case["status"] == "awaiting_approval"
+        rows = events(await send(client, sid, "我要退款，快点处理"))
+        assert "暂停" not in "".join(e.get("delta", "") for e in rows)
+        again = await l3_runtime.cases.store.get(state["case_id"])
+        assert not any(e["type"] == "request_changed" for e in again["events"])
+
+
 @pytest.mark.parametrize("query_order", ["DEMO-X10-001", "DEMO-CN-003"])
 async def test_inline_consult_keeps_proposal_card_and_token(l3_runtime, monkeypatch, query_order):
     import app.conversation.interpret as semantic
@@ -604,6 +730,56 @@ async def test_transient_execution_failure_retries_original_case_after_inline_qu
         assert not any(e["type"] == "error" for e in [*failed, *succeeded])
 
 
+async def test_ambiguous_execution_timeout_retry_does_not_create_twice(l3_runtime, monkeypatch):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = await seed_issue(client, monkeypatch)
+        await send(client, sid, "我要换货")
+        backend = l3_runtime.backend
+        requests = []
+        create = backend.create_service_order
+
+        async def counted(req):
+            requests.append(req.client_ref)
+            return await create(req)
+
+        monkeypatch.setattr(backend, "create_service_order", counted)
+        backend.faults.append({"op": "create_service_order", "order_no": "DEMO-X10-001", "mode": "created_then_timeout"})
+        failed = events(await act(client, sid, "confirm_proposal", {"option_id": "replace"}))
+        assert any(e["type"] == "case_changed" and e["status"] == "executing_failed" for e in failed)
+        backend.faults.clear()
+        rows = events(await act(client, sid, "confirm_proposal", {"option_id": "replace"}))
+        receipt = next(e for e in rows if e["type"] == "execution_card")
+        assert receipt["status"] == "succeeded"
+        assert len(requests) == 1 and backend.create_calls == 1
+        found = await backend.find_service_order(requests[0])
+        assert receipt["receipt"]["service_order_no"] == found.service_order_no
+        assert not any(e["type"] == "error" for e in [*failed, *rows])
+
+
+async def test_execution_needing_review_goes_to_human_queue(l3_runtime, monkeypatch):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = await seed_issue(client, monkeypatch)
+        await send(client, sid, "我要换货")
+
+        async def stuck(*args, **kwargs):
+            raise ExecutionNeedsReview("执行状态需人工核实")
+
+        monkeypatch.setattr(l3_runtime.executor, "run", stuck)
+        rows = events(await act(client, sid, "confirm_proposal", {"option_id": "replace"}))
+        assert not any(e["type"] == "error" for e in rows), rows
+        assert any(e["type"] == "case_changed" and e["status"] == "awaiting_approval" for e in rows)
+        assert "人工核实" in "".join(e.get("delta", "") for e in rows)
+        state = (await app.state.session_graph.aget_state({"configurable": {"thread_id": sid}})).values
+        case = await l3_runtime.cases.store.get(state["case_id"])
+        assert any(
+            e["type"] == "status_changed" and e["payload"]["reason"] == "执行结果待人工核实"
+            for e in case["events"]
+        )
+        assert any(r["case_id"] == case["case_id"] for r in await l3_runtime.cases.store.queue())
+        detail = (await client.get(f"/admin/api/cases/{case['case_id']}")).json()
+        assert detail["handoff_summary"]["reason"]["text"] == "执行结果待人工核实"
+
+
 async def test_retry_rechecks_changed_service_context(l3_runtime, monkeypatch):
     import app.conversation.interpret as semantic
 
@@ -641,3 +817,30 @@ async def test_confirm_context_command_is_applied_before_intent_routing(l3_runti
         state = (await app.state.session_graph.aget_state({"configurable": {"thread_id": sid}})).values
         assert state["service_context"]["region_use"] == "DE"
         assert state["card_results"][card["card_id"]]["confirmed_fields"]["region_use"] == "DE"
+
+
+async def test_stated_purchase_date_is_kept_for_prefill_but_never_as_policy_input(l3_runtime, monkeypatch):
+    original = semantic.interpret_turn
+
+    async def stated(router, state, **kwargs):
+        if state.get("text") == "去年双十一买的":
+            return TurnInterpretation(primary_intent="supplement", facts=[
+                {"kind": "context", "context_field": "purchase_date", "value": "2025-11-11", "quote": "去年双十一买的"},
+            ]), {"source": "test"}
+        if state.get("text") == "下个月买的":
+            return TurnInterpretation(primary_intent="supplement", facts=[
+                {"kind": "context", "context_field": "purchase_date", "value": "2099-01-01", "quote": "下个月买的"},
+            ]), {"source": "test"}
+        return await original(router, state, **kwargs)
+
+    monkeypatch.setattr(semantic, "interpret_turn", stated)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        await send(client, sid, "下个月买的")
+        state = (await app.state.session_graph.aget_state({"configurable": {"thread_id": sid}})).values
+        assert "purchase_date" not in (state.get("service_context") or {})
+        await send(client, sid, "去年双十一买的")
+        state = (await app.state.session_graph.aget_state({"configurable": {"thread_id": sid}})).values
+        assert state["service_context"]["purchase_date"] == "2025-11-11"
+        assert state["context_sources"]["purchase_date"] == "user"
+        assert policy_input(state).purchase_date is None

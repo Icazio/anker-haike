@@ -2,24 +2,28 @@
 
 import hashlib
 import json
+import os
 from datetime import date
 
 from haike_contracts.common import REMEDY_LADDER
 
 from app.actions.gate import AuthorizationGate
 from app.actions.runtime import require_services
-from app.actions.store import ExecutionBusy
+from app.actions.store import ExecutionBusy, ExecutionNeedsReview
 from app.backends.protocol import BackendError
 from app.cases.service import case_event
 from app.conversation.business import BusinessContext
 from app.conversation.effects import writer
 from app.conversation.reduce import stable_id
+from app.emotion.policy import complaint_flagged
+from app.escalation.summary import build_summary
 from app.policy.engine import PolicyEngine
 from app.policy.fault_class import derive_fault_class
 from app.policy.models import PolicyInput
 
 CONTEXT_FIELDS = ("region_purchase", "region_use", "channel", "platform")
 CONSULT_INTENTS = {"logistics_query", "warranty_query", "order_query"}
+REQUESTED_REMEDY = {"replacement_request": "replace", "refund_request": "refund", "address_update": "address_update"}
 REMEDY_TITLES = {
     "parts": "寄送更换配件",
     "repair": "申请维修",
@@ -139,7 +143,7 @@ async def service_context(state):
         state["session_id"],
         state["active_issue_id"],
         product_update.get("product_confirmed") or state.get("product_confirmed") or {},
-        (state.get("emotion") or {}).get("level") == "complaint_risk",
+        complaint_flagged(state),
     )
     if not case.get("sku") and product_update.get("product_confirmed"):
         case = await services.cases.identify_product(case["case_id"], product_update["product_confirmed"])
@@ -231,6 +235,8 @@ async def propose(state):
         "user_confirmed": False,
     }
     case = await services.cases.store.get(state["case_id"])
+    if case["status"] in {"approved", "awaiting_approval"} and (requested := changed_request(state, case)):
+        return await _pause_for_changed_request(state, requested)
     if case["status"] not in {
         "open",
         "diagnosing",
@@ -310,6 +316,43 @@ async def propose(state):
                 )
     emit_case(state, case)
     return update
+
+
+def changed_request(state, case):
+    """A remedy asked on a message turn that the pending approval does not cover."""
+    requested = REQUESTED_REMEDY.get((state.get("turn_decision") or {}).get("primary_intent"))
+    if state.get("entry") != "message" or not requested:
+        return None
+    decided_at = max((d["at"] for d in case["decisions"]), default="")
+    # The request recorded at review, or the latest change since the last human decision.
+    latest = next(
+        (
+            e["payload"]["requested"]
+            for e in reversed(case["events"])
+            if e["type"] in {"review_requested", "request_changed"} and e["at"] > decided_at
+        ),
+        None,
+    )
+    covered = latest or case.get("chosen_option_id") or (case.get("proposal") or {}).get("chosen_option_id")
+    return None if requested == covered else requested
+
+
+async def _pause_for_changed_request(state, requested):
+    row = await require_services().cases.request_changed(
+        state["case_id"], input_id=state["input_id"], quote=state.get("text", ""), requested=requested
+    )
+    row = await _record_handoff(
+        {**state, "requested_remedy": requested}, row, "客户变更诉求：" + (state.get("text") or "")
+    )
+    pc = state.get("pending_card")
+    if pc:
+        writer()({"type": "pending_changed", "issue_id": state["active_issue_id"],
+                  "pending_id": pc["card_id"], "status": "invalidated", "reason": "request_changed",
+                  "version": state["base_version"] + 1})
+    emit_case(state, row, "客户变更诉求")
+    say(state, "已暂停原方案。您的新要求已交人工重新审核，审核结果会回到本会话。")
+    return {**inactive_case_state(state), "requested_remedy": requested, "case_status": row["status"],
+            "stage": "awaiting_human", "l3_route": "commit_issue"}
 
 
 async def authorize(state):
@@ -424,6 +467,8 @@ async def execute(state):
             policy_version=state["policy_decision"]["policy_version"],
             writer=writer(),
         )
+    except ExecutionNeedsReview:
+        return await _outcome_needs_review(state, "这次办理的结果暂时无法确认。为避免重复办理，已交人工核实。")
     except ExecutionBusy:
         say(state, "相同申请仍在处理，请稍后查询案件状态。")
         return {"l3_route": "commit_issue"}
@@ -447,6 +492,8 @@ async def execute(state):
         "action_kind": "replacement.create",
     }
     if result.status != "succeeded":
+        if result.needs_review:
+            return {"execution": execution, **await _outcome_needs_review(state, result.receipt.next_step)}
         say(state, result.receipt.next_step)
         if result.recoverable:
             case = await services.cases.transition(state["case_id"], "executing_failed", "业务系统暂时不可用，可重试原申请")
@@ -480,6 +527,15 @@ async def execute(state):
         "prior_remedies": list(dict.fromkeys([*state.get("prior_remedies", []), "replace"])),
         "l3_route": "track",
     }
+
+
+async def _outcome_needs_review(state, text):
+    case = await require_services().cases.transition(
+        state["case_id"], "awaiting_approval", "执行结果待人工核实"
+    )
+    emit_case(state, case)
+    say(state, text)
+    return {"l3_route": "await_human"}
 
 
 async def track(state):
@@ -519,14 +575,41 @@ async def await_human(state):
         policy_decision=state.get("policy_decision"),
         proposal=state.get("proposal"),
         gate_result=state.get("gate_result"),
-        complaint_risk=(state.get("emotion") or {}).get("level") == "complaint_risk",
-        priority="high"
-        if (state.get("emotion") or {}).get("level") == "complaint_risk"
-        else "normal",
+        complaint_risk=complaint_flagged(state),
+        priority="high" if complaint_flagged(state) else "normal",
     )
+    if state.get("requested_remedy"):
+        row = await services.cases.record_review_request(state["case_id"], state["requested_remedy"])
+    row = await _record_handoff(state, row)
     emit_case(state, row)
     say(state, "已提交人工审核。审核决定会回到本会话，您可以继续补充信息。")
     return {"stage": "awaiting_human", "pending_card": None, "l3_route": "commit_issue"}
+
+
+def handoff_reason(state, row):
+    """Why the case sits in the queue, in the words a desk agent reads first."""
+    latest = next(
+        (e["payload"]["reason"] for e in reversed(row["events"])
+         if e["type"] == "status_changed" and e["payload"]["to"] == "awaiting_approval"),
+        None,
+    )
+    if latest and latest != "需要人工审核":
+        return latest
+    remedy = state.get("requested_remedy")
+    if remedy in {"refund", "address_update"}:
+        return ("退款" if remedy == "refund" else "修改地址") + "需人工核实办理"
+    decision = state.get("policy_decision") or {}
+    if decision.get("needs_human"):
+        reasons = [c["text"] for hit in decision.get("exclusions_hit") or [] for c in hit.get("clauses", [])]
+        return "政策要求人工审核：" + "；".join(reasons or decision.get("needs_human_reasons") or [])
+    failed = [c["detail"] for c in (state.get("gate_result") or {}).get("checks", []) if not c.get("passed")]
+    return "授权检查未通过：" + "；".join(failed) if failed else "需要人工审核"
+
+
+async def _record_handoff(state, row, reason=None):
+    summary = build_summary(dict(state), reason="R6", lane=os.environ.get("MODEL_LANE", "domestic"))
+    summary.reason.text = reason or handoff_reason(state, row)
+    return await require_services().cases.record_handoff(state["case_id"], summary.model_dump(mode="json"))
 
 
 async def consult(state):

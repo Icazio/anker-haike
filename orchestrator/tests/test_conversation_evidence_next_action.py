@@ -6,7 +6,9 @@ import pytest
 from app.conversation.interpret import SymptomAnswer, TurnInterpretation
 from app.conversation.taxonomy import interview_answer, next_interview
 from app.diagnose.vision import VisionOutcome
+from app.sessions import sse
 from app.sessions.clarify import decide, fixed_question, make_question
+from tests.message_form import action_body
 from tests.test_sessions_clarify import _message_text, _send
 from tests.test_vision_graph import (  # noqa: F401
     _client,
@@ -140,7 +142,21 @@ async def test_photo_signature_joins_candidates_beside_text_symptom(mem_runtime,
         await _send_with_images(client, sid, "有点问题")
         assert len(_signature_facts(await _state(sid))) == 1
         await _send(client, sid, "运行异响")
-        last = await _send(client, sid, "是")
+        confirmed = await _send(client, sid, "是")
+        # 异响有 X10 专属计划：品类确认后先问一次型号；「不确定」退回品类通用路径（spec 2026-09-19-0810 T1）
+        card = next(e for e in confirmed if e["type"] == "product_card")
+        assert [c["sku"] for c in card["candidates"]] == ["EUFY-X10-PRO-OMNI"] and card["allow_unknown"] is True
+        pending = next(e for e in confirmed if e["type"] == "awaiting_input")
+        snap = (await client.get(f"/sessions/{sid}")).json()
+        response = await client.post(
+            f"/sessions/{sid}/actions",
+            json=await action_body(client, f"/sessions/{sid}/actions", {
+                "action_id": "model-unknown", "input_token": pending["input_token"], "card_id": pending["card_id"],
+                "expected_version": snap["version"], "kind": "select_product", "payload": {"sku": None},
+            }),
+        )
+        assert response.status_code == 200, response.text
+        last = sse.parse(response.text)
         state = await _state(sid)
         assert state["category"] == "robot_vacuum" and state["product_state"] == "category_only"
         assert set(state["symptom_codes"]) == {"abnormal_noise", "suction_low"}
@@ -298,7 +314,7 @@ async def test_approved_noise_stop_notice_is_publishable_without_creating_risk()
 
     library = get_plans()
     rules = RulesService(REPO_ROOT / "config/rules/safety_terms.yaml", hot_reload=False)
-    result = await prepare_step(state={"plan_cursor": {"plan_id": "rv_suction_motor_fault", "step_id": "s1"}},
+    result = await prepare_step(state={"category": "robot_vacuum", "plan_cursor": {"plan_id": "rv_suction_motor_fault", "step_id": "s1"}},
                                 library=library, rules=rules, router=None, lane="domestic", session_id="noise")
     assert result.outcome == "ready", result.dropped
     assert result.step["instruction"] == library.evidence_snippet("evidence:manual_rv_v1#c30")

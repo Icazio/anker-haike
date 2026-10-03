@@ -21,6 +21,7 @@ from haike_contracts.common import (
     Receipt,
     ReceiptFields,
     Stage,
+    StepObservation,
     Strict,
     TroubleshootStep,
 )
@@ -104,7 +105,10 @@ class ProductCardItem(TimelineRecord):
     card_id: str
     version: int = Field(ge=0)
     candidates: list[ProductCandidate]
+    allow_unknown: bool = False
+    note: str | None = None
     selected_sku: str | None = Field(default=None, description="用户已选结果")
+    selected_unknown: bool = Field(default=False, description="用户选了「其他型号 / 不确定」")
 
 
 class StepCardItem(TimelineRecord):
@@ -116,6 +120,16 @@ class StepCardItem(TimelineRecord):
     feedback: Feedback | None = None
     note: str | None = None
     observation_answers: list[ObservationAnswer] = Field(default_factory=list)
+
+
+class ObservationCardItem(TimelineRecord):
+    kind: Literal["observation_card"]
+    card_id: str
+    version: int = Field(ge=0)
+    observation: StepObservation
+    plan_id: str
+    attempt: int = Field(ge=1)
+    chosen_option_id: str | None = None
 
 
 class ReceiptCardItem(TimelineRecord):
@@ -218,6 +232,7 @@ TimelineItem = Annotated[
     | ToolItem
     | ProductCardItem
     | StepCardItem
+    | ObservationCardItem
     | ReceiptCardItem
     | EvidenceItemGroup
     | SummaryItem

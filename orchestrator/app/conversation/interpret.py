@@ -11,6 +11,11 @@ from app.context.budget import context_input_budget
 from app.context.builder import ContextBudgetExceeded, build_context
 from app.conversation.answers import AnswerRequest
 from app.conversation.history import ConversationEntry
+from app.conversation.operation_conditions import (
+    OperationUpdate,
+    has_operation_context,
+    resolve_operation_reply,
+)
 from app.models.queue import CapacityExceeded
 from app.models.router import ModelInvokeError
 
@@ -48,7 +53,7 @@ class FactCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["symptom", "observation", "preference", "context"] = "symptom"
     value: str
-    context_field: Literal["region_purchase", "region_use", "channel", "platform"] | None = None
+    context_field: Literal["region_purchase", "region_use", "channel", "platform", "purchase_date"] | None = None
     quote: str = Field(description="本条用户消息中支持此事实的逐字原文，不能引用助手建议")
     occurred_at: str | None = None
     time_expression: str | None = None
@@ -96,8 +101,9 @@ class TurnInterpretation(BaseModel):
     device_relation: Literal["current", "other", "unknown"] = "unknown"
     device_category: str | None = None
     product_hints: list[str] = Field(default_factory=list)
-    emotion_level: Literal["calm", "anxious", "dissatisfied", "angry", "complaint_risk"] = "calm"
+    emotion_level: Literal["calm", "anxious", "dissatisfied", "angry", "complaint_risk"] | None = None
     emotion_cues: list[str] = Field(default_factory=list)
+    operation_update: OperationUpdate | None = None
     human_request_quote: str | None = Field(default=None, description="仅在用户明确要求接入人工客服时引用当前原话；表达不满、投诉平台或律师威胁都不是接入人工请求")
     detail_level: Literal["brief", "normal", "detailed"] | None = None
     preference_quote: str | None = None
@@ -124,15 +130,18 @@ class BusinessReference(BaseModel):
 
 TurnInterpretation.model_rebuild()
 
-INTERPRET_PROMPT_VERSION = "2026-09-17.1"
+INTERPRET_PROMPT_VERSION = "2026-09-26.1"
 
 INSTRUCTION = """你是售后会话语义解释器，输出符合 schema 的 JSON。
+operation_update 只在用户本轮明确声明操作条件或意愿时填写：signal 取一个，quote 引用当前原话，其余情况留空。资源缺失不表示故障，也不表示已操作；不能从“做不了”推断缺哪一项。step_attempts 是原始反馈，cannot_do 不是已执行。
+resources 里为 false 的资源本轮说已到位（“拿到了”），必须给对应 *_ready 信号并引用原话。
+emotion_level 需要 emotion_cues 里的原话支撑，calm 也一样；短答复、型号和理解失败都不算依据，此时 emotion_level=null。
 business_subject.active_subject 是最近选择或查询的业务对象，active_subject_id 是其 ID。「这笔订单、上面的订单」及普通短追问沿用该焦点，business_reference 用 current 且 subject_id 留空；不要因为本轮省略编号要求重填。service_case 是正在办理的案件，可以属于另一笔订单；不能用案件订单覆盖聊天焦点。业务缺参和不同订单的案件隔离由服务端处理，clarification 只用于意图或对象确实歧义。
 business_reference 是唯一的对象选择：问正在办理的案件/退款/换货订单用 relation=case（服务端绑定 service_case.order_no）；问正在排障的设备用 issue；这两种不填写 subject_id。明确换查另一笔尚无编号的订单用 other 且 subject_id 留空；只有用户明确回指其他已知对象时才从 business_subject.subjects 选择 subject_id；无法确定对象用 ambiguous。quote 必须是本条逐字原话，模型不输出或编造订单/运单编号。
 对事实追问填写 answer_request：fields 只选择本轮所问字段，quote 是当前逐字原话，不输出答案值。对象只在 business_reference 中选择，answer_request 不重复选择对象。询问型号/渠道/平台/购买日/购买地/金额属于订单事实，使用地来自用户，物流状态/单号来自物流，现象/已做步骤来自问题记录，方案/案件状态来自办理记录。结合 conversation_view 识别已知与缺失，不把另一对象事实当作当前事实；问题中没重述已知信息无需追问。只有事实问答才填写 answer_request，操作解释和一般建议保持空。
 查物流是 logistics_query，查保修是 warranty_query，查订单是 order_query，要换货是 replacement_request，退款是 refund_request，更改地址是 address_update，确认收到货是 confirm_received。
 情绪分 calm/dissatisfied/angry/complaint_risk 四级，emotion_cues 仅引用当前原话。单纯表达不满、催促或提出投诉用 complaint 意图；例如“再不解决我就去平台投诉”是 complaint + complaint_risk，不含转人工请求。只有明确要求接入人工客服才 request_human，且须填写 human_request_quote，不能从用户情绪或你认为需要人工推导此操作。情绪策略与实际转人工请求相互独立。
-购买地、使用地、渠道、平台抽为 facts(kind=context, context_field=对应字段, value=值, quote=当前原话)。购买地和使用地不同，不要推断另一字段。一句多诉求放 secondary_intents。只有用户明确指定队列中存在的任务且能给出其 target_task_id，才用 resume_task；否则即使说「继续、先处理」，仍按其明确的退款、换货、查询等业务诉求分类，由服务端恢复对应订单的案件。不得生成 task_id。
+购买地、使用地、渠道、平台抽为 facts(kind=context, context_field=对应字段, value=值, quote=当前原话)。购买地和使用地不同，不要推断另一字段。购买日期能确定到某天时抽为 context_field=purchase_date，value=YYYY-MM-DD（相对说法按当前时间换算），只到月份不抽。一句多诉求放 secondary_intents。只有用户明确指定队列中存在的任务且能给出其 target_task_id，才用 resume_task；否则即使说「继续、先处理」，仍按其明确的退款、换货、查询等业务诉求分类，由服务端恢复对应订单的案件。不得生成 task_id。
 逐一识别本轮每个独立诉求，不因涉及另一设备或另一订单而省略其中任何一项；只把第一个诉求放 primary_intent，其余按原话出现顺序放 secondary_intents，服务端负责业务优先级排序。new_issue 仅表示用户明确要求新建问题，不能替代已经说清的换货、退款、排障等业务意图。查购买日期/渠道/型号属于 order_query，查保修期限属于 warranty_query，同一句同时问两者时保留两个意图。
 每轮先理解用户当前想做什么，不受之前升级/转人工阶段限制。结合完整历史问答、当前时间、问题与事实 ID。
 “之前问了什么”是 history_query；“新问题”是 new_issue，要求描述新问题；“刚说错了”没有纠正内容时必须 clarification，不擅自删除事实。
@@ -183,6 +192,14 @@ async def interpret_turn(router, state: dict, *, lane: str):
     answer = symptom_question_answer(state)
     if answer is not None:
         return answer, {"source": "symptom_question", "source_entry_ids": [state["input_id"]]}
+    # 操作条件短语排在待答问题之后：判别题选项与资源说法会重合（「设备不在身边」既是选项
+    # 也是资源声明），先当成对问题的回答，问题受理不了才算操作条件。
+    operation_update, operation_clarification = resolve_operation_reply(state.get("text", ""), state)
+    if has_operation_context(state) and (operation_update is not None or operation_clarification):
+        return TurnInterpretation(
+            primary_intent="unknown" if operation_clarification else "supplement",
+            device_relation="current", operation_update=operation_update, clarification=operation_clarification,
+        ), {"source": "operation_conditions"}
     from app.diagnose.decision import owns_diagnostic_reply
     if owns_diagnostic_reply(state) and state.get("text", "").strip("。？！?! ") in {
         "还有其他的方案吗", "还有其他方案吗", "继续排查", "继续排障", "还有别的办法吗",

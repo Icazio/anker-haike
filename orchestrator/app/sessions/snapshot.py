@@ -138,7 +138,10 @@ def fold_timeline(records: list[EventRecord], values: dict[str, Any]) -> dict[st
                     "card_id": e["card_id"],
                     "version": e["version"],
                     "candidates": e["candidates"],
+                    "allow_unknown": e.get("allow_unknown", False),
+                    "note": e.get("note"),
                     "selected_sku": res.get("selected_sku"),
+                    "selected_unknown": bool(res.get("selected_unknown")),
                 },
             )
         elif t == "step_card":
@@ -173,7 +176,7 @@ def fold_timeline(records: list[EventRecord], values: dict[str, Any]) -> dict[st
                     "skipped_reason": res.get("skipped_reason"),
                 },
             )
-        elif t in {"context_card", "proposal_card", "execution_card", "retake_card", "rating_card", "case_changed"}:
+        elif t in {"observation_card", "context_card", "proposal_card", "execution_card", "retake_card", "rating_card", "case_changed"}:
             item = {k: v for k, v in e.items() if k not in {"type", "seq", "run_id", "event_id", "recorded_at"}}
             item.update(kind=t, at=_iso(r.created_at), first_seq=r.seq, last_seq=r.seq)
             item.update(card_results.get(e["card_id"], {}))

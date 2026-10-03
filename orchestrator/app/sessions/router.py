@@ -184,7 +184,7 @@ async def resume_events(
     return _sse(manager.subscribe(session_id, run_id, after_seq=after_seq))
 
 
-_CARD_KINDS = {"select_product", "step_feedback", "confirm_receipt", "skip_receipt", "confirm_context", "confirm_proposal", "decline_proposal", "skip_retake", "rate_satisfaction"}
+_CARD_KINDS = {"select_product", "step_feedback", "answer_observation", "confirm_receipt", "skip_receipt", "confirm_context", "confirm_proposal", "decline_proposal", "skip_retake", "rate_satisfaction"}
 
 
 @router.post("/{session_id}/actions")
@@ -299,15 +299,21 @@ async def _accept(
                     raise InputConflict("wrong_issue")
                 if not _kind_allowed(payload["kind"], pending.kind):
                     raise InputConflict("not_allowed_now")
-                if payload["kind"] == "select_product" and payload["payload"]["sku"] not in {
-                    c["sku"]
-                    for c in (values.get("pending_card") or {})
-                    .get("payload", {})
-                    .get("candidates", [])
-                }:
-                    raise InputConflict("invalid_selection")
+                if payload["kind"] == "select_product":
+                    card_payload = (values.get("pending_card") or {}).get("payload", {})
+                    allowed = {c["sku"] for c in card_payload.get("candidates", [])}
+                    if card_payload.get("allow_unknown"):
+                        allowed.add(None)  # 「其他型号 / 不确定」只在品类已知的型号卡上合法
+                    if payload["payload"]["sku"] not in allowed:
+                        raise InputConflict("invalid_selection")
                 if payload["kind"] == "confirm_proposal" and payload["payload"]["option_id"] not in {o["option_id"] for o in ((values.get("pending_card") or {}).get("payload") or {}).get("options",[])}:
                     raise InputConflict("invalid_selection")
+                if payload["kind"] == "answer_observation":
+                    declared = ((values.get("pending_card") or {}).get("payload") or {}).get("observation") or {}
+                    if payload["payload"]["observation_id"] != declared.get("observation_id") or payload["payload"]["option_id"] not in {
+                        o["option_id"] for o in declared.get("options", [])
+                    }:
+                        raise InputConflict("invalid_selection")
             receipt, replay = await store.reserve_input(
                 session_id,
                 input_id,

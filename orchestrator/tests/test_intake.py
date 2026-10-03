@@ -93,7 +93,7 @@ def test_system_prompt_three_layers():
     )
     layers = prompt.split("\n\n")
     assert len(layers) == 2 and layers[0] == ROLE_LAYER
-    assert "焦急" in layers[1] and "eufy X9 Pro" not in prompt and "不吸了" not in prompt
+    assert "安抚" in layers[1] and "eufy X9 Pro" not in prompt and "不吸了" not in prompt
     assert (
         "session" not in ROLE_LAYER.lower() and "<data>" in ROLE_LAYER
     )  # 固定层可缓存、声明 data 非指令
@@ -103,7 +103,7 @@ def test_system_prompt_three_layers():
         prev_emotion={"level": "angry", "strategy": "reassure_and_shorten"},
         state_summary=None,
     )
-    assert msgs[0][0] == "system" and "激动" in msgs[0][1]
+    assert msgs[0][0] == "system" and "不满" in msgs[0][1]
     assert (
         "&lt;/data&gt;" in msgs[1][1]
         and "上传了图片" in msgs[1][1]
@@ -161,8 +161,9 @@ async def test_wants_human_from_extraction_escalates_like_r3(mem_runtime, tmp_pa
     stages = [e["stage"] for e in events if e["type"] == "progress"]
     assert stages == ["intake", "escalate"]
     summ = next(e for e in events if e["type"] == "escalation_summary")["summary"]
+    # 模型给了 angry 却没给 emotion_cues：保守降到最低的非平静等级，而不是当作没有情绪。
     assert summ["reason"]["rule_id"] == "R3" and summ["emotion"] == {
-        "level": "angry",
+        "level": "dissatisfied",
         "strategy": "reassure_and_shorten",
     }
     assert state.values["turn_decision"]["escalation_trigger"] == "R3"
@@ -171,7 +172,7 @@ async def test_wants_human_from_extraction_escalates_like_r3(mem_runtime, tmp_pa
 
 
 async def test_extraction_writes_state_and_default_off_in_tests(mem_runtime):
-    """HAIKE_LLM=off（tests/__init__.py）：默认不发模型请求，状态里 emotion 为 calm 且 model_trace 标 skipped。"""
+    """HAIKE_LLM=off（tests/__init__.py）：默认不发模型请求，情绪无依据保持未判断，model_trace 标 skipped。"""
     assert os.environ["HAIKE_LLM"] == "off"
     set_rules_service(RulesService(RULES, hot_reload=False))
     try:
@@ -181,7 +182,7 @@ async def test_extraction_writes_state_and_default_off_in_tests(mem_runtime):
             state = await app.state.session_graph.aget_state({"configurable": {"thread_id": sid}})
     finally:
         set_rules_service(None)
-    assert state.values["emotion"] == {"level": "calm", "strategy": "normal"}
+    assert state.values["emotion"] == {"level": None, "strategy": "normal"}
     assert state.values["model_trace"] == [
         {"task": "intake", "model_used": "skipped", "lane": "domestic", "attempts": 1}
     ]

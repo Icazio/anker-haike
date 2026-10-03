@@ -19,6 +19,7 @@ from haike_contracts.common import (
     Receipt,
     ReceiptFields,
     Stage,
+    StepObservation,
     Strict,
     TroubleshootStep,
 )
@@ -128,6 +129,9 @@ class _Card(_Event):
 class ProductCard(_Card):
     type: Literal["product_card"]
     candidates: list[ProductCandidate] = Field(min_length=1)
+    # 品类已知、知识按型号分化时的型号卡：多一个「其他型号 / 不确定」出口，并说明为什么要问
+    allow_unknown: bool = False
+    note: str | None = None
 
 
 class StepCard(_Card):
@@ -137,6 +141,16 @@ class StepCard(_Card):
     # 步骤是已审核的预写原文，不能掺入模型或代码生成的句子。放这里让前端单独渲染，用户一眼能看出
     # 哪句是「我们看到的」、哪句是「让你做的」，看错了也能立刻纠正。
     seen: str | None = None
+
+
+class ObservationCard(_Card):
+    """计划级判别问题的卡片。与步骤内 observations 用同一份定义，独立追问时也要能点选 ——
+    自由文本回答只能靠字面匹配，两次匹配不上该观察就被记为不可用，依赖它的计划再也解锁不了。"""
+
+    type: Literal["observation_card"]
+    observation: StepObservation
+    plan_id: str
+    attempt: int = Field(ge=1)
 
 
 class Evidence(_Event):
@@ -249,6 +263,7 @@ ServerEvent = Annotated[
     | MessageEnd
     | ProductCard
     | StepCard
+    | ObservationCard
     | Evidence
     | ReceiptCard
     | AwaitingInput

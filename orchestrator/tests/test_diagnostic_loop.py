@@ -214,7 +214,7 @@ def test_f30_two_unresolved_steps_end_with_explicit_coverage_boundary():
     assert "「检查基站供电与触点」、「放回基站观察充电」" in summary.reason.text
     assert "现有资料没有进一步可执行的排查操作" in summary.reason.text
     text = reassurance_text("R2", state)
-    assert "尚未接入真实转接" in text and "不会重复建议" in text
+    assert "尚未接入真实转接" in text and "条件变化后" in text
     # 没有配置不同处理时，不同观察不能编造出差异
     observed = with_observation(base_state(exhausted_plans=["rv_power_supply"], steps_executed=executed_both()), "charging_indication", "none")
     assert decide_next(observed, library=LIB).reason == "no_supported_followup"
@@ -240,6 +240,83 @@ def test_same_not_solved_with_different_observations_yields_different_paths(tmp_
                                                   "feedback": "not_solved", "instruction_src": "evidence:test_power#p1", "title": "更换插座后重试"}]
     done["exhausted_plans"] = ["rv_power_supply", "rv_power_no_indication"]
     assert decide_next(done, library=lib).reason == "no_supported_followup"
+
+
+def library_with_mismatched_codes(tmp_path) -> PlanLibrary:
+    """第三条路径的症状码与本次会话不相交（真实配置里 pb_737_laptop_uvp 少写了 pb_no_input 即此形）。"""
+    base = (REPO_ROOT / "config" / "plans.yaml").read_text(encoding="utf-8")
+    third = THIRD_PLAN.replace("symptom_codes: [power_failure, charging_failure]", "symptom_codes: [abnormal_noise]")
+    path = tmp_path / "mismatched.yaml"
+    path.write_text(base.replace("evidence:\n", f"evidence:\n{THIRD_EVIDENCE}", 1) + third, encoding="utf-8")
+    return PlanLibrary.from_yaml(path)
+
+
+def scope_answered(state, question, selected, input_id="i10"):
+    """模拟 ask_observation 写入范围问题、用户下一轮作答并被 reduce 受理后的状态。"""
+    from app.conversation.interpret import SymptomAnswer
+    from app.conversation.taxonomy import interview_answer
+
+    interview = dict(question["interview"])
+    interview["question"] = {**interview["question"], "asked_input_id": "i9", "question_id": f"{ISSUE}:i9:{question['key']}"}
+    answer = SymptomAnswer(question_id=interview["question"]["question_id"], answer="selection",
+                           selected_families=selected, quote="都有")
+    interview, accepted = interview_answer(interview, answer, "都有", input_id)
+    assert accepted
+    state = dict(state, symptom_interview=interview)
+    state["issues"][ISSUE] = {**state["issues"][ISSUE], "symptom_interview": interview}
+    return state
+
+
+def test_observation_outside_recorded_scope_asks_once_before_unlocking(tmp_path):
+    """观察满足了码外计划的门槛：不静默换题，先问一次范围（会话 37cea3：主诉自身回充，判别题答「接笔记本显示 UVP」，
+    直接下发 UVP 步骤等于把用户的问题换掉）。用户选了新范围 → 码扩展后进入；只确认原范围 → 该计划不再复发也不再问。"""
+    lib = library_with_mismatched_codes(tmp_path)
+    exhausted = {"exhausted_plans": ["rv_power_supply"], "steps_executed": executed_both()}
+    seen = with_observation(base_state(**exhausted), "charging_indication", "none")
+    action = decide_next(seen, library=lib)
+    assert action.kind == "ask" and action.reason == "scope_conflict"
+    question = action.question
+    assert question["plan_id"] == "rv_power_no_indication"
+    assert (question["observation_id"], question["option_id"]) == ("charging_indication", "none")
+    assert question["interview"]["question"]["kind"] == "symptom_selection"
+    assert [o["value"] for o in question["interview"]["question"]["options"]] == ["不开机", "异响"]
+    assert "没有充电提示" in question["question"] and "「不开机」" in question["question"]
+    assert action.trace["scope_conflict"] == {"plan_id": "rv_power_no_indication", "codes": ["power_failure"],
+                                              "plan_codes": ["abnormal_noise"]}
+    # 用户说两种都有：症状码扩展，计划按观察解锁进入
+    both = decide_next(scope_answered(seen, question, ["不开机", "异响"]), library=lib)
+    assert both.kind == "step" and both.plan_cursor["plan_id"] == "rv_power_no_indication"
+    # 用户只确认原范围：该计划跳过，不再重复问，如实说明没有路径
+    kept = decide_next(scope_answered(seen, question, ["不开机"]), library=lib)
+    assert kept.kind == "handoff_offer" and kept.reason == "no_supported_followup"
+    assert {"plan_id": "rv_power_no_indication", "reason": "outside_confirmed_scope"} in kept.trace["skipped"]
+    # 相反观察仍然排除该计划：放开的只是症状码否决，不是观察门槛本身
+    indicated = with_observation(base_state(**exhausted), "charging_indication", "indicated")
+    assert decide_next(indicated, library=lib).kind == "handoff_offer"
+
+
+def test_ready_step_ranked_ahead_is_not_preempted_by_a_later_plans_question(tmp_path):
+    """候选按顺序取第一个可行动作：排在前面的可执行步骤不被后面计划缺的观察题抢先，反之亦然。"""
+    lib = library_with_third_plan(tmp_path)
+    ahead = base_state(exhausted_plans=["rv_power_supply"], steps_executed=executed_both(),
+                       plans_ranked=[{"plan_id": "rv_x10_dock_return", "confidence": 0.5, "source": "synthesize"}])
+    action = decide_next(ahead, library=lib)
+    assert action.kind == "step" and action.plan_cursor["plan_id"] == "rv_x10_dock_return"
+    behind = base_state(exhausted_plans=["rv_power_supply"], steps_executed=executed_both(),
+                        plans_ranked=[{"plan_id": "rv_power_no_indication", "confidence": 0.6, "source": "synthesize"},
+                                      {"plan_id": "rv_x10_dock_return", "confidence": 0.5, "source": "synthesize"}])
+    action = decide_next(behind, library=lib)
+    assert action.kind == "ask" and action.question["observation_id"] == "charging_indication"
+
+
+def test_unmatched_codes_do_not_create_new_questions_while_the_observation_is_unknown(tmp_path):
+    """尚缺观察的计划仍要症状码支持：ask 先于 step 返回，放开会让无关问题抢在可执行步骤前面。"""
+    lib = library_with_mismatched_codes(tmp_path)
+    state = base_state(exhausted_plans=["rv_power_supply"], steps_executed=executed_both())
+    action = decide_next(state, library=lib)
+    assert action.kind == "handoff_offer" and action.reason == "no_supported_followup"
+    # 症状码相交时才提问（同一状态换回相交的计划库）
+    assert decide_next(state, library=library_with_third_plan(tmp_path)).kind == "ask"
 
 
 def test_missing_observation_is_asked_once_per_attempt_then_declared_unavailable(tmp_path):
@@ -397,9 +474,18 @@ async def test_missing_observation_is_asked_and_free_text_answer_reenters_the_lo
         rows = await run_power_steps(client, sid, None)
         assert not any(e["type"] in {"step_card", "escalation_summary"} for e in rows)
         asked = messages_of(rows)
-        assert "放回基站后有充电提示" in asked and "没有充电提示" in asked
+        # 正文只留问题；选项在卡片上，不再在一句话里用 ／ 罗列
+        assert "放回基站后有充电提示" in asked and "没有充电提示" not in asked
+        card = next(e for e in rows if e["type"] == "observation_card")
+        assert card["observation"]["observation_id"] == "charging_indication"
+        assert "没有充电提示" in [o["label"] for o in card["observation"]["options"]]
+        # 卡片是持久化效果：跟着状态提交一起发，排在提问消息之后并带上 issue_id
+        types = [e["type"] for e in rows]
+        assert types.index("observation_card") > types.index("message_end")
+        assert card["issue_id"] == (await graph_state(sid))["active_issue_id"]
         state = await graph_state(sid)
-        assert state["observation_requests"][-1]["status"] == "asked" and state["pending_card"] is None
+        assert state["observation_requests"][-1]["status"] == "asked"
+        assert state["pending_card"]["kind"] == "answer_observation"
         # 只说「不行」不会被写成阴性；系统换一种表达再问一次
         rows = events(await send(client, sid, "还是不行"))
         assert "再确认一下" in messages_of(rows) and not any(e["type"] == "step_card" for e in rows)
@@ -409,6 +495,8 @@ async def test_missing_observation_is_asked_and_free_text_answer_reenters_the_lo
         rows = events(await send(client, sid, "没有充电提示"))
         card = next(e for e in rows if e["type"] == "step_card")
         assert card["step"]["plan_id"] == "rv_power_no_indication"
+        # 改用文本答同一个问题：卡片收掉，不留一个已经答过的问题挂在界面上
+        assert any(e["type"] == "pending_changed" and e["reason"] == "answered_in_text" for e in rows)
         state = await graph_state(sid)
         facts = [f for f in state["issues"][state["active_issue_id"]]["facts"] if f["kind"] == "observation" and f["status"] == "active"]
         assert [(f["observation_id"], f["option_id"], f["source_kind"]) for f in facts] == [
@@ -430,3 +518,53 @@ async def test_user_unable_to_observe_ends_with_observation_unavailable():
         state = await graph_state(sid)
         assert state["observation_requests"][-1]["status"] == "unknown"
         assert not [f for f in state["issues"][state["active_issue_id"]]["facts"] if f.get("observation_id") == "charging_indication"]
+
+
+@pytest.mark.usefixtures("l3_runtime", "third_plan_library")
+async def test_observation_card_selection_records_the_fact_and_advances():
+    """点选走 option_id 直达事实写入，不经过只认唯一字面命中的 match_reply。"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        await run_power_steps(client, sid, None)
+        snap = (await client.get(f"/sessions/{sid}")).json()
+        assert snap["pending_input"]["kind"] == "answer_observation"
+        item = next(t for t in snap["timeline"] if t["kind"] == "observation_card")
+        assert item["chosen_option_id"] is None and item["plan_id"] == "rv_power_no_indication"
+        rows = events(await act(client, sid, "answer_observation", {"observation_id": "charging_indication", "option_id": "none"}))
+        card = next(e for e in rows if e["type"] == "step_card")
+        assert card["step"]["plan_id"] == "rv_power_no_indication"
+        state = await graph_state(sid)
+        facts = [f for f in state["issues"][state["active_issue_id"]]["facts"] if f["kind"] == "observation" and f["status"] == "active"]
+        assert ("charging_indication", "none", "observation_card") in [(f["observation_id"], f["option_id"], f["source_kind"]) for f in facts]
+        assert state["observation_requests"][-1]["status"] == "answered"
+        snap = (await client.get(f"/sessions/{sid}")).json()
+        item = next(t for t in snap["timeline"] if t["kind"] == "observation_card")
+        assert item["chosen_option_id"] == "none"
+        # 时间线要写出选了什么，只显示「操作」等于把用户刚说过的话吞掉
+        action_item = next(t for t in snap["timeline"] if t.get("action_kind") == "answer_observation")
+        assert action_item["label"] == "回答：没有充电提示"
+
+
+@pytest.mark.usefixtures("l3_runtime", "third_plan_library")
+async def test_observation_card_unknown_option_stops_asking_without_a_negative_fact():
+    """「答不上来」是一个明确选项，不是一种现象：不写事实，也不再追问同一题。"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        await run_power_steps(client, sid, None)
+        rows = events(await act(client, sid, "answer_observation", {"observation_id": "charging_indication", "option_id": "unknown"}))
+        assert summary_of(rows)["summary"]["reason"]["cause"] == "observation_unavailable"
+        assert not any(e["type"] == "step_card" for e in rows)
+        state = await graph_state(sid)
+        assert state["observation_requests"][-1]["status"] == "unknown"
+        assert not [f for f in state["issues"][state["active_issue_id"]]["facts"] if f.get("observation_id") == "charging_indication"]
+
+
+@pytest.mark.usefixtures("l3_runtime", "third_plan_library")
+async def test_observation_card_rejects_an_option_it_never_offered():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        await run_power_steps(client, sid, None)
+        response = await act(client, sid, "answer_observation", {"observation_id": "charging_indication", "option_id": "light_off"})
+        assert response.status_code == 409 and response.json()["code"] == "invalid_selection"
+        response = await act(client, sid, "answer_observation", {"observation_id": "dock_power_light", "option_id": "light_on"})
+        assert response.status_code == 409 and response.json()["code"] == "invalid_selection"

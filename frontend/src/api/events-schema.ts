@@ -1,6 +1,6 @@
 // Generated file. Do not edit; run npm --prefix frontend run contracts:generate.
 // Source: contracts/schema/events.schema.json
-// SHA-256: 5472993af7f87c9a4b642700efdb5007d87a72f5300c6ebe528354c2d50bdf28
+// SHA-256: cacb3f5997233163925bde51ae65e0f28679b27920c4a074a98e67b7196d1cf4
 import * as z from 'zod';
 import type { ServerEvent } from '../types/events';
 
@@ -38,6 +38,7 @@ export const serverEventSchema = z.fromJSONSchema({
           "enum": [
             "select_product",
             "step_feedback",
+            "answer_observation",
             "upload_receipt",
             "confirm_receipt",
             "confirm_context",
@@ -439,15 +440,22 @@ export const serverEventSchema = z.fromJSONSchema({
       "additionalProperties": false,
       "properties": {
         "level": {
-          "enum": [
-            "calm",
-            "anxious",
-            "dissatisfied",
-            "angry",
-            "complaint_risk"
+          "anyOf": [
+            {
+              "enum": [
+                "calm",
+                "anxious",
+                "dissatisfied",
+                "angry",
+                "complaint_risk"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Level",
-          "type": "string"
+          "title": "Level"
         },
         "strategy": {
           "enum": [
@@ -1635,6 +1643,82 @@ export const serverEventSchema = z.fromJSONSchema({
       "title": "ModelTraceItem",
       "type": "object"
     },
+    "ObservationCard": {
+      "additionalProperties": false,
+      "description": "计划级判别问题的卡片。与步骤内 observations 用同一份定义，独立追问时也要能点选 ——\n自由文本回答只能靠字面匹配，两次匹配不上该观察就被记为不可用，依赖它的计划再也解锁不了。",
+      "properties": {
+        "attempt": {
+          "minimum": 1,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "card_id": {
+          "title": "Card Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "issue_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Issue Id"
+        },
+        "observation": {
+          "$ref": "#/$defs/StepObservation"
+        },
+        "plan_id": {
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "recorded_at": {
+          "title": "Recorded At",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "会话内单调递增",
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "type": {
+          "const": "observation_card",
+          "title": "Type",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 0,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "run_id",
+        "event_id",
+        "recorded_at",
+        "card_id",
+        "version",
+        "type",
+        "observation",
+        "plan_id",
+        "attempt"
+      ],
+      "title": "ObservationCard",
+      "type": "object"
+    },
     "ObservationOption": {
       "additionalProperties": false,
       "properties": {
@@ -1958,6 +2042,11 @@ export const serverEventSchema = z.fromJSONSchema({
     "ProductCard": {
       "additionalProperties": false,
       "properties": {
+        "allow_unknown": {
+          "default": false,
+          "title": "Allow Unknown",
+          "type": "boolean"
+        },
         "candidates": {
           "items": {
             "$ref": "#/$defs/ProductCandidate"
@@ -1985,6 +2074,18 @@ export const serverEventSchema = z.fromJSONSchema({
           ],
           "default": null,
           "title": "Issue Id"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
         },
         "recorded_at": {
           "title": "Recorded At",
@@ -3153,6 +3254,7 @@ export const serverEventSchema = z.fromJSONSchema({
       "message": "#/$defs/Message",
       "message_end": "#/$defs/MessageEnd",
       "message_start": "#/$defs/MessageStart",
+      "observation_card": "#/$defs/ObservationCard",
       "pending_changed": "#/$defs/PendingChanged",
       "ping": "#/$defs/Ping",
       "product_card": "#/$defs/ProductCard",
@@ -3207,6 +3309,9 @@ export const serverEventSchema = z.fromJSONSchema({
     },
     {
       "$ref": "#/$defs/StepCard"
+    },
+    {
+      "$ref": "#/$defs/ObservationCard"
     },
     {
       "$ref": "#/$defs/Evidence"
