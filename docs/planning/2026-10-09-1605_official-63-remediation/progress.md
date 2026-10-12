@@ -1,0 +1,33 @@
+# 记录
+
+- 2026-10-09 15:40 读测评文档；三个探索子任务核对 interpret/synthesize/qa_index/plans/guide、契约与前端卡片、tasks/l3/graph/summary。
+- 15:50 逐条看首测轨迹 T11/T18/T22/T30/T31/T34/T50/T52/T60/T61/T51/T9：T31 未进检索即 R2；T18/T22/T30 命中正解文档后被 applicability 门槛丢弃；T11 的 R3 来自 push 字段引文；T51 过保分支硬编码 done。
+- 16:05 写 findings.md、plan.md。未改代码，未提交。
+- 16:12 ci-local 全绿；提交 fbefd7a（今日两轮代码）与 bf29496（测评报告与方案）。
+- 16:33 用户要求结合 Codex 复核先出开发规格，只取重点：写 docs/claude/spec_2026-10-09-1633_official-63-remediation.md，第一批详细、二三批概要。未改代码。
+- 16:38 新建分支 feat/official-63-remediation（自 bf29496）。开始第一批，TDD：先写失败测试再实现。
+- 16:40 §1 事实模型：FactCandidate 加 subject / polarity / timing / action_taken；reduce 判定引文来源（device_message_spans），R3 引文落在推送字段且原文有故障 → report_problem；negated 不进 symptoms；action_taken 压制 operation_update；降级解释同样过来源判定。T11 端到端出 qa_rv_0481 首卡。
+- 16:44 §2 适用性：精确同码唯一命中（steps / answer）直通 plans_ranked，不经模型；synthesize 输入结构化事实与错误码，filter_hypotheses 做极性 / 时机 / 对象 / 异码确定性核对并产出澄清；澄清不问已知码。retrieval_basis 加 sku（型号纠正作废旧候选）。
+- 16:46 误执行了一次 git stash（含其他会话未提交文档），立即 stash pop 恢复，工作区无损。
+- 16:52 §3 首轮 operation_changed 且无候选 → disambiguate；§4 no_match 且无确定症状 → 症状澄清，与 disambiguate 共用同一预算（clarify_subject），问满两次才 R5；预算只在检索有结果时清零。
+- 16:58 §5 过保 / 非授权经销商走 advance_tasks（remedy_closed），队列有排障任务时追加一句继续排查。
+- 17:05 §6 契约 HandoffBusiness / PendingRequest，make contracts；摘要 problem 回退链、login_country、handoff_business；advance_tasks 在交接后查询完成且已知事实变化时重写交接摘要（T9 两条摘要）；前端 SummaryCard 业务四行。
+- 17:10 §7 评测标签 T46 / T50 / T52 / T61；驱动器 done_with_pending_tasks、r3_from_device_text、first_card_forbidden；节点摘要带 human_request_source。
+- 17:14 intake schema 超 2560 token 上限：精简新字段描述与提示词后恢复。ci-local 全绿：898 passed、契约 90、前端 226。未提交。
+- 17:18 提交 a32a1f3 / 7707bf4；make up 重建（镜像 ad8866e）；63 单复测后台启动（并发 2）。
+- 17:25 离线扫描 875 条 Q&A 的 1364 段：非 action 段不到 11%，question 只有 3 段。写第二批规格 docs/claude/spec_2026-10-09-1725_official-63-batch2-step-kinds.md。
+- 17:13–17:35 第一批 63 单复测（镜像 ad8866e，并发 2，报告存 retest-1713/）：intent 98%、sop 81%（首测驱动器口径 sop 为空，不可比）；8 个错误案例全部改变路径：T11/T18/T22/T30/T31 进入正确方案，T50/T52/T61 改为澄清。
+- 复测新回归三类：(a) 设备级主语（left pump / stofzuiger / eufy omni c 20）被当成部件与候选冲突，T55/T36/T40/T54/T62 等 7 单误澄清；(b) T34 模型把「cannot use them」抽成症状、主语 maps 丢在检索词外，R5；(c) T51/T53 过保后推进排障时 requested_remedy 未清，又绕回已关闭案件；T29/T38 排障后过保仍 done_with_pending。
+- 17:45 修复：synthesize 主语冲突只认部件词；build_query 拼入主语；advance_tasks 推进排障清 requested_remedy；已关闭案件的交接只记录不入队。ci-local 全绿（909 passed）。make up 重建（镜像 c58057c），后台复跑 25 单。
+- 17:32–17:38 25 单复跑（镜像 c58057c，报告存 retest-1732/）：T36/T40/T54/T56 恢复出卡；T51/T53 过保后排障出卡且队列无 pending；T9 不变。仍有：T34 引文被模型纠正拼写（siscovered→discovered）致症状丢失；T29「Water tray」对「cleaning tray」被判对象冲突；T29/T38 排障走完过保时 active 的是 report_problem，remedy_closed 没把它记 done；T52 候选模型直接判 supported 绕过主语核对（预期）；T55 补 SN 那轮进 consult 没回到换货流程（既有问题，记入待办）。
+- 17:50 修复：quoted 允许 ≥4 词引文去掉首词或末词后匹配；主语冲突改比较部件中心词（case 对 pump 冲突、tray 对 tray 不冲突），pump 作为部件词、品类词加填充词按整机；remedy_closed 以当前 active 任务为准。ci-local 后端 912 passed；前端 App.test 在全量下偶发失败、单跑通过，与本次改动无关。
+- 17:45–17:50 15 单复跑（镜像 d4d66f6，报告存 retest-1745/）：T29/T34/T38 恢复；T40/T54 仍因主语冲突误澄清（产品名含 pump 被当部件；detergent 对 bottle 被当对象不同）；T61 候选只有无法启动方向，模型返回空 → R5（T61 的「提前」目前无官方条目，交人工是可接受结果，评测标签 clarify 过严，待下一批标签复核）。
+- 17:55 修复：目录认得的产品名且未点名部件按整机；耗材与介质不进部件词表。ci-local 全绿 916 passed。make up（第四次）后启动第二次全量 63 单复测。
+- 17:56–18:00 第二次全量 63 单复测（镜像 d4d66f6 后再建，报告存 retest-1756/）：intent 98%（仅 T58 情绪单读成 report_problem）、sop 90%、forbid 0。8 个首测错误案例全部到达预期终点：T11/T22/T30/T31/T34 进入正确方案并出卡，T50/T52/T61 停在澄清。回归保护集 T1–T10、T12、T13、T14、T32、T45、T55 全部保持。剩余 6 单（T21/T39/T43/T56/T57/T62）均为模型发出的 needs_confirmation 事实问句，驱动器按口径停在问句、记为 explain；问句内容与官方资料相符，不是错误路径。
+- 18:05–18:40 第二批实现（规格 spec_2026-10-09-1725）：qa_index 按段落首行规则分类 Step.kind（action / question / statement / material_request / handoff），选项从括号与 A or B 解析，data/official/qa_overrides.yaml 按段落位置覆写（bp-0123 两问与软管段禁用、bp-0032 漏奶位置分支）；plans 按位置编号 s{pos}、禁用段跳过不重排；契约 StepKind / StepAnswer，StepFeedbackPayload 的 feedback 可空加 answer；路由按卡片类型校验载荷；verify 对非操作卡不计 executed，问句回答写 observation 事实、材料暂缺记待补；说明段附在下一张卡的 context；handoff 段耗尽计划；已做操作（action_taken）同部件同动作跳步；前端 StepCard 按 kind 渲染；驱动器遇问句卡停下记 clarify、统计只算操作卡。ci-local 全绿：945 / 90 / 229。
+- 18:18–18:24 第二批 63 单复测（报告存 retest-1818/）：sop 84%、forbid 0。I4 七单：T19/T24/T26/T28/T38/T40 结论与材料请求不再是操作卡，T46 首卡为「continuous / intermittent」问句、驱动器按口径停在问句（标签 warranty_replace 未接受 clarify 终点，已补）。I5 三单 T27/T36/T37 均只出一张未做过的步骤。新回归：T29「Water tray」对「dirty water tank」被判对象冲突（同族部件名未归并，已修）；T20/T41 为模型 needs_confirmation 的轮次波动，代码路径与第一批一致。
+- 18:24–18:28 第二批修正后 16 单复跑（报告存 retest-1824/）：T46 停在问句计 clarify；T20 恢复出卡；I4 六单与 I5 三单全部到达预期；T11/T55/T51 保护集保持。T29/T41 为模型 needs_confirmation 的轮次波动（T29 问脏水箱锁扣，与官方资料一致），代码路径不变。提交 b07d550。
+- 18:45–19:05 第三批实现（总规格 §9）：answers.record_mismatch_note 识别客户问的配件 SKU 与订单商品不一致（T47）、运单内容描述与记录相反（T2），consult 把注记并入物流答复并不再直接给承运商调查方案；新增 parts_purchase 意图（NOT_EXECUTABLE，交接 kind=parts_purchase 带部件，T63）；reply 提示证据改序号标注、限定只答所问机制，流式失败另起失败消息并发 reply_stream_failed 错误（T35）；前端中断提示改为「内容不完整」。标签 T47/T63/T2 更新。ci-local 全绿 953 / 90 / 229。
+- 19:10–19:15 第三批 13 单复跑（报告存 retest-1839/）：T47 答复含「don't see a separate shipment for T8D02181-80」并索取配件订单号，T2 告知 -2 记录与客户陈述不同并请确认，均不再直接给承运商调查；T35 正常机制解释后结束；保护集 T1/T7/T9/T11/T12/T45/T46/T51/T55 保持。两处修正：驱动器把「送达记录 + 差异告知」计为 logistics_delivered；真实模型把 T63 只读成故障，解释器按「can't get a brush guard」确定性补 parts_purchase 诉求。ci-local 全绿 954。
+- 19:20 修正后 6 单复跑（retest-1846/）全部通过：T63 识别 parts_purchase，交接文案带「the brush guard」，队列 parts_purchase waiting_human + report_problem pending；T47/T2 终点 logistics_delivered；T35/T9/T1 保持。提交第三批代码。
+- 19:25–19:30 三批完成后的全量 63 单终测（报告存 retest-1853/）：intent 98%（仅 T58 情绪单）、sop 87%、forbid 0。首测 8 个错误案例全部到达预期终点；回归保护集 16 单（T1–T10、T12–T14、T32、T45、T55）全部保持；I4 七单、I5 三单、I8/I9 四单均到达目标。未达标 8 单（T20/T21/T39/T41/T43/T56/T57/T62）全部是模型发出的 needs_confirmation 事实问句，驱动器按口径停下记 explain；问句内容与官方资料相符，属于评分口径问题，与 T61 标签一起留待复核。

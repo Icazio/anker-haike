@@ -28,15 +28,14 @@ services:
       # 演示期保留 7 天：观测台的会话详情靠原始快照回看完整时间线（analytics 事实本身不受此 TTL 影响）
       RETENTION_SESSION_HOURS: ${RETENTION_SESSION_HOURS:-168}
       LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://langfuse-web:3000}
+      # 2026-10-10 回放中一次 SIGSEGV（退出码 139）没有留下栈：段错误时把各线程 Python 栈打到 stderr，便于定位原生扩展
+      PYTHONFAULTHANDLER: "1"
     ports:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
       # 票 49：config/ 以只读卷覆盖镜像内拷贝，回滚 = 换目录 + 重启，不重建镜像
       - ./config:/srv/config:ro
       - ./data/knowledge/manifest.json:/srv/data/knowledge/manifest.json:ro
-      # 阶段 3：本地 FAQ 索引源文件（WeKnora FAQ 检索接口在 v0.8.0 返回空，适配器侧匹配）；
-      # 2026-09-17 起每品类一份 faq_*.yaml，挂整个目录
-      - ./data/knowledge/kb_manual:/srv/data/knowledge/kb_manual:ro
       - ./logs:/srv/logs
     depends_on:
       postgres:

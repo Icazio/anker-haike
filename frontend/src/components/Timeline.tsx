@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import { ContextCard } from './ContextCard';
 import { ProposalCard } from './ProposalCard';
 import { ExecutionCard } from './ExecutionCard';
 import { RetakeCard } from './RetakeCard';
@@ -8,7 +7,6 @@ import { CaseStatus } from './CaseStatus';
 import type { SessionState } from '../state/types';
 import type { TimelineItem } from '../types/snapshot';
 import { AssistantBubble } from './AssistantBubble';
-import { ObservationCard } from './ObservationCard';
 import { ProductCard } from './ProductCard';
 import { ReceiptCard } from './ReceiptCard';
 import { StepCard } from './StepCard';
@@ -17,7 +15,7 @@ import { ToolRow } from './ToolRow';
 import { UserBubble } from './UserBubble';
 import styles from './Cards.module.css';
 
-type ActionKind = 'select_product' | 'step_feedback' | 'answer_observation' | 'confirm_receipt' | 'skip_receipt' | 'confirm_context' | 'confirm_proposal' | 'decline_proposal' | 'skip_retake' | 'rate_satisfaction';
+type ActionKind = 'select_product' | 'step_feedback' | 'confirm_receipt' | 'skip_receipt' | 'confirm_proposal' | 'decline_proposal' | 'skip_retake' | 'rate_satisfaction';
 type OnAction = (kind: ActionKind, payload: Record<string, unknown>) => void;
 
 type Props = {
@@ -34,12 +32,11 @@ type Props = {
 type CardItem = Extract<TimelineItem, { card_id: string }>;
 
 /** 待办卡的一行指针文案（流里）。 */
+const STEP_POINTER = { action: '步骤', question: '请回答', statement: '请查看', material_request: '请提供', handoff: '交人工' } as const;
 const POINTER: Partial<Record<TimelineItem['kind'], (item: CardItem) => string>> = {
-  step_card: (item) => item.kind === 'step_card' ? `步骤 ${item.step.step_no} · ${item.step.title}` : '',
+  step_card: (item) => item.kind === 'step_card' ? `${STEP_POINTER[item.step.kind ?? 'action']} ${item.step.step_no} · ${item.step.title}` : '',
   product_card: () => '请确认是哪一台设备',
-  observation_card: () => '选择最接近的情况',
   receipt_card: () => '核对购买凭证信息',
-  context_card: () => '确认服务信息',
   proposal_card: () => '选择售后方案',
   retake_card: () => '补拍照片',
   rating_card: () => '评价本次服务',
@@ -50,13 +47,9 @@ function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction
     case 'product_card':
       return <ProductCard key={item.card_id} item={item} active={active} disabled={disabled} onSelect={(sku) => onAction('select_product', { sku })} />; // sku=null：其他型号 / 不确定
     case 'step_card':
-      return <StepCard key={item.card_id} item={item} active={active} disabled={disabled} onHover={onHover} onFeedback={(feedback, note, observations) => onAction('step_feedback', { feedback, ...(note ? { note } : {}), ...(observations?.length ? { observations } : {}) })} />;
-    case 'observation_card':
-      return <ObservationCard key={item.card_id} item={item} active={active} disabled={disabled} onAnswer={(observation_id, option_id) => onAction('answer_observation', { observation_id, option_id })} />;
+      return <StepCard key={item.card_id} item={item} active={active} disabled={disabled} onHover={onHover} onReply={(reply) => onAction('step_feedback', { feedback: reply.feedback ?? null, note: reply.note ?? null, answer: reply.answer ?? null })} />;
     case 'receipt_card':
-      return <ReceiptCard key={item.card_id} item={item} active={active} disabled={disabled} onConfirm={(fields, edited) => onAction('confirm_receipt', { fields, edited })} onSkip={(reason) => onAction('skip_receipt', { reason })} />;
-    case 'context_card':
-      return <ContextCard key={item.card_id} item={item} active={active} disabled={disabled} onConfirm={(fields) => onAction('confirm_context', fields)} />;
+      return <ReceiptCard key={item.card_id} item={item} active={active} disabled={disabled} onConfirm={(fields, edited) => onAction('confirm_receipt', { fields, edited })} onSkip={() => onAction('skip_receipt', { reason: 'unreadable' })} />;
     case 'proposal_card':
       return <ProposalCard key={item.card_id} item={item} active={active} disabled={disabled} onConfirm={(option_id) => onAction('confirm_proposal', { option_id })} onDecline={(reason) => onAction('decline_proposal', { reason })} />;
     case 'execution_card':

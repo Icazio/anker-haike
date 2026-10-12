@@ -1,17 +1,18 @@
 """Issue-local symptom evidence and next-move decisions.
 
-Facts and quoted answers are the inputs. Codes/status are compatibility projections,
-never independent evidence capable of overruling an accepted answer.
+Facts are the inputs: a described symptom or an error code goes to the official Q&A retrieval;
+with neither, ask once for the symptom.
 """
 
 from __future__ import annotations
 
-import hashlib
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from app.conversation.operation_conditions import (
     BURDEN_SKIP_LIMIT,
+    answered_history,
     conditions_for,
     effective_exhausted,
     execution_history,
@@ -19,16 +20,7 @@ from app.conversation.operation_conditions import (
     step_unavailable,
     support_question,
 )
-from app.conversation.taxonomy import (
-    canonical_codes,
-    families,
-    interview_answer,
-    next_interview,
-    record_response,
-    response_attempts,
-    taxonomy,
-    taxonomy_for,
-)
+from app.guide.verify import unanswered
 
 
 def _active_facts(issue):
@@ -39,319 +31,137 @@ def _active_facts(issue):
     ]
 
 
-def valid_interview(interview):
-    return bool(
-        interview
-        and not interview.get("superseded_by_input_id")
-        and interview.get("taxonomy_version") in {None, taxonomy()["version"]}
-    )
-
-
-def _answer_codes(interview):
-    if not valid_interview(interview):
-        return []
-    # Recover old checkpoints whose `narrowed` flag was overwritten, using the
-    # accepted answers and candidate set, not the stale presentation flag.
-    if not interview.get("answers") or (
-        len(interview.get("candidates", [])) != 1
-        and not any(a.get("answer") == "selection" for a in interview["answers"])
-    ):
-        return []
-    return [
-        f["symptom_code"]
-        for f in families(interview.get("category"))
-        if f["fault_family"] in interview["candidates"]
-    ]
-
-
-def symptom_codes(issue):
-    codes = [code for f in _active_facts(issue) for code in f.get("symptom_codes", [])]
-    codes += _answer_codes(issue.get("symptom_interview"))
-    return list(dict.fromkeys(codes))
-
-
-def selected_symptom_codes(state) -> list[str]:
-    """用户在问诊里亲自选定、或用是非题收敛到唯一故障族的症状码。
-
-    与 intake 对自由文本的粗分类不同，这类码是用户确认过的事实：计划排序时可以据此把码外计划
-    从模型可选集合里排除（票 19），而粗分类只能影响顺序（会话 37cea3）。
-    """
-    interview = state.get("symptom_interview")
-    return _answer_codes(interview if valid_interview(interview) else None)
-
-
-def accept_answer(issue, answer, *, text, input_id, changed_fact_ids, answer_expected=False):
-    """The only writer of accepted interview results; corrections explicitly supersede them."""
-    original = issue.get("symptom_interview")
-    interview, accepted = interview_answer(original, answer, text, input_id)
-    question = (interview or {}).get("question")
-    if (
-        valid_interview(interview)
-        and question
-        and not accepted
-        and answer_expected
-        and text.strip()
-        and question.get("asked_input_id") != input_id
-    ):
-        interview = record_response(
-            interview,
-            input_id=input_id,
-            outcome="unparsed",
-            candidates=interview.get("candidates", []),
-            progressed=False,
-            quote=text,
-        )
-    changed = [
-        f
-        for f in issue.get("facts", [])
-        if f.get("fact_id") in changed_fact_ids and f.get("kind") == "symptom"
-    ]
-    corrected = any(f.get("status") != "active" for f in changed)
-    usable = [f for f in changed if f.get("symptom_codes")]
-    if interview and usable and not corrected:
-        # New symptom evidence starts a new consecutive-progress window, not
-        # a new total budget. Retries are de-duplicated by the reducer.
-        interview = {**interview, "progress_start": len(response_attempts(interview))}
-    elif (
-        valid_interview(interview)
-        and changed
-        and not corrected
-        and not accepted
-        and interview.get("question")
-    ):
-        # A described symptom that maps to no fault family did not move the
-        # interview: it neither answers the pending question nor narrows the
-        # candidates. Counting it keeps both budgets live — otherwise every
-        # supplement clears the window and the same question repeats forever.
-        interview = record_response(
-            interview,
-            input_id=input_id,
-            outcome="unmapped",
-            candidates=interview.get("candidates", []),
-            progressed=False,
-            quote=text,
-        )
-    if interview and corrected and not accepted:
-        interview = {
-            **interview,
-            "status": "superseded",
-            "question": None,
-            "superseded_by_input_id": input_id,
-        }
-    elif interview and not interview.get("superseded_by_input_id"):
-        # Adding a symptom does not retract earlier answers. It can make the
-        # pending question unnecessary, while all accepted observations remain.
-        if changed and not accepted and symptom_codes(issue):
-            interview = {**interview, "question": None}
-        interview = {
-            **interview,
-            "status": "narrowed"
-            if _answer_codes(interview)
-            else "asking"
-            if interview.get("question")
-            else "resolved",
-        }
-    projected = {**issue, "symptom_interview": interview}
-    codes = symptom_codes(projected)
-    if not codes and not issue.get("facts") and not changed_fact_ids and not original:
-        # Legacy/no-model checkpoints already carry a positively matched code.
-        # It remains issue-local; changing devices creates a fresh issue.
-        codes = list(issue.get("symptom_codes") or [])
-    return {"symptom_interview": interview, "symptom_codes": codes}, accepted
-
-
-MAX_NO_PROGRESS = 2
-MAX_INTERVIEW_RESPONSES = 8
-
-
 @dataclass(frozen=True)
 class DiagnosticDecision:
     outcome: Literal["continue", "clarify", "escalate"]
-    codes: list[str]
     reason: str
-    interview: dict[str, Any] | None = None
     source_refs: tuple[str, ...] = ()
-    candidate_codes: tuple[str, ...] = ()
-    allowed_plans: tuple[dict[str, Any], ...] = ()
-    constrain_plans: bool = False
     missing_information: tuple[str, ...] = ()
-    progress: dict[str, int] = field(default_factory=dict)
 
     def snapshot(self, state):
-        value = asdict(self)
-        value.pop("interview")
         return {
-            **value,
+            **asdict(self),
             "issue_id": state.get("active_issue_id"),
-            "taxonomy_version": taxonomy()["version"],
             "input_id": state.get("input_id"),
         }
 
 
-def constrain_plans(state, plans):
-    """Carry the decision's intersection through ranking and operation publication."""
-    decision = state.get("diagnostic_decision") or {}
-    if not decision.get("constrain_plans"):
-        return list(plans)
-    if (
-        decision.get("issue_id") != state.get("active_issue_id")
-        or decision.get("taxonomy_version") != taxonomy()["version"]
-    ):
-        return []
-    allowed = {(p["plan_id"], p["version"]) for p in decision.get("allowed_plans", [])}
-    return [p for p in plans if (p.plan_id, p.version) in allowed]
+RETRYABLE_HANDOFF = {"R5", "R7"}  # 交接原因是「没有官方指引」或「追问后仍不明」：客户补了信息，排障可能重新可行
 
 
-def _progress(interview):
-    attempts = response_attempts(interview)
-    no_progress = 0
-    for attempt in reversed(attempts[int((interview or {}).get("progress_start", 0)) :]):
-        if attempt["progressed"]:
-            break
-        no_progress += 1
-    return {
-        "attempts": len(attempts),
-        "consecutive_no_progress": no_progress,
-        "hard_limit": MAX_INTERVIEW_RESPONSES,
-    }
+def retry_after_handoff(state) -> bool:
+    """等人工审核期间客户补了新的具体现象或产品身份，是否回到排障（T60 方案 A）。
 
-
-def known_symptom_codes(state, *, category=None) -> list[str]:
-    """本轮已知的症状码：事实与问诊答案优先，没有时退回 intake 症状与原文归一；只保留该品类词表内的码。"""
+    只在交接原因是缺指引 / 缺信息、人工还没作出决定、本轮确实带来新的事实时重试。客户要求人工（R3）、
+    安全（R4）、质保与订单类交接都不撤回：那些交接的原因不会因为多一条现象而消失。"""
+    decision = state.get("turn_decision") or {}
+    if (state.get("stage") != "awaiting_human" or state.get("case_status") != "awaiting_approval"
+            or state.get("human_decision_id") or state.get("requested_remedy")):
+        return False
+    if (state.get("diagnose_outcome") or {}).get("reason") not in RETRYABLE_HANDOFF and state.get("escalate_reason") not in RETRYABLE_HANDOFF:
+        return False
+    if not decision.get("allowed_operations", True) or decision.get("escalation_trigger"):
+        return False
     issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
-    raw_interview = state.get("symptom_interview")
-    interview = raw_interview if valid_interview(raw_interview) else None
-    codes = symptom_codes({**issue, "symptom_interview": interview})
-    if not issue.get("facts") and not raw_interview:
-        codes = list(dict.fromkeys([*codes, *(state.get("symptom_codes") or [])]))
-    category = category or state.get("category") or (state.get("product_confirmed") or {}).get("category")
-    # 品类未定时 intake 用全品类并集归一症状码（「异响」同时命中扫地机 / 充电器 / 吸奶器）；
-    # 品类一定，只保留本品类词表里的码，别的品类的码不进决策与状态。
-    # 先过滤再判断要不要退回原文归一：品类未定时写下的照片签名可能只带别的品类的码，
-    # 它不能挡掉本品类的原文症状（充电触点污渍既是耳机不充电，也是扫地机回座）。
-    known = {f["symptom_code"] for f in families(category)}
-    codes = [c for c in codes if c in known] if known else codes
-    if not codes:
-        for text in state.get("symptoms") or []:
-            codes.extend(canonical_codes(text, category=category)[0])
-        codes.extend(canonical_codes(state.get("text", ""), category=category)[0])
-    codes = list(dict.fromkeys(codes))
-    return [c for c in codes if c in known] if known else codes
+    added = {p["fact_id"] for p in decision.get("patches") or [] if p.get("op") in {"add", "replace"}}
+    new_symptom = any(f["fact_id"] in added and concrete(f) for f in _active_facts(issue))
+    return new_symptom or bool(decision.get("product_answered"))
 
 
-def decide_symptoms(state, *, available_plans=()) -> DiagnosticDecision:
+def described(state, issue) -> bool:
+    """本问题已有可检索的现象：模型抽取的现象事实、intake 现象、或消息里的错误码 / 结构化问题描述。"""
+    from app.official.message import parse_message
+
+    if _active_facts(issue) or state.get("error_codes") or [s for s in state.get("symptoms") or [] if str(s).strip()]:
+        return True
+    text = state.get("text") or ""
+    parsed = parse_message(text)
+    if parsed.codes or (parsed.description and len(parsed.description.strip()) >= 6):
+        return True
+    # 自由文本：去掉型号名后仍有足够的话（≥ 6 个词或 12 个汉字），就交给检索判断有没有对应的官方说明。
+    # 63 单实测：「omni c20 isn't following my schedule」「detergent level has barely moved」模型没抽出现象事实，
+    # 被当成「无现象」追问，客户已经说清的问题又被问一遍（T40 / T61）。
+    rest = re.sub(r"\b(T\d{4}|T8D\d{2}|omni\s*[A-Za-z0-9]+|s1\s*pro|x10\s*pro|solocam\s*[A-Za-z0-9]+|eufy|anker)\b", " ", text, flags=re.IGNORECASE)
+    words = re.findall(r"[A-Za-zÀ-ÿ']+", rest)
+    return len(words) >= 6 or len(re.findall(r"[一-鿿]", rest)) >= 12
+
+
+def parse_codes(text: str) -> tuple[str, ...]:
+    from app.official.message import parse_message
+
+    return parse_message(text).codes
+
+
+# 「I just want my hoover to clean」：客户在说想要什么结果，不是设备在做什么。这是愿望句式（一小类语法结构），
+# 不是现象词表；模型有时改写成「not cleaning properly」，有时原样抄成现象（T60 复跑两种都出现）。
+WISH = re.compile(r"\b(?:i|we)\s+(?:just\s+|only\s+|really\s+)?(?:want|wish|would like|need)\b[^.!?]*\bto\b"
+                  r"|我(?:只|就)?(?:想|希望|要)(?:让)?它", re.IGNORECASE)
+# 引文去掉情绪词后只剩这些词（指代整机 / 系动词 / 语气），说的是客户的评价，不是设备在做什么
+_EVALUATION_REST = {
+    "you", "your", "you're", "youre", "re", "my", "the", "this", "these", "that", "it", "its", "it's", "is", "are", "was",
+    "were", "so", "really", "very", "just", "all", "they", "them", "a", "an", "and", "of", "eufy", "anker",
+    "device", "devices", "machine", "machines", "product", "products", "thing", "things", "robot", "robots",
+    "vacuum", "vacuums", "pump", "pumps", "camera", "cameras", "了", "的", "啊", "吧", "呢", "这个", "东西", "机器", "产品",
+}
+
+
+def evaluation_only(fact: dict) -> bool:
+    """引文只有情绪 / 评价词（「cameras suck」「太烂了」）：客户在表达不满，没说设备在做什么。
+    情绪词用情绪分级的同一份词表（config/rules/complaint_terms.yaml），不另立现象词表。"""
+    from app.emotion.policy import emotion_terms, term_hit
+
+    quote = fact.get("quote") or ""
+    hits = [word for word in emotion_terms() if term_hit(word, quote)]
+    if not hits:
+        return False
+    rest = quote.casefold()
+    for word in sorted(hits, key=len, reverse=True):
+        rest = re.sub(rf"(?<![\w]){re.escape(word.casefold())}(?![\w])" if word.isascii() else re.escape(word), " ", rest)
+    subject = set(re.findall(r"[^\W\d_]+", (fact.get("subject") or "").casefold()))
+    words = re.findall(r"[a-zà-ÿ']+", rest)
+    # 汉字没有词边界：去掉指代与语气字串后看还剩什么
+    han = "".join(re.findall(r"[一-鿿]+", rest))
+    for filler in sorted((w for w in _EVALUATION_REST if not w.isascii()), key=len, reverse=True):
+        han = han.replace(filler, "")
+    return not han and not [w for w in words if w not in _EVALUATION_REST and w not in subject]
+
+
+def concrete(fact: dict) -> bool:
+    """客户原话支持的具体现象：引文不是一句愿望，也不只是评价。模型对现象的正常归纳（「going off 2 hours before」→
+    「starts two hours early」）不算改写，不按词面比对。T58「You're fucking cameras suck」被抽成现象 poor quality，
+    据此选了画质指南；评价不是现象，交给症状追问。"""
+    return not WISH.search(fact.get("quote") or "") and not evaluation_only(fact)
+
+
+def missing_for_retrieval(state, issue=None) -> list[str]:
+    """检索落空时，输入还缺什么：product（型号未确认）/ symptoms（没有客户原话支持的具体现象）。
+    空列表 = 已问清仍查不到，是知识缺失；非空 = 信息不足，先问再交接（T60）。错误码本身就是具体现象。"""
+    issue = issue if issue is not None else (state.get("issues") or {}).get(state.get("active_issue_id"), {})
+    missing = []
+    if state.get("product_state") != "confirmed_sku":
+        missing.append("product")
+    facts = [f for f in _active_facts(issue) if f.get("polarity", "affirmed") == "affirmed" and concrete(f)]
+    if not (facts or state.get("error_codes") or parse_codes(state.get("text") or "")):
+        missing.append("symptoms")
+    return missing
+
+
+def fact_codes(state) -> list[str]:
+    """本问题症状事实上的码。只有照片签名写的症状事实带码：签名命中的官方 Q&A 标题里的错误码。"""
     issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
-    raw_interview = state.get("symptom_interview")
-    interview = raw_interview if valid_interview(raw_interview) else None
-    issue = {**issue, "symptom_interview": interview}
-    product = state.get("product_confirmed") or {}
-    category = state.get("category") or product.get("category")
-    codes = known_symptom_codes(state, category=category)
-    refs = list(
-        dict.fromkeys(ref for f in _active_facts(issue) for ref in f.get("source_entry_ids", []))
-    )
-    if interview:
-        refs = list(dict.fromkeys([*refs, *(a["input_id"] for a in response_attempts(interview))]))
-    candidates = tuple(
-        f["symptom_code"]
-        for f in families(category)
-        if interview and f["fault_family"] in interview.get("candidates", [])
-    )
-    eligible = [
-        p
-        for p in available_plans
-        if p.applies(category=category, sku=product.get("sku"))
-        and p.plan_id not in effective_exhausted(state)
-    ]
-    progress = _progress(interview)
+    return list(dict.fromkeys(code for f in _active_facts(issue) for code in f.get("symptom_codes", [])))
 
-    def result(
-        outcome,
-        reason,
-        *,
-        selected=(),
-        constrained=False,
-        missing=(),
-        current=interview,
-        resolved_codes=None,
-    ):
-        return DiagnosticDecision(
-            outcome=outcome,
-            codes=codes if resolved_codes is None else resolved_codes,
-            reason=reason,
-            interview=current,
-            source_refs=tuple(refs),
-            candidate_codes=candidates,
-            allowed_plans=tuple(
-                {
-                    "plan_id": p.plan_id,
-                    "version": p.version,
-                    "step_id": p.first_step().step_id,
-                    "instruction_src": p.first_step().instruction_src,
-                }
-                for p in selected
-            ),
-            constrain_plans=constrained,
-            missing_information=tuple(missing),
-            progress=progress,
-        )
 
+def decide_symptoms(state) -> DiagnosticDecision:
+    issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
+    refs = tuple(dict.fromkeys(ref for f in _active_facts(issue) for ref in f.get("source_entry_ids", [])))
     if not (state.get("turn_decision") or {}).get("allowed_operations", True):
-        return result("escalate", "safety_restriction")
-    if interview and interview.get("answers") and not interview.get("candidates"):
-        return result("escalate", "evidence_conflict", missing=["核对互相冲突的现象和回答"])
-    if codes:
-        return result(
-            "continue",
-            "symptom_evidence_available",
-            selected=[p for p in eligible if set(codes).intersection(p.symptom_codes)],
-        )
-    if not taxonomy_for(category)["families"]:
-        # 该品类没有症状词表（目录级品类）：没有判别题可问，按「缺少适用的澄清问题」诚实结束，
-        # 不拿别的品类的判别题去问用户
-        return result(
-            "escalate", "category_coverage_missing", missing=["该品类暂无可用的排查资料"], current=None
-        )
-    # Same plan identity/version guarantees compatible instructions, conditions,
-    # and subsequent transitions. Similar step names do not establish equivalence.
-    if interview and any(a["answer"] in {"yes", "no"} for a in interview.get("answers", [])):
-        choices = [{p.plan_id for p in eligible if code in p.symptom_codes} for code in candidates]
-        shared = set.intersection(*choices) if choices else set()
-        if shared:
-            reason = (
-                "same_applicable_plans"
-                if all(c == choices[0] for c in choices)
-                else "common_applicable_plans"
-            )
-            return result(
-                "continue",
-                reason,
-                selected=[p for p in eligible if p.plan_id in shared],
-                constrained=True,
-                resolved_codes=list(candidates),
-            )
-    interview = next_interview(interview, state.get("active_issue_id"), state.get("input_id"), category=category)
-    progress = _progress(interview)
-    question = (interview.get("question") or {}).get("question")
-    missing = [question] if question else ["可区分当前现象的澄清问题"]
-    reason = None
-    if progress["consecutive_no_progress"] >= MAX_NO_PROGRESS:
-        tail = response_attempts(interview)[-MAX_NO_PROGRESS:]
-        reason = (
-            "answers_unavailable" if all(a["outcome"] == "unknown" for a in tail) else "no_progress"
-        )
-    elif progress["attempts"] >= MAX_INTERVIEW_RESPONSES:
-        reason = "clarification_budget_exhausted"
-    elif not question:
-        reason = "question_coverage_missing"
-    if reason:
-        return result(
-            "escalate",
-            reason,
-            missing=missing,
-            current={**interview, "status": "insufficient", "question": None},
-        )
-    return result("clarify", "symptom_missing", current=interview, missing=missing)
+        return DiagnosticDecision("escalate", "safety_restriction", refs)
+    if described(state, issue):
+        # 官方 Q&A 是英文、客户多语言：现象不必先归类，有描述或错误码就交给检索。
+        return DiagnosticDecision("continue", "symptom_described", refs)
+    # 没有任何现象描述也没有错误码：问一次现象（开放问题，可贴错误码）。
+    return DiagnosticDecision("clarify", "symptom_missing", refs, ("故障现象或 App 错误码",))
 
 
 def owns_diagnostic_reply(state):
@@ -360,8 +170,6 @@ def owns_diagnostic_reply(state):
     return bool(
         _active_facts(issue)
         or state.get("symptoms")
-        or state.get("symptom_interview")
-        or state.get("symptom_codes")
         or state.get("plan_cursor")
     )
 
@@ -369,36 +177,43 @@ def owns_diagnostic_reply(state):
 def explanation(state):
     decision = state.get("turn_decision") or {}
     if not decision.get("allowed_operations", True):
-        return "这台设备还有待核实的安全风险，请暂停使用和充电。可以继续核对记录或整理给人工客服。"
+        return "There's an unconfirmed safety concern with this device, so please stop using and charging it. We can review the record or I can prepare it for our support team."
     step = ((state.get("pending_card") or {}).get("payload") or {}).get("step")
     if step:
-        caution = f"注意：{step['caution']}。" if step.get("caution") else ""
+        caution = f" Note: {step['caution']}" if step.get("caution") else ""
         return (
-            f"当前已确认的排查步骤是：{step['instruction']}。{caution}"
-            f"预期结果：{step['expected_result']}。这次问答不会记为已执行；"
-            "请完成后反馈结果，如不能操作请反馈“无法操作”。"
+            f"The current step is: {step['instruction']}{caution} "
+            "Asking about it doesn't mark it as done; please tell me the result after trying it, "
+            "or choose \"can't do it\" on the card."
         )
     if state.get("stage") == "done":
-        return "此前已记录问题解决；如果问题再次出现，请描述当前现象，我会重新核对适用方案。"
-    if state.get("symptom_interview", {}) and (state.get("symptom_interview") or {}).get(
-        "question"
-    ):
-        return state["symptom_interview"]["question"]["question"]
+        if (state.get("diagnose_outcome") or {}).get("mode") == "explained":
+            return "The official explanation has been provided; this does not mark the device as repaired. If it doesn't match what you're seeing, describe the difference so we can review it."
+        if state.get("case_status") == "closed_unresolved":
+            return "This case is closed, but the problem is not resolved. No new service request has been submitted. Please describe any new information if you need further help."
+        if state.get("case_id"):
+            return "This case has been closed. If the problem persists, please describe what is happening so we can review the case."
+        return "This issue was marked as resolved. If it comes back, describe what's happening and I'll check the right guidance again."
+    if state.get("case_id") and state.get("case_status") == "awaiting_approval":
+        # 已在人工队列：不再承诺「我去查官方资料」——这一轮不会去查（T60）
+        return "Your case is with a support colleague. Anything you add here goes into the case; describe what the device is doing and I'll include it."
     if state.get("exhausted_plans"):
-        return "现有适用排查步骤已经尝试或无法继续，尚未确认解决。可以整理已试步骤给人工客服；不会重复建议您已做过的操作。"
-    return "当前尚未有可下发的排查步骤。可以要求继续排查，我会核对已报告现象和适用方案；没有对应方案时会明确说明。"
+        return "The applicable troubleshooting steps have been tried and it isn't resolved yet. I can prepare the steps you tried for our support team; I won't repeat steps you've already done."
+    return "There's no troubleshooting step to give yet. Tell me more about the problem (or the error code shown in the app) and I'll check the official guidance; if none applies, I'll say so."
 
 
-# ---------------- 依据观察做下一次决策（design §3.2–§3.3） ----------------
+# ---------------- 依据反馈与操作条件做下一次决策（design §3.2–§3.3） ----------------
 
 SWITCH_CONFIDENCE = 0.3
-MAX_OBSERVATION_ASKS = 2
 # 对外兼容 / 观测层的规则码映射；真实原因在 NextAction.reason
 COMPAT_RULE = {
     "safety_stop": "R4",
     "handoff_offer": "R2",
 }
-HANDOFF_RULE_BY_REASON = {"user_requested_human": "R3", "safety_risk": "R4"}
+HANDOFF_RULE_BY_REASON = {"user_requested_human": "R3", "safety_risk": "R4", "guide_exhausted": "R1"}
+# 主办方 SOP：排障后仍未解决 → 确认是否进入换货 / 退款。一条官方 Q&A 指南走完仍未解决就进入质保判断，
+# 不再换下一条相近的指南（实测 T55 / T29 会连走 3 条指南、7 步以上才停）。
+MAX_GUIDES = 1
 
 
 @dataclass(frozen=True)
@@ -431,105 +246,77 @@ class NextAction:
         }
 
 
-def _asks_for(state, observation_id: str) -> list[dict[str, Any]]:
-    return [
-        r
-        for r in state.get("observation_requests") or []
-        if r.get("observation_id") == observation_id
-        and r.get("issue_id", state.get("active_issue_id")) == state.get("active_issue_id")
-    ]
-
-
 def _first_open_step(plan, executed_src: set[str], executed_steps: set[tuple[str, str]], state=None):
-    """第一个未执行的步骤与途中跳过的步骤（同 instruction_src 已执行 → 不重复建议）。"""
+    """重放已答节点的出边，查找所选分支中的未执行步骤；数组位置不代表执行顺序。"""
     skipped = []
-    for step in plan.steps:
+    answered = {s.get("instruction_src"): s for s in answered_history(state or {})}
+    step_id = plan.first_step().step_id
+    visited = set()
+    while step_id not in {"DONE", "EXHAUSTED"} and step_id not in visited:
+        visited.add(step_id)
+        step = plan.step(step_id)
+        recorded = answered.get(step.instruction_src) or {}
+        nxt = plan.next_step_id(step_id, "not_solved", option=(recorded.get("answer") or {}).get("option"))
         unavailable = step_unavailable(state or {}, plan.plan_id, step)
         if unavailable:
             skipped.append({"plan_id": plan.plan_id, "step_id": step.step_id, "reason": unavailable})
+            step_id = nxt
             continue
         if (plan.plan_id, step.step_id) in executed_steps:
             skipped.append({"plan_id": plan.plan_id, "step_id": step.step_id, "reason": "already_executed"})
+            step_id = nxt
             continue
         if step.instruction_src in executed_src:
             skipped.append({"plan_id": plan.plan_id, "step_id": step.step_id, "reason": "duplicate_instruction_src"})
+            step_id = nxt
             continue
         return step, skipped
     return None, skipped
 
 
-def scope_question(category, codes, plan, option_ids, interview, library):
-    """观察把码外计划解锁时，问一次现象范围；选项是词表故障族，答案沿用问诊 symptom_selection 的受理路径。
-
-    用户选了新故障族 → 症状码扩展，该计划按正常候选进入；只选原范围 → 计划按 outside_confirmed_scope 跳过。
-    题目文本决定 key，同一冲突不重复问。词表里找不到对应故障族时返回 None，调用方按原逻辑放行。
-    """
-    by_code = {f["symptom_code"]: f for f in families(category)}
-    recorded = [by_code[c] for c in codes if c in by_code]
-    added = next((by_code[c] for c in plan.symptom_codes if c in by_code and c not in codes), None)
-    if not recorded or added is None:
-        return None
-    cond = next((c for c in plan.requires_observations if option_ids.get(c.observation_id) in c.option_ids), None)
-    obs = library.observation_definitions().get(cond.observation_id) if cond else None
-    option = obs.option(option_ids[cond.observation_id]) if obs is not None and cond else None
-    answer_label = option.label if option else plan.fault
-
-    def label(family):
-        return family.get("selection_label") or family["fault_family"]
-
-    options = [{"value": f["fault_family"], "label": label(f)} for f in recorded]
-    options.append({"value": added["fault_family"], "label": f"{answer_label}（{label(added)}）"})
-    text = (
-        "之前记录的现象是" + "、".join(f"「{label(f)}」" for f in recorded)
-        + f"，你刚回答的「{answer_label}」对应另一类现象。这些情况都有吗？可以回复「都有」，或只回复其中一项："
-        + "；".join(f"{i}．{o['label']}" for i, o in enumerate(options, 1)) + "。"
-    )
-    key = hashlib.sha256(text.encode()).hexdigest()[:12]
-    base = dict(interview) if interview else {"answers": []}
-    return {
-        "kind": "scope_conflict",
-        "question": text,
-        "key": key,
-        "plan_id": plan.plan_id,
-        "observation_id": cond.observation_id if cond else None,
-        "option_id": option_ids.get(cond.observation_id) if cond else None,
-        "interview": {
-            **base,
-            "taxonomy_version": taxonomy()["version"],
-            "category": category,
-            "candidates": [o["value"] for o in options],
-            "status": "asking",
-            "question": {"kind": "symptom_selection", "question": text, "options": options, "key": key},
-        },
-    }
+def replay_end(library, plan_id: str, state) -> str:
+    """沿已回答的边重放计划，看它停在哪儿：handoff = 走到官方交售后结论段；question_exit = 选中了审核写成
+    EXHAUSTED 的选项（诊断树里原文没覆盖的那一支）；open = 其余（有未回答的步骤，或步骤走完）。"""
+    try:
+        plan = library.get(plan_id)
+    except KeyError:
+        return "open"
+    answered = {s.get("instruction_src"): s for s in answered_history(state)}
+    step_id, seen = plan.first_step().step_id, set()
+    while step_id not in {"DONE", "EXHAUSTED"} and step_id not in seen:
+        seen.add(step_id)
+        step = plan.step(step_id)
+        if step.kind == "handoff":
+            return "handoff"
+        record = answered.get(step.instruction_src)
+        if record is None and step.kind != "statement":
+            return "open"
+        record = record or {}
+        answer = record.get("answer") or {}
+        option = answer.get("option")
+        # 审核显式写成 EXHAUSTED 的选项分支（原文没覆盖的那一支），或重发后仍答「还没检查 / 不知道」（B21）：
+        # 计划没有走完，不算一条走完的指南，也不能说「官方排查已完成」
+        if step.kind == "question" and (step.branches.get(option) == "EXHAUSTED" or unanswered(step, answer)):
+            return "question_exit"
+        step_id = plan.next_step_id(step_id, record.get("feedback") or "not_solved", option=option)
+        # 有选项的问句收到对不上任何选项的短答、计划就此结束：答非所问不等于走完（B25「拆了还响，是吱吱声」打成文字，
+        # 没走到试拖地模式那一支，rv-0341 不该算一条走完的指南）
+        if step.kind == "question" and step_id == "EXHAUSTED" and step.options and option is None and (answer.get("text") or "").strip():
+            return "question_exit"
+    return "open"
 
 
 def decide_next(state, *, library) -> NextAction:
-    """按 design §3.3 的顺序选下一动作：风险 → 用户意愿 → 已恢复 → 缺失观察 → 可发布步骤 → 人工出口。
+    """按 design §3.3 的顺序选下一动作：风险 → 用户意愿 → 已恢复 → 操作条件 → 可发布步骤 → 人工出口。
 
-    候选动作只来自计划库（有来源）：plans_ranked 中 confidence ≥ 0.3 的未耗尽计划按原顺序优先；
-    其后是被已知观察解锁（requires_observations 满足）的计划。已排除 / 已执行 / 已耗尽的不复发。
-    候选按顺序取第一个可行动作：排在前面的可执行步骤不被后面计划的问题抢先，反之亦然。
+    候选动作只来自计划库（有来源）：plans_ranked 中 confidence ≥ 0.3 的未耗尽计划按原顺序。
+    已执行 / 已耗尽的不复发。
     """
-    from app.diagnose.observations import known_observations, known_option_ids
-
-    issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
-    raw_interview = state.get("symptom_interview") or issue.get("symptom_interview")
-    interview = raw_interview if valid_interview(raw_interview) else None
     decision = state.get("turn_decision") or {}
     executed = execution_history(state)
     exhausted = effective_exhausted(state)
     conditions = conditions_for(state)
-    known = known_observations(issue, interview, library)
-    option_ids = known_option_ids(known)
-    basis = tuple(
-        dict.fromkeys(
-            [
-                *(v["source_id"] for v in known.values() if v.get("source_id")),
-                *(s.get("card_id") for s in executed if s.get("card_id")),
-            ]
-        )
-    )
+    basis = tuple(dict.fromkeys(s.get("card_id") for s in executed if s.get("card_id")))
 
     def result(kind, reason, **extra):
         return NextAction(kind=kind, reason=reason, basis=basis, **extra)
@@ -545,6 +332,17 @@ def decide_next(state, *, library) -> NextAction:
         return result("resolved", "user_confirmed_resolved")
     if conditions.paused:
         return result("pause", "user_paused")
+    # 诊断树判定原文没覆盖的指南（rv-0341「其他声音」）不算走完一条：交给下一条候选指南完整排查（T36）。
+    # 诊断树的一支直接得出官方交售后结论时，没有「未解决」也进质保判断（rv-0341「拆下滚刷后噪音消失」）。
+    ends = {pid: replay_end(library, pid, state) for pid in exhausted}
+    counted = [pid for pid in exhausted if ends[pid] != "question_exit"]
+    # 客户原话说已经做过这条指南的步骤、问题仍在（fact_check 判 done 跳过），与点「未解决」是同一个事实：
+    # 指南走完仍未解决，按 SOP 进质保判断并说明理由（T27 走到「没有可用后续」，索凭证前没有任何理由）
+    done_by_customer = any(v.get("status") == "done" and v.get("skip")
+                           for pid in counted for v in (((state.get("step_checks") or {}).get(pid) or {}).get("steps") or {}).values())
+    if len(counted) >= MAX_GUIDES and (any(s.get("feedback") == "not_solved" for s in executed)
+                                       or done_by_customer or "handoff" in ends.values()):
+        return result("handoff_offer", "guide_exhausted")
     if decision.get("primary_intent") == "complaint" and not decision.get("diagnostic_request"):
         return result("pause", "complaint_reduce_burden")
     blocker_question = support_question(state)
@@ -560,99 +358,30 @@ def decide_next(state, *, library) -> NextAction:
     product = state.get("product_confirmed") or {}
     category = state.get("category") or product.get("category")
     sku = product.get("sku")
-    executed_src = {s.get("instruction_src") for s in executed}
-    executed_steps = {(s.get("plan_id"), s.get("step_id")) for s in executed}
-    codes = symptom_codes({**issue, "symptom_interview": interview}) or list(
-        state.get("symptom_codes") or []
-    )
+    answered = answered_history(state)
+    executed_src = {s.get("instruction_src") for s in answered}
+    executed_steps = {(s.get("plan_id"), s.get("step_id")) for s in answered}
 
-    ranked: list[tuple[Any, dict[str, Any]]] = []
+    trace: dict[str, Any] = {"skipped": []}
+    pending_step: NextAction | None = None
     for entry in state.get("plans_ranked") or []:
         pid = entry.get("plan_id")
         if pid in exhausted or float(entry.get("confidence", 0) or 0) < SWITCH_CONFIDENCE:
             continue
         try:
-            ranked.append((library.get(pid), entry))
+            plan = library.get(pid)
         except KeyError:
             continue
-    ranked_ids = {p.plan_id for p, _ in ranked}
-    by_codes = (
-        {p.plan_id for p in library.allowed_for(category=category, sku=sku, symptom_codes=codes)}
-        if category
-        else set()
-    )
-    unlocked = [
-        (p, {"plan_id": p.plan_id, "confidence": None, "source": "observation"})
-        for p in library.allowed_for(category=category, sku=sku)
-        if p.requires_observations and p.plan_id not in exhausted and p.plan_id not in ranked_ids
-        # 症状码是对自由文本的早期粗分类，观察是用户对本机的直接回答：门槛已满足就不再由症状码否决，
-        # 否则会出现问了又不用答案（A1289 答「连接笔记本显示 UVP」，pb_737_laptop_uvp 却因缺
-        # pb_no_input 而不可用）。尚缺观察的计划仍要症状码支持——ask 先于 step 返回，
-        # 放开会让无关问题抢在可执行步骤前面（design §3.4：不因 taxonomy 里有这道题就强行补问）。
-        and (p.plan_id in by_codes or p.observation_gate(option_ids)[0] == "ok")
-    ] if category else []
-    # 问诊期的计划约束只针对模型排序结果；观察解锁的计划以观察条件 + 症状码为门槛
-    candidates = [
-        (p, entry)
-        for p, entry in [*ranked, *unlocked]
-        if p.applies(category=category, sku=sku)
-        and (entry.get("source") == "observation" or constrain_plans(state, [p]))
-    ]
-
-    trace: dict[str, Any] = {"skipped": [], "known_observations": option_ids}
-    pending_ask: tuple[int, Any, str] | None = None
-    pending_scope: tuple[int, NextAction] | None = None
-    pending_step: tuple[int, NextAction] | None = None
-    unavailable: list[str] = []
-    answered_keys = {a.get("key") for a in (interview or {}).get("answers", [])}
-    for index, (plan, entry) in enumerate(candidates):
-        gate, missing = plan.observation_gate(option_ids)
-        if gate == "excluded":
-            trace["skipped"].append({"plan_id": plan.plan_id, "reason": "excluded_by_observation"})
-            continue
-        if gate == "missing":
-            # 4. 只问会改变可用动作的观察；同一问题不反复问
-            for obs_id in missing:
-                asks = _asks_for(state, obs_id)
-                obs = library.observation_definitions()[obs_id]
-                if obs.requires_execution and not any(
-                    (owner.plan_id, step.step_id) in executed_steps
-                    for owner in library.plans for step in owner.steps
-                    if any(o.observation_id == obs_id for o in step.observations)
-                ):
-                    trace["skipped"].append({"observation_id": obs_id, "reason": "observation_requires_execution"})
-                    continue
-                if (any(conditions.resources.get(r) is False for r in obs.required_resources)
-                        or any(a.get("status") == "unknown" for a in asks) or len(asks) >= MAX_OBSERVATION_ASKS):
-                    unavailable.append(obs_id)
-                    continue
-                if pending_ask is None:
-                    pending_ask = (index, plan, obs_id)
-            trace["skipped"].append({"plan_id": plan.plan_id, "reason": "observation_missing", "missing": missing})
+        if not plan.applies(category=category, sku=sku):
             continue
         step, skipped_steps = _first_open_step(plan, executed_src, executed_steps, state)
         if step is None:
             trace["skipped"].extend(skipped_steps)
             continue
-        if plan.requires_observations and codes and not set(codes).intersection(plan.symptom_codes):
-            # 观察把这个计划解锁了，但它处理的是已记录范围之外的现象（A1289：主诉自身回充，判别题答「接笔记本
-            # 显示 UVP」）。不静默换题：先问一次「这些情况都有吗」。用户只确认原范围后该计划不再复发。
-            question = scope_question(category, codes, plan, option_ids, interview, library)
-            if question is not None:
-                if question["key"] in answered_keys:
-                    trace["skipped"].append({"plan_id": plan.plan_id, "reason": "outside_confirmed_scope"})
-                    continue
-                if pending_scope is None:
-                    pending_scope = (index, result(
-                        "ask", "scope_conflict", question=question,
-                        trace={**trace, "scope_conflict": {"plan_id": plan.plan_id, "codes": list(codes),
-                                                           "plan_codes": list(plan.symptom_codes)}},
-                    ))
-                continue
         # 5. 有适用、未执行、有来源支持的动作
-        candidate_step = result(
+        pending_step = result(
             "step",
-            "ranked_plan" if entry.get("source") != "observation" else "observation_unlocked_plan",
+            "ranked_plan",
             plan_cursor={
                 "plan_id": plan.plan_id,
                 "version": plan.version,
@@ -662,53 +391,27 @@ def decide_next(state, *, library) -> NextAction:
             trace={**trace, "confidence": entry.get("confidence"), "switched_to": plan.plan_id,
                    "skipped_steps": skipped_steps},
         )
-        if pending_step is None:
-            pending_step = (index, candidate_step)
+        break
     blocked = [b for b in conditions.blockers if not b.cleared]
     unresolved_blocker = any(b.reason == "unknown" for b in blocked) and not (
         conditions.continue_input_id and conditions.continue_input_id == state.get("input_id")
     )
     burden_stop = int((state.get("counters") or {}).get("skipped", 0)) - conditions.skip_baseline >= BURDEN_SKIP_LIMIT
-    # A bare complaint already returned pause above, so only the emotion action is left here.
-    emotion_stop = (
-        "prefer_proposal_over_more_steps" in state.get("emotion_actions", [])
-        and len(executed) + len(blocked) >= 2
-        and conditions.continue_input_id != state.get("input_id")
-        and not decision.get("diagnostic_request")
-    )
-    step_ok = pending_step is not None and not (unresolved_blocker or burden_stop or emotion_stop)
-    asks = [item for item in (pending_ask, pending_scope) if item is not None]
-    if step_ok and all(pending_step[0] < item[0] for item in asks):
-        return pending_step[1]
-    if pending_ask is not None and (pending_scope is None or pending_ask[0] < pending_scope[0]):
-        _, plan, obs_id = pending_ask
-        obs = library.observation_definitions()[obs_id]
-        return result(
-            "ask",
-            "observation_changes_next_action",
-            question={
-                "observation_id": obs.observation_id,
-                "question": obs.question,
-                "options": [{"option_id": o.option_id, "label": o.label, "kind": o.kind} for o in obs.options],
-                "plan_id": plan.plan_id,
-                "attempt": len(_asks_for(state, obs_id)) + 1,
-            },
-            trace=trace,
-        )
-    if pending_scope is not None:
-        return pending_scope[1]
-    if step_ok:
-        return pending_step[1]
-    if blocked or any(v is False for v in conditions.resources.values()) or burden_stop or emotion_stop:
+    if pending_step is not None and not (unresolved_blocker or burden_stop):
+        # 情绪策略「少加步骤、多给方案」：已做两步后先让客户选继续还是转人工，不冒用操作条件暂停的文案（T56 / T58
+        # 首封带粗口，两步后被说成「I can't confirm the cause yet」，客户不知道还能继续）。说过「继续」就不再拦
+        # （客户点卡的轮次不重算情绪，否则每张卡后都会再停一次）。A bare complaint already returned pause above.
+        if ("prefer_proposal_over_more_steps" in state.get("emotion_actions", [])
+                and len(executed) + len(blocked) >= 2
+                and conditions.continue_input_id is None
+                and not decision.get("diagnostic_request")):
+            return result("pause", "emotion_prefer_proposal", trace=trace)
+        return pending_step
+    if blocked or any(v is False for v in conditions.resources.values()) or burden_stop:
         recheck = resource_recheck(state)
         if recheck:
             return result("ask", "operation_conditions_recheck", question=recheck, trace=trace)
         return result("pause", "operation_conditions_unavailable", trace=trace)
     # 7. 没有支持的下一动作：说明覆盖边界，提供人工选项
-    if unavailable:
-        reason = "observation_unavailable"
-    elif executed or exhausted:
-        reason = "no_supported_followup"
-    else:
-        reason = "knowledge_coverage_missing"
-    return result("handoff_offer", reason, trace={**trace, "unavailable": unavailable})
+    reason = "no_supported_followup" if executed or exhausted else "knowledge_coverage_missing"
+    return result("handoff_offer", reason, trace=trace)

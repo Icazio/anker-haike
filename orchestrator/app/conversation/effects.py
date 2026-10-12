@@ -14,10 +14,9 @@ from app.conversation.reduce import stable_id
 
 _scope: ContextVar = ContextVar("conversation_effect_scope", default=None)
 PERSISTED = {
-    "context_card", "proposal_card", "execution_card", "retake_card", "rating_card", "case_changed",
+    "proposal_card", "execution_card", "retake_card", "rating_card", "case_changed",
     "product_card",
     "step_card",
-    "observation_card",
     "receipt_card",
     "escalation_summary",
     "issue_changed",
@@ -38,7 +37,7 @@ def writer():
 
     def emit(payload):
         payload = dict(payload)
-        if payload["type"] in {"product_card", "step_card", "observation_card", "receipt_card", "context_card", "proposal_card", "execution_card", "retake_card", "rating_card", "case_changed"}:
+        if payload["type"] in {"product_card", "step_card", "receipt_card", "proposal_card", "execution_card", "retake_card", "rating_card", "case_changed"}:
             payload["issue_id"] = state.get("active_issue_id")
         if payload["type"] == "message_start":
             payload.setdefault("reply_to_input_id", state.get("input_id"))
@@ -57,6 +56,19 @@ def writer():
             downstream(payload)
 
     return emit
+
+
+def turn_has_spoken() -> bool:
+    """本轮（同一输入）是否已发出过文字消息：之前节点的 effect 已并入 state，本节点的在 captured 里。
+    不在 durable 节点内（单测直接调用）时视为未发言。"""
+    scope = _scope.get()
+    if scope is None:
+        return False
+    state, _, captured, _, _ = scope
+    return any(
+        e["payload"]["type"] == "message" and e.get("input_id") == state.get("input_id")
+        for e in [*(state.get("pending_effects") or []), *captured]
+    )
 
 
 def durable_node(fn):

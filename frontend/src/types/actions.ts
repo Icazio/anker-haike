@@ -1,6 +1,6 @@
 // Generated file. Do not edit; run npm --prefix frontend run contracts:generate.
 // Source: contracts/schema/actions.schema.json
-// SHA-256: 0a3742e14a8fc23086f7946fb5397bbeb8ca6e90dfc7a6133fcbb3ba88f4db86
+// SHA-256: fc8ac1760536ef912e366dddef61cf2a4081bffe56a36b14b57f1a15db59bc3b
 
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -9,13 +9,11 @@
 export type ActionRequest =
   | SelectProductAction
   | StepFeedbackAction
-  | AnswerObservationAction
   | ConfirmReceiptAction
   | SkipReceiptAction
   | RequestHumanAction
   | NewIssueAction
   | ResumeIssueAction
-  | ConfirmContextAction
   | ConfirmProposalAction
   | DeclineProposalAction
   | SkipRetakeAction
@@ -38,11 +36,11 @@ export type CardId1 = string;
 export type ExpectedVersion1 = number;
 export type InputToken1 = string;
 export type Kind1 = 'step_feedback';
-export type Feedback = 'solved' | 'not_solved' | 'cannot_do';
+export type Option = string | null;
+export type Text = string | null;
+export type Unavailable = boolean;
+export type Feedback = ('solved' | 'not_solved' | 'cannot_do') | null;
 export type Note = string | null;
-export type ObservationId = string;
-export type OptionId = string;
-export type Observations = ObservationAnswer[];
 export type TargetIssueId1 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
@@ -51,9 +49,13 @@ export type ActionId2 = string;
 export type CardId2 = string;
 export type ExpectedVersion2 = number;
 export type InputToken2 = string;
-export type Kind2 = 'answer_observation';
-export type ObservationId1 = string;
-export type OptionId1 = string;
+export type Kind2 = 'confirm_receipt';
+export type Edited = ('order_no' | 'seller' | 'country' | 'purchase_date' | 'amount')[];
+export type Amount = string | null;
+export type Country = string | null;
+export type OrderNo = string | null;
+export type PurchaseDate = string | null;
+export type Seller = string | null;
 export type TargetIssueId2 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
@@ -62,45 +64,41 @@ export type ActionId3 = string;
 export type CardId3 = string;
 export type ExpectedVersion3 = number;
 export type InputToken3 = string;
-export type Kind3 = 'confirm_receipt';
-export type Edited = ('order_no' | 'channel' | 'purchase_date' | 'amount')[];
-export type Amount = string | null;
-export type Channel = string | null;
-export type OrderNo = string | null;
-export type PurchaseDate = string | null;
+export type Kind3 = 'skip_receipt';
+export type Reason = 'none' | 'unreadable' | 'later';
 export type TargetIssueId3 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
  */
 export type ActionId4 = string;
-export type CardId4 = string;
+export type CardId4 = string | null;
 export type ExpectedVersion4 = number;
-export type InputToken4 = string;
-export type Kind4 = 'skip_receipt';
-export type Reason = 'none' | 'unreadable' | 'later';
-export type TargetIssueId4 = string;
+export type InputToken4 = string | null;
+export type Kind4 = 'request_human';
+export type TargetIssueId4 = string | null;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
  */
 export type ActionId5 = string;
-export type CardId5 = string | null;
 export type ExpectedVersion5 = number;
-export type InputToken5 = string | null;
-export type Kind5 = 'request_human';
-export type TargetIssueId5 = string | null;
+export type Kind5 = 'new_issue';
+export type TargetIssueId5 = null;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
  */
 export type ActionId6 = string;
 export type ExpectedVersion6 = number;
-export type Kind6 = 'new_issue';
-export type TargetIssueId6 = null;
+export type Kind6 = 'resume_issue';
+export type TargetIssueId6 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
  */
 export type ActionId7 = string;
+export type CardId5 = string;
 export type ExpectedVersion7 = number;
-export type Kind7 = 'resume_issue';
+export type InputToken5 = string;
+export type Kind7 = 'confirm_proposal';
+export type OptionId = string;
 export type TargetIssueId7 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
@@ -109,11 +107,8 @@ export type ActionId8 = string;
 export type CardId6 = string;
 export type ExpectedVersion8 = number;
 export type InputToken6 = string;
-export type Kind8 = 'confirm_context';
-export type Channel1 = string;
-export type Platform = string | null;
-export type RegionPurchase = string;
-export type RegionUse = string;
+export type Kind8 = 'decline_proposal';
+export type Reason1 = 'want_other' | 'not_now' | 'request_human';
 export type TargetIssueId8 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
@@ -122,8 +117,8 @@ export type ActionId9 = string;
 export type CardId7 = string;
 export type ExpectedVersion9 = number;
 export type InputToken7 = string;
-export type Kind9 = 'confirm_proposal';
-export type OptionId2 = string;
+export type Kind9 = 'skip_retake';
+export type Reason2 = string;
 export type TargetIssueId9 = string;
 /**
  * 前端生成的 uuid，重试时复用，服务端据此幂等
@@ -132,33 +127,13 @@ export type ActionId10 = string;
 export type CardId8 = string;
 export type ExpectedVersion10 = number;
 export type InputToken8 = string;
-export type Kind10 = 'decline_proposal';
-export type Reason1 = 'want_other' | 'not_now' | 'request_human';
-export type TargetIssueId10 = string;
-/**
- * 前端生成的 uuid，重试时复用，服务端据此幂等
- */
-export type ActionId11 = string;
-export type CardId9 = string;
-export type ExpectedVersion11 = number;
-export type InputToken9 = string;
-export type Kind11 = 'skip_retake';
-export type Reason2 = string;
-export type TargetIssueId11 = string;
-/**
- * 前端生成的 uuid，重试时复用，服务端据此幂等
- */
-export type ActionId12 = string;
-export type CardId10 = string;
-export type ExpectedVersion12 = number;
-export type InputToken10 = string;
-export type Kind12 = 'rate_satisfaction';
+export type Kind10 = 'rate_satisfaction';
 export type Comment = string | null;
 export type Score = number;
-export type TargetIssueId12 = string;
+export type TargetIssueId10 = string;
 export type Code = 'stale_version' | 'stale_card' | 'not_allowed_now' | 'run_active';
 export type Message = string;
-export type ActionId13 = string;
+export type ActionId11 = string;
 export type Replayed = boolean;
 export type RunId = string;
 export type VersionAfter = number | null;
@@ -200,60 +175,40 @@ export interface StepFeedbackAction {
   target_issue_id: TargetIssueId1;
 }
 /**
+ * action 卡交 feedback；question / material_request 卡交 answer；statement 卡两者都可省（确认已读）。
+ * 服务端按卡片 kind 校验组合（sessions/router.py）。
+ *
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "StepFeedbackPayload".
  */
 export interface StepFeedbackPayload {
-  feedback: Feedback;
+  answer?: StepAnswer | null;
+  feedback?: Feedback;
   note?: Note;
-  observations?: Observations;
 }
 /**
- * 用户对某个步骤观察的选择；option_id 必须是该步骤声明过的选项。
+ * 问句卡 / 材料卡的回答：选项原文或短答；material_request 可声明暂时没有。
  *
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
- * via the `definition` "ObservationAnswer".
+ * via the `definition` "StepAnswer".
  */
-export interface ObservationAnswer {
-  observation_id: ObservationId;
-  option_id: OptionId;
-}
-/**
- * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
- * via the `definition` "AnswerObservationAction".
- */
-export interface AnswerObservationAction {
-  action_id: ActionId2;
-  card_id: CardId2;
-  expected_version: ExpectedVersion2;
-  input_token: InputToken2;
-  kind: Kind2;
-  payload: AnswerObservationPayload;
-  target_issue_id: TargetIssueId2;
-}
-/**
- * observation_card 的作答；option_id 必须是该卡声明过的选项。
- * kind=unknown 的选项记为「答不上来」，不写成观察事实。
- *
- * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
- * via the `definition` "AnswerObservationPayload".
- */
-export interface AnswerObservationPayload {
-  observation_id: ObservationId1;
-  option_id: OptionId1;
+export interface StepAnswer {
+  option?: Option;
+  text?: Text;
+  unavailable?: Unavailable;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "ConfirmReceiptAction".
  */
 export interface ConfirmReceiptAction {
-  action_id: ActionId3;
-  card_id: CardId3;
-  expected_version: ExpectedVersion3;
-  input_token: InputToken3;
-  kind: Kind3;
+  action_id: ActionId2;
+  card_id: CardId2;
+  expected_version: ExpectedVersion2;
+  input_token: InputToken2;
+  kind: Kind2;
   payload: ConfirmReceiptPayload;
-  target_issue_id: TargetIssueId3;
+  target_issue_id: TargetIssueId2;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -269,22 +224,23 @@ export interface ConfirmReceiptPayload {
  */
 export interface ReceiptFields {
   amount?: Amount;
-  channel?: Channel;
+  country?: Country;
   order_no?: OrderNo;
   purchase_date?: PurchaseDate;
+  seller?: Seller;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "SkipReceiptAction".
  */
 export interface SkipReceiptAction {
-  action_id: ActionId4;
-  card_id: CardId4;
-  expected_version: ExpectedVersion4;
-  input_token: InputToken4;
-  kind: Kind4;
+  action_id: ActionId3;
+  card_id: CardId3;
+  expected_version: ExpectedVersion3;
+  input_token: InputToken3;
+  kind: Kind3;
   payload: SkipReceiptPayload;
-  target_issue_id: TargetIssueId4;
+  target_issue_id: TargetIssueId3;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -300,13 +256,13 @@ export interface SkipReceiptPayload {
  * via the `definition` "RequestHumanAction".
  */
 export interface RequestHumanAction {
-  action_id: ActionId5;
-  card_id?: CardId5;
-  expected_version: ExpectedVersion5;
-  input_token?: InputToken5;
-  kind: Kind5;
+  action_id: ActionId4;
+  card_id?: CardId4;
+  expected_version: ExpectedVersion4;
+  input_token?: InputToken4;
+  kind: Kind4;
   payload?: RequestHumanPayload;
-  target_issue_id?: TargetIssueId5;
+  target_issue_id?: TargetIssueId4;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -318,78 +274,55 @@ export interface RequestHumanPayload {}
  * via the `definition` "NewIssueAction".
  */
 export interface NewIssueAction {
-  action_id: ActionId6;
-  expected_version: ExpectedVersion6;
-  kind: Kind6;
+  action_id: ActionId5;
+  expected_version: ExpectedVersion5;
+  kind: Kind5;
   payload?: RequestHumanPayload;
-  target_issue_id?: TargetIssueId6;
+  target_issue_id?: TargetIssueId5;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "ResumeIssueAction".
  */
 export interface ResumeIssueAction {
-  action_id: ActionId7;
-  expected_version: ExpectedVersion7;
-  kind: Kind7;
+  action_id: ActionId6;
+  expected_version: ExpectedVersion6;
+  kind: Kind6;
   payload?: RequestHumanPayload;
-  target_issue_id: TargetIssueId7;
-}
-/**
- * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
- * via the `definition` "ConfirmContextAction".
- */
-export interface ConfirmContextAction {
-  action_id: ActionId8;
-  card_id: CardId6;
-  expected_version: ExpectedVersion8;
-  input_token: InputToken6;
-  kind: Kind8;
-  payload: ConfirmContextPayload;
-  target_issue_id: TargetIssueId8;
-}
-/**
- * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
- * via the `definition` "ConfirmContextPayload".
- */
-export interface ConfirmContextPayload {
-  channel: Channel1;
-  platform?: Platform;
-  region_purchase: RegionPurchase;
-  region_use: RegionUse;
+  target_issue_id: TargetIssueId6;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "ConfirmProposalAction".
  */
 export interface ConfirmProposalAction {
-  action_id: ActionId9;
-  card_id: CardId7;
-  expected_version: ExpectedVersion9;
-  input_token: InputToken7;
-  kind: Kind9;
+  action_id: ActionId7;
+  card_id: CardId5;
+  expected_version: ExpectedVersion7;
+  input_token: InputToken5;
+  kind: Kind7;
   payload: ConfirmProposalPayload;
-  target_issue_id: TargetIssueId9;
+  target_issue_id: TargetIssueId7;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "ConfirmProposalPayload".
  */
 export interface ConfirmProposalPayload {
-  option_id: OptionId2;
+  option_id: OptionId;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
  * via the `definition` "DeclineProposalAction".
  */
 export interface DeclineProposalAction {
-  action_id: ActionId10;
-  card_id: CardId8;
-  expected_version: ExpectedVersion10;
-  input_token: InputToken8;
-  kind: Kind10;
+  action_id: ActionId8;
+  card_id: CardId6;
+  expected_version: ExpectedVersion8;
+  input_token: InputToken6;
+  kind: Kind8;
   payload: DeclineProposalPayload;
-  target_issue_id: TargetIssueId10;
+  target_issue_id: TargetIssueId8;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -403,13 +336,13 @@ export interface DeclineProposalPayload {
  * via the `definition` "SkipRetakeAction".
  */
 export interface SkipRetakeAction {
-  action_id: ActionId11;
-  card_id: CardId9;
-  expected_version: ExpectedVersion11;
-  input_token: InputToken9;
-  kind: Kind11;
+  action_id: ActionId9;
+  card_id: CardId7;
+  expected_version: ExpectedVersion9;
+  input_token: InputToken7;
+  kind: Kind9;
   payload: SkipRetakePayload;
-  target_issue_id: TargetIssueId11;
+  target_issue_id: TargetIssueId9;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -423,13 +356,13 @@ export interface SkipRetakePayload {
  * via the `definition` "RateSatisfactionAction".
  */
 export interface RateSatisfactionAction {
-  action_id: ActionId12;
-  card_id: CardId10;
-  expected_version: ExpectedVersion12;
-  input_token: InputToken10;
-  kind: Kind12;
+  action_id: ActionId10;
+  card_id: CardId8;
+  expected_version: ExpectedVersion10;
+  input_token: InputToken8;
+  kind: Kind10;
   payload: RateSatisfactionPayload;
-  target_issue_id: TargetIssueId12;
+  target_issue_id: TargetIssueId10;
 }
 /**
  * This interface was referenced by `ActionRequestSchema`'s JSON-Schema
@@ -463,7 +396,7 @@ export interface Snapshot {
  * via the `definition` "ActionResult".
  */
 export interface ActionResult {
-  action_id: ActionId13;
+  action_id: ActionId11;
   replayed?: Replayed;
   run_id: RunId;
   version_after?: VersionAfter;

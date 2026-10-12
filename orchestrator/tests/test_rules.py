@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 
 import pytest
@@ -96,9 +97,9 @@ def test_hot_reload_on_file_change(tmp_path):
     svc = RulesService(p)
     assert svc.check_in(text="机器会发光").rule_ids == []
     text = p.read_text(encoding="utf-8").replace("text_terms: [冒烟,", "text_terms: [发光, 冒烟,")
-    p.write_text(text.replace("version: 2026-09-12.1", "version: 2026-09-12.2"), encoding="utf-8")
+    p.write_text(re.sub(r"^version: .*$", "version: hot-reload-test", text, flags=re.MULTILINE), encoding="utf-8")
     os.utime(p, (time.time() + 5, time.time() + 5))  # 保证 mtime 变化
-    assert svc.check_in(text="机器会发光").rule_ids == ["R4"] and svc.version == "2026-09-12.2"
+    assert svc.check_in(text="机器会发光").rule_ids == ["R4"] and svc.version == "hot-reload-test"
     # 改坏文件：保留旧字典继续工作
     p.write_text("version: [", encoding="utf-8")
     os.utime(p, (time.time() + 10, time.time() + 10))
@@ -161,7 +162,7 @@ async def test_normal_message_still_goes_to_reply(mem_runtime):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             sid = (await client.post("/sessions")).json()["session_id"]
             resp = await client.post(
-                f"/sessions/{sid}/messages", data=await message_form(client, f"/sessions/{sid}/messages", {"text": "扫地机 X10 吸力变小了"})
+                f"/sessions/{sid}/messages", data=await message_form(client, f"/sessions/{sid}/messages", {"text": "扫地机 X10 Pro Omni 滚刷不转了，App 显示 error 2112"})
             )
     finally:
         set_rules_service(None)

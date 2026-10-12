@@ -8,7 +8,9 @@ from httpx import ASGITransport, AsyncClient
 
 from app.escalation.summary import (
     build_summary,
+    executed_step,
     reassurance_text,
+    step_text,
     summary_card_id,
     summary_to_text,
 )
@@ -48,10 +50,10 @@ def test_build_summary_without_model_and_contract_shape():
 
 
 def test_category_only_product_follows_catalog_category():
-    """会话 c9e11（2026-09-17）：移动电源 category_only 的摘要被写成「扫地机器人（型号未确认）」。"""
-    base = {"messages": [{"role": "user", "text": "充电宝充不了电"}], "product_state": "category_only"}
-    assert build_summary({**base, "category": "power_bank"}, reason="R2", lane="domestic").product == "移动电源（型号未确认）"
-    assert build_summary({**base, "category": "earbuds"}, reason="R2", lane="domestic").product == "无线耳机（型号未确认）"
+    """会话 c9e11（2026-09-17）：非扫地机 category_only 的摘要被写成「扫地机器人（型号未确认）」。"""
+    base = {"messages": [{"role": "user", "text": "吸奶器吸力很弱"}], "product_state": "category_only"}
+    assert build_summary({**base, "category": "breast_pump"}, reason="R2", lane="domestic").product == "吸奶器（型号未确认）"
+    assert build_summary({**base, "category": "security_cam"}, reason="R2", lane="domestic").product == "家庭安防摄像头（型号未确认）"
     # 品类缺失时不猜品类
     assert build_summary(base, reason="R2", lane="domestic").product == "未确认"
 
@@ -73,7 +75,7 @@ def test_no_supported_followup_text_separates_skipped_steps():
     assert text.startswith("无法操作「清理充电宝输出接口」、「更换数据线和被充设备测试」，现有资料没有进一步")
     assert "已完成" not in text
     reply = reassurance_text("R2", state)
-    assert "排查记录" in reply
+    assert "steps you tried" in reply
     assert not any(word in reply for word in ("已完成", "已试步骤", "已经做过"))
     copied = summary_to_text(build_summary(state, reason="R2", lane="domestic"))
     assert "【排查记录】清理充电宝输出接口（无法操作）" in copied
@@ -147,7 +149,7 @@ async def test_safety_first_message_full_chain(mem_runtime):
         parse_event(e)
     assert [e["stage"] for e in events if e["type"] == "progress"] == ["intake", "escalate"]
     msg = next(e for e in events if e["type"] == "message")
-    assert "停止使用" in msg["delta"]
+    assert "stop using" in msg["delta"]
     summ = next(e for e in events if e["type"] == "escalation_summary")
     s = EscalationSummary.model_validate(summ["summary"])
     assert s.receipt.status == "not_collected" and s.reason.rule_id == "R4"
@@ -160,3 +162,71 @@ async def test_safety_first_message_full_chain(mem_runtime):
     kinds = [i["kind"] for i in snap["timeline"]]
     assert kinds[-2:] == ["assistant_message", "escalation_summary"]
     assert snap["timeline"][-1]["card_id"] == summ["card_id"] and snap["stage"] == "escalate"
+
+
+# ---- 摘要从事实记录生成（2026-10-09 官方 63 单 I7 / I8：T22 T9 T60）----
+
+T22_TEXT = (
+    "Bron: eufy_mega\nInlogland:NL\nLand van accountregistratie: NL\nProductnaam: X10 Pro Omni\nProduct-PN: T2351\n"
+    "Probleemtype: WARNING\nProbleemcode: 7002-De robot zweeft in de lucht.\n"
+    "Probleempush: Wiel raakt de grond niet, verplaats de robot naar een nieuwe positie.\n"
+    "Probleembeschrijving: Wiel raakt de grond niet.\n"
+)
+
+
+def test_problem_falls_back_to_parsed_description_and_login_country_is_not_a_channel():
+    """T22：模型没抽出症状事实时，摘要问题字段取表单的推送 / 描述；Inlogland 是登录国家，不是购买渠道。"""
+    state = {"text": T22_TEXT, "active_issue_id": "i", "issues": {"i": {"facts": [], "title": "待描述的问题"}},
+             "product_confirmed": {"sku": "T2351", "name": "eufy Clean X10 Pro Omni"}}
+    s = build_summary(state, reason="R5", lane="domestic")
+    assert "Wiel raakt de grond niet" in s.problem
+    assert not any("购买渠道" in o for o in s.observations)
+    assert any(o == "客户登录 / 注册国家：NL" for o in s.observations)
+    assert s.business is not None and s.business.kind == "device_fault"
+    assert "Wiel raakt de grond niet" in s.business.known["symptoms"]
+
+
+def test_business_block_for_order_change_keeps_condition_quote():
+    """T9：暂缓发货诉求交人工 → 摘要按业务类型带订单、条件原话与待办队列。"""
+    quote = "If you have not shipped, don't and let's first talk about your other products."
+    state = {
+        "text": "Order Anker008. " + quote, "active_issue_id": "i", "issues": {"i": {"facts": []}},
+        "requested_remedy": "order_change", "case_order_no": "Anker008",
+        "task_queue": [
+            {"task_id": "a", "intent": "order_change", "quote": quote, "status": "waiting_human"},
+            {"task_id": "b", "intent": "logistics_query", "quote": quote, "status": "pending"},
+        ],
+        "business_context": {"version": 1, "status": "resolved", "active_subject_id": "s", "subjects": {"s": {
+            "identifiers": {"order_no": {"value": "Anker008", "source": "user", "input_id": "i1"}},
+            "facts": {"logistics_status": {"value": "pre-order, not shipped yet", "source": "backend", "input_id": "i1"}},
+        }}},
+    }
+    s = build_summary(state, reason="R6", lane="domestic")
+    b = s.business
+    assert b.kind == "order_change"
+    assert b.known["order_no"] == "Anker008" and b.known["condition"] == quote
+    assert b.known["package_status"] == "pre-order, not shipped yet"
+    assert [(r.intent, r.status) for r in b.pending_requests] == [("order_change", "waiting_human"), ("logistics_query", "pending")]
+    assert "【业务】order_change" in summary_to_text(s)
+
+
+def test_business_block_lists_missing_fields():
+    state = {"text": "it is broken", "active_issue_id": "i", "issues": {"i": {"facts": []}}}
+    s = build_summary(state, reason="R5", lane="domestic")
+    assert s.business.kind == "unknown" and set(s.business.missing) >= {"product", "symptoms"}
+
+
+def test_question_card_answers_are_listed_in_the_step_record():
+    """段落拆分后的问句卡（T26 清洁液使用史、T36 拆刷后的声音）：回答进排查记录，说明卡和没回答的卡不进。"""
+    attempts = [
+        {"step_id": "s2", "title": "Inspect the lens", "kind": "action", "feedback": "not_solved"},
+        {"step_id": "s3", "title": "Added third-party fluid?", "kind": "question", "feedback": None,
+         "answer": {"option": "Not sure", "text": None, "unavailable": False}},
+        {"step_id": "s4", "title": "Upload a video", "kind": "material_request", "feedback": None,
+         "answer": {"option": None, "text": None, "unavailable": True}},
+        {"step_id": "s1", "title": "Identify the problem", "kind": "statement", "feedback": None, "answer": None},
+    ]
+    steps = [step for a in attempts if (step := executed_step(a)) is not None]
+    assert [step_text(s) for s in steps] == [
+        "Inspect the lens（已操作，仍有问题）", "Added third-party fluid?（回答：Not sure）", "Upload a video（回答：暂时没有）",
+    ]

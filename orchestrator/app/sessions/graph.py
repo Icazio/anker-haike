@@ -11,6 +11,7 @@ import copy
 import logging
 import operator
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, TypedDict
@@ -20,11 +21,18 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.conversation.effects import durable_node
+from app.actions.runtime import get_services
+from app.cases.service import case_event
+from app.context.budget import fit_prompt_budget
+from app.conversation.answers import AnswerRequest
+from app.conversation.effects import durable_node, turn_has_spoken
 from app.conversation.effects import writer as get_stream_writer
 from app.conversation.operation_conditions import conditions_for, effective_exhausted
-from app.conversation.reduce import OPEN_OBSERVATION_STATUS
-from app.conversation.reply import acknowledge_current_turn, offer_human_after_stream
+from app.conversation.product_questions import answer_product_question, handles_product_question
+from app.conversation.quotes import quoted
+from app.conversation.reply import acknowledge_current_turn, offer_human_after_stream, say_text
+from app.conversation.request_constraints import ground_additional_queries
+from app.conversation.tasks import REMEDY_INTENTS
 from app.diagnose import (
     build_query,
     get_retrieval_config,
@@ -32,34 +40,34 @@ from app.diagnose import (
     should_rewrite,
     synthesize,
 )
-from app.diagnose.decision import constrain_plans, selected_symptom_codes
+from app.diagnose.decision import missing_for_retrieval, retry_after_handoff
 from app.diagnose.grade import apply_assessment, grade_hits
-from app.diagnose.localization import part_categories, signature_matches, signature_plans
-from app.diagnose.observations import record_observations
+from app.diagnose.localization import part_categories, signature_matches
 from app.diagnose.query import category_label, product_term
 from app.diagnose.vision import observe_images
 from app.emotion.policy import complaint_flagged, evaluate_emotion
 from app.escalation.polish import polish_summary
 from app.escalation.summary import build_summary, reassurance_text
-from app.faultcards import fit_prompt_budget
-from app.faultcards.runtime import get_fault_card_library
 from app.guide import GUIDE_BUDGET_MS, apply_feedback, exhaust_plan, prepare_step
+from app.guide.fact_check import check_plan_facts
 from app.images.runtime import current_image_store
 from app.knowledge.adapter import Hit, KnowledgeScope
-from app.knowledge.context import pack_hits, select_hits
-from app.knowledge.faq import get_faq_index
+from app.knowledge.context import pack_hits
 from app.knowledge.rerank import DashScopeReranker
 from app.knowledge.runtime import ensure_index, get_knowledge_adapter
 from app.knowledge.search import interleave_kbs, search_round
 from app.knowledge.weknora_client import WeKnoraError
 from app.models.runtime import get_model_router
 from app.observability.runtime import record
+from app.official.damage import physical_damage
+from app.official.message import parse_message
 from app.plans.runtime import get_plan_library
 from app.prompts import reply_messages
 from app.rules import get_rules_service
 from app.sessions import clarify as clarify_mod
 from app.sessions import receipt as receipt_mod
 from app.sessions.cards import candidates_key, current_version, derive_card_id, get_catalog
+from app.sessions.l3 import propose as propose_service_case
 from app.sessions.streaming import stream_to_writer
 
 log = logging.getLogger("sessions.graph")
@@ -72,14 +80,16 @@ class SessionState(TypedDict, total=False):
     evaluation_source: str
     service_context: dict
     context_sources: dict
-    policy_decision: dict | None
+    warranty: dict | None
+    sop_evidence: dict
+    awaiting_evidence: list[str]
+    logistics_announced: bool
     proposal: dict | None
     case_id: str | None
     case_order_no: str | None
     execution: dict | None
     execution_key: str | None
     gate_result: dict | None
-    prior_remedies: list[str]
     requested_remedy: str | None
     consult_intent: str | None
     last_consult_params: dict
@@ -96,8 +106,13 @@ class SessionState(TypedDict, total=False):
     emotion_track: list[dict]
     fault_localization: dict | None
     image_quality: dict | None
+    # 经读图确认是单据 / 界面截图的图；这些不算 SOP 的「故障图片/视频」证据（app.sessions.evidence）
+    document_image_ids: list[str]
     retake_attempts: int
     completed_task_intent: str | None
+    # 刚处理完的任务记成什么：done（默认）或 waiting_human（已交人工，见 tasks.next_task）
+    task_outcome: str | None
+    displayed_knowledge_nodes: list[str]
     retake_skipped: bool
     input_id: str
     base_version: int
@@ -153,10 +168,11 @@ class SessionState(TypedDict, total=False):
     # 票 17：intake 抽取结果；emotion.strategy 注入系统提示第二层；model_trace 累积各 task 命中模型
     emotion: dict[str, str | None]
     product_hints: list[str]
+    product_question: dict | None
     symptoms: list[str]
-    symptom_codes: list[str]
+    search_query_en: str | None  # intake 的英文现象描述，只用于检索
+    unparsed_problem: dict[str, str | list[str]] | None
     diagnostic_decision: dict[str, Any]
-    symptom_interview: dict[str, Any] | None
     model_trace: list[dict[str, Any]]
     # 票 28：检索结果。evidence 按 evidence_id 去重累积，供 step.evidence_ids 引用；knowledge_status 为最近一次四态
     evidence: dict[str, dict[str, Any]]
@@ -184,9 +200,8 @@ class SessionState(TypedDict, total=False):
         str | None
     )  # grade 的 coverage（sufficient / insufficient / none / unknown），未评分为 None
     query: str | None
-    # 票 33：故障卡预加载 {key, doc_version, tokens, text} 与本 run 命中的 plan_id；diagnose_outcome ∈ evidence|standard_flow|escalate
-    fault_card: dict[str, Any] | None
-    fault_card_hits: list[str]
+    # 客户消息里的错误码（精确命中官方 Q&A 的依据）；diagnose_outcome ∈ evidence|exact_code|warranty|escalate
+    error_codes: list[str]
     diagnose_outcome: dict[str, Any] | None
     plan_cursor: dict[str, Any] | None
     # 票 34 / 35（09 §3.3）：steps_executed [{plan_id, step_id, card_id, title, instruction_src, feedback, note?, ts}]；
@@ -195,16 +210,18 @@ class SessionState(TypedDict, total=False):
     # _verify 为 apply_action(step_feedback) 的本 run 判定（瞬态：done / next / escalate）
     steps_executed: list[dict[str, Any]]
     step_attempts: list[dict]
+    # 计划步骤与用户原话的核对结果 {plan_id: {issue_revision, steps: {step_id: {status, quote, skip?}}}}（app/guide/fact_check.py）
+    step_checks: dict[str, Any]
+    precondition_answers: list[dict]  # 客户答过的候选前提追问（synthesize 不再重复问）
+    fallback_clarification: dict | None  # 选中可执行方案时旁边待确认的候选追问：方案走不下去时先问它
     operation_conditions: dict
     counters: dict[str, int]
     exhausted_plans: list[str]
     card_ready_ms: int | None
     guide_trace: Annotated[list[dict[str, Any]], operator.add]
     _verify: dict[str, Any] | None
-    # design §3.2：统一下一动作决策的快照（kind / reason / compat_rule / question），问题内持久；
-    # observation_requests 为已向用户追问过的观察 {observation_id, plan_id, input_id, status}
+    # design §3.2：统一下一动作决策的快照（kind / reason / compat_rule / question），问题内持久
     next_action: dict[str, Any] | None
-    observation_requests: list[dict[str, Any]]
 
 
 def _delay() -> float:
@@ -251,7 +268,7 @@ async def disambiguate(state: SessionState) -> SessionState:
     decision = clarify_mod.decide(dict(state), abandoned_card=state.get("abandoned_card"))
     update: SessionState = {"stage": "disambiguate", "abandoned_card": None, **decision.update}
     from app.actions.runtime import get_services
-    if get_services() is not None and decision.reason == "symptom" and (state.get("requested_remedy") or (state.get("turn_decision") or {}).get("primary_intent") in {"refund_request", "address_update"}):
+    if get_services() is not None and decision.reason == "symptom" and (state.get("requested_remedy") or (state.get("turn_decision") or {}).get("primary_intent") in {"refund_request", "address_update", "order_change"}):
         decision.outcome = "continue"
     update["_decision"] = {
         "outcome": decision.outcome,
@@ -288,17 +305,23 @@ async def clarify(state: SessionState) -> SessionState:
     decision = state.get("_decision") or {}
     reason = decision.get("reason") or "product"
     detail = {k: v for k, v in decision.items() if k not in ("outcome", "reason")}
-    out = await clarify_mod.make_question(
-        get_model_router(),
-        reason,
-        state.get("text", ""),
-        strategy=(state.get("emotion") or {}).get("strategy", "normal"),
-        summary=_state_summary(state),
-        detail=detail,
-        session_id=state.get("session_id"),
-        lane=_lane(),
-        previous_question=(state.get("clarification") or {}).get("question"),
-    )
+    if reason == "applicability":
+        out = clarify_mod.QuestionOutcome(decision["question"], "synthesize")
+    elif decision.get("question"):
+        # 已带具体问句的症状追问（vague_symptom）：文案照用，计数仍记在 reason（symptom）的预算上
+        out = clarify_mod.QuestionOutcome(decision["question"], "fixed")
+    else:
+        out = await clarify_mod.make_question(
+            get_model_router(),
+            reason,
+            state.get("text", ""),
+            strategy=(state.get("emotion") or {}).get("strategy", "normal"),
+            summary=_state_summary(state),
+            detail=detail,
+            session_id=state.get("session_id"),
+            lane=_lane(),
+            previous_question=(state.get("clarification") or {}).get("question"),
+        )
     message_id = uuid.uuid5(
         uuid.NAMESPACE_URL, f"{state.get('session_id')}:{state.get('run_id')}:clarify"
     ).hex
@@ -315,7 +338,6 @@ async def clarify(state: SessionState) -> SessionState:
             state.get("clarification"), reason, state.get("run_id", ""),
             question=out.text, input_id=state.get("input_id"),
         ),
-        **({"symptom_interview": detail["symptom_interview"]} if detail.get("symptom_interview") else {}),
         "visible_messages": msgs,
         "model_trace": [
             *state.get("model_trace", []),
@@ -332,7 +354,7 @@ def _after_product(state: SessionState) -> str:
     from app.actions.runtime import get_services
     intent = (state.get("turn_decision") or {}).get("primary_intent")
     if get_services() is not None and state.get("product_state") == "confirmed_sku" and (
-        intent in {"replacement_request", "refund_request", "address_update"} or state.get("requested_remedy")
+        intent in REMEDY_INTENTS or state.get("requested_remedy")
     ):
         return "service_context"
     if _new_fault_images(state):
@@ -341,11 +363,14 @@ def _after_product(state: SessionState) -> str:
     issue = (state.get("issues") or {}).get(state.get("active_issue_id")) or {}
     if (
         state.get("plans_ranked")
+        and not (state.get("turn_decision") or {}).get("answers_text_question")
         and basis.get("issue_revision") == issue.get("issue_revision")
         and basis.get("plans_version") == get_plan_library().version
+        and basis.get("sku") == (state.get("product_confirmed") or {}).get("sku")
     ):
         # 事实修订号与计划库都没变：再检索一次得到的仍是同一份候选（会话 37cea3 第 7 轮重发同一句话，
         # 重新 retrieve + synthesize 后只多了一份相同摘要）。直接依据已有排序重新决策。
+        # 文字追问的回答（「yes」）常常不改事实修订号，但它是给 synthesize 的新证据（precondition_answers），不能短路。
         return "reassess"
     return "retrieve"
 
@@ -404,6 +429,9 @@ async def vision(state: SessionState) -> SessionState:
         "processed_fault_image_ids": list(dict.fromkeys([
             *state.get("processed_fault_image_ids", []), *[r["image_id"] for r in refs],
         ])),
+        "document_image_ids": list(dict.fromkeys([
+            *state.get("document_image_ids", []), *out.document_image_ids,
+        ])),
         "image_observations": list(out.observations),
         "visible_parts": [*state.get("visible_parts", []), *out.visible_parts],
         "model_trace": [
@@ -419,10 +447,6 @@ async def vision(state: SessionState) -> SessionState:
         if len(categories) == 1:
             update["visual_product"] = {"category": categories.pop(), "image_ids": out.used_image_ids}
     if out.fault_localization is not None:
-        # 注意：不要在这里写 fault_card_hits —— 那个键存的是检索给出的 chunk_id，
-        # 而签名映射给的是 plan_id，两种语义混在一个键里。签名先验真正的消费点在 retrieve
-        # （见 `signature_plans(state['fault_localization'], card.faults)`），它直接读 fault_localization，
-        # 所以这里只要把定位结果放进状态就够了。
         update.update(
             fault_localization=out.fault_localization,
             image_quality=out.fault_localization["image_quality"],
@@ -486,8 +510,6 @@ async def vision(state: SessionState) -> SessionState:
             *(state.get("observations") or []),
             *(f"图片：{o}" for o in out.observations),
         ]
-        import copy
-
         from app.conversation.reduce import stable_id
 
         issues = copy.deepcopy(state["issues"])
@@ -509,11 +531,8 @@ async def vision(state: SessionState) -> SessionState:
                     "recorded_at": state["at"],
                 }
             )
-        # 照片签名 → 症状事实（2026-09-17，9db 重放）。候选计划的三处过滤——decide_symptoms 的 selected、
-        # retrieve 的 allowed_ids、_synthesize_step 的 allowed——都只认 kind=symptom 事实里的 symptom_codes，
-        # 上面的观察事实进不了决策层：文字一说「异响」，滚刷缠绕的照片就对候选集毫无贡献。
-        # 这里把词表签名命中的 plan 在 plans.yaml 声明的症状码写成一条图片来源的症状事实，
-        # 图片路径与文字路径（symptom_taxonomy「缠绕 → suction_low」）在决策层等价。同一张图重传会读两次，按 value 去重。
+        # 照片签名 → 症状事实（2026-09-17，9db 重放）：上面的观察事实不算现象，症状判定只认 kind=symptom 事实。
+        # 这里把词表签名命中、且带错误码的官方 Q&A 写成一条图片来源的症状事实。同一张图重传会读两次，按 value 去重。
         library = get_plan_library()
         # 同一签名可以属于多个品类（充电触点污渍既是耳机不充电，也可能是扫地机回座）：
         # 品类已知时只取本品类的计划，否则别的品类的症状码会进本事项、跳过问诊后落空。
@@ -549,7 +568,6 @@ async def vision(state: SessionState) -> SessionState:
                     "image_ids": out.used_image_ids,
                     "plan_ids": plan_ids,
                     "symptom_codes": codes,
-                    "symptom_code": codes[0] if len(codes) == 1 else None,
                     "recorded_at": state["at"],
                     "occurred_at": None,
                     "time_expression": None,
@@ -631,6 +649,8 @@ def route_after_vision(state: SessionState) -> str:
                 # fault-photo retake before knowing which device is involved.
                 return "disambiguate"
             return 'prepare_retake'
+    if not state.get("escalate_reason") and handles_product_question(dict(state)):
+        return "product_help"
     return "escalate" if state.get("escalate_reason") else "disambiguate"
 
 
@@ -670,6 +690,11 @@ async def await_input(state: SessionState) -> SessionState:
         pc["card_id"] = stable_id(state["input_id"], state["active_issue_id"], pc["card_id"])
         pc["input_token"] = stable_id(pc["card_id"], "token")
     writer = get_stream_writer()
+    if not turn_has_spoken():
+        # 本轮只发卡、没有文字（首轮直接出步骤卡 / 型号卡）：情绪致歉单独一条发在卡前，不写进卡片正文
+        lead = acknowledge_current_turn(dict(state), "").strip().replace("  ", " ")
+        if lead:
+            say_text(dict(state), writer, stable_id(state["input_id"], "acknowledge"), lead)
     writer(
         {
             "type": "pending_changed",
@@ -702,15 +727,6 @@ async def await_input(state: SessionState) -> SessionState:
                 **({"seen": pc["payload"]["seen"]} if pc["payload"].get("seen") else {}),
             }
         )
-    elif pc["kind"] == "answer_observation":
-        writer(
-            {
-                "type": "observation_card",
-                "card_id": pc["card_id"],
-                "version": current_version(),
-                **pc["payload"],
-            }
-        )
     elif pc["kind"] == "confirm_receipt":
         # 票 40：字段确认卡；confidence < 0.7 前端标黄，unreadable 为空字段可手输
         writer(
@@ -721,8 +737,8 @@ async def await_input(state: SessionState) -> SessionState:
                 **pc["payload"],
             }
         )
-    elif pc["kind"] in {"confirm_context", "confirm_proposal", "upload_retake", "rate_satisfaction"}:
-        event_type = {"confirm_context":"context_card", "confirm_proposal":"proposal_card", "upload_retake":"retake_card", "rate_satisfaction":"rating_card"}[pc["kind"]]
+    elif pc["kind"] in {"confirm_proposal", "upload_retake", "rate_satisfaction"}:
+        event_type = {"confirm_proposal":"proposal_card", "upload_retake":"retake_card", "rate_satisfaction":"rating_card"}[pc["kind"]]
         writer({"type":event_type,"card_id":pc["card_id"],"version":current_version(),**pc["payload"]})
     # Waiting is business state. Every graph invocation reaches END normally.
     return {
@@ -751,7 +767,7 @@ async def apply_action(state: SessionState) -> SessionState:
                 "version": state["base_version"] + 1,
             }
         )
-    if action.get("kind") in {"confirm_context", "confirm_proposal", "decline_proposal", "skip_retake", "rate_satisfaction"}:
+    if action.get("kind") in {"confirm_proposal", "decline_proposal", "skip_retake", "rate_satisfaction"}:
         from app.sessions.l3 import apply_l3_action
         return await apply_l3_action(state, action, pc)
     results = dict(state.get("card_results") or {})
@@ -792,17 +808,15 @@ async def apply_action(state: SessionState) -> SessionState:
             "confirmed_fields": receipt["fields"],
             "edited": receipt["edited"],
         }
-        update.update(
-            {
-                "card_results": results,
-                "receipt": receipt,
-                "escalate_reason": receipt.get("collection_reason") or "R6",
-            }
-        )
+        update.update({"card_results": results, "receipt": receipt})
+        from app.actions.runtime import get_services
+        if get_services() is not None and (state.get("requested_remedy") or state.get("case_id")):
+            # 售后办理中收的凭证：回到 SOP 的订单质保判断（查订单或查经销商名录）。
+            update.update(escalate_reason=None, l3_route="service_context")
+        else:
+            update["escalate_reason"] = receipt.get("collection_reason") or "R6"
     elif action.get("kind") == "step_feedback":
         update.update(_apply_step_feedback(state, action, pc, results))
-    elif action.get("kind") == "answer_observation":
-        update.update(_apply_observation_answer(state, action, pc, results))
     elif action.get("kind") == "select_product" and action["payload"].get("sku") is None:
         # 「其他型号 / 不确定」：品类事实保留，型号未知，按品类通用知识继续；结束原因里说清楚问过型号
         results[pc["card_id"]] = {"selected_sku": None, "selected_unknown": True}
@@ -858,80 +872,11 @@ def route_after_apply(state: SessionState) -> str:
     if verify:
         # 票 35：step_feedback 的判定——继续 → guide 出下一张卡；票 36：solved / DONE → close 结束语 → done(completed)
         if verify["outcome"] == "ask":
-            return "ask_observation"
+            return "ask_operation"
         if verify["outcome"] == "pause":
             return "dialogue"
         return "guide" if verify["outcome"] == "next" else "close"
     return _after_product(state)
-
-
-def _apply_observation_answer(
-    state: SessionState,
-    action: dict[str, Any],
-    pc: dict[str, Any],
-    results: dict[str, dict[str, Any]],
-) -> SessionState:
-    """observation_card 的作答：finding 选项写观察事实，unknown 选项只记「答不上来」。
-
-    两者都把这条追问请求收口，再按更新后的事实重新决定下一动作。选项只接受本张卡声明过的，
-    旧卡与其他观察的选项不能污染当前事实（与 _apply_step_feedback 的 declared 校验同口径）。
-    """
-    payload = action.get("payload") or {}
-    declared = (pc.get("payload") or {}).get("observation") or {}
-    observation_id = declared.get("observation_id")
-    option = next(
-        (o for o in declared.get("options") or [] if o["option_id"] == payload.get("option_id")),
-        None,
-    )
-    if option is None or observation_id != payload.get("observation_id"):
-        return {}
-    is_finding = option.get("kind", "finding") == "finding"
-    results[pc.get("card_id", "")] = {"chosen_option_id": option["option_id"]}
-    update: SessionState = {"stage": "guide", "substage": None, "card_results": results}
-    requests = copy.deepcopy(state.get("observation_requests") or [])
-    open_requests = [
-        r
-        for r in requests
-        if r.get("observation_id") == observation_id and r.get("status") in OPEN_OBSERVATION_STATUS
-    ]
-    for request in open_requests:
-        request.update(
-            status="answered" if is_finding else "unknown",
-            answered_input_id=state["input_id"],
-            option_id=option["option_id"],
-            quote=option["label"],
-        )
-    update["observation_requests"] = requests
-    issues = copy.deepcopy(state.get("issues") or {})
-    issue_id = state.get("active_issue_id")
-    if is_finding and issue_id in issues:
-        issue, patches = record_observations(
-            issues[issue_id],
-            [{"observation_id": observation_id, "option_id": option["option_id"]}],
-            definitions=get_plan_library().observation_definitions(),
-            input_id=state["input_id"],
-            at=state["at"],
-            source_kind="observation_card",
-            binding={
-                "card_id": pc.get("card_id"),
-                "plan_id": (pc.get("payload") or {}).get("plan_id"),
-                "asked_input_id": next((r.get("input_id") for r in open_requests), None),
-            },
-        )
-        if patches:
-            issues[issue_id] = issue
-            update.update(
-                {
-                    "issues": issues,
-                    "observations": list(
-                        dict.fromkeys([*state.get("observations", []), *issue["observations"]])
-                    ),
-                    "context_revision": state.get("context_revision", 0) + 1,
-                }
-            )
-    get_stream_writer()({"type": "progress", "stage": "guide"})
-    update.update(_apply_next_action({**state, **update}))
-    return update
 
 
 def _apply_step_feedback(
@@ -943,57 +888,14 @@ def _apply_step_feedback(
     """反馈保存到 step_attempts；真实执行写 steps_executed，无法操作记录可恢复约束并重算。
     真实执行后按 next_on 推进，保留 CP-verify R1 / R1c；备注先过 CP-in。无 LLM。"""
     payload = action.get("payload") or {}
-    feedback = payload["feedback"]
+    feedback = payload.get("feedback")
     note = payload.get("note") or None
+    answer = payload.get("answer") or None
     card_id = pc.get("card_id", "")
     session_id = state.get("session_id", "")
-    step = (pc.get("payload") or {}).get("step") or {}
-    # 观察答案只接受本张卡片步骤声明过的观察；旧卡 / 其他步骤的选项不写入事实
-    declared = {o["observation_id"]: o for o in step.get("observations") or []}
-    observations = [
-        {"observation_id": o["observation_id"], "option_id": o["option_id"]}
-        for o in payload.get("observations") or []
-        if o.get("observation_id") in declared
-        and any(opt["option_id"] == o.get("option_id") for opt in declared[o["observation_id"]]["options"])
-    ]
-    results[card_id] = {
-        "feedback": feedback,
-        **({"note": note} if note else {}),
-        **({"observations": observations} if observations else {}),
-    }
-    update: SessionState = {"stage": "verify", "substage": None, "card_results": results, "unresolved_turns": 0 if feedback == "solved" else (state.get("unresolved_turns") or 0) + 1}
-    if observations:
-        import copy
-
-        from app.diagnose.observations import record_observations
-
-        issues = copy.deepcopy(state.get("issues") or {})
-        issue_id = state.get("active_issue_id")
-        if issue_id in issues:
-            issue, patches = record_observations(
-                issues[issue_id],
-                observations,
-                definitions=get_plan_library().observation_definitions(),
-                input_id=state["input_id"],
-                at=state["at"],
-                source_kind="step_feedback",
-                binding={
-                    "card_id": card_id,
-                    "plan_id": step.get("plan_id"),
-                    "plan_version": step.get("plan_version"),
-                    "step_id": step.get("step_id"),
-                },
-            )
-            if patches:
-                issues[issue_id] = issue
-                update.update(
-                    {
-                        "issues": issues,
-                        "observations": list(dict.fromkeys([*state.get("observations", []), *issue["observations"]])),
-                        "context_revision": state.get("context_revision", 0) + 1,
-                    }
-                )
-        state = {**state, **update}
+    results[card_id] = {"feedback": feedback, **({"note": note} if note else {}), **({"answer": answer} if answer else {})}
+    update: SessionState = {"stage": "verify", "substage": None, "card_results": results,
+                            "unresolved_turns": 0 if feedback == "solved" else (state.get("unresolved_turns") or 0) + (1 if feedback else 0)}
     cp = get_rules_service().check_in(
         action_kind="step_feedback", action_note=note, session_id=session_id
     )
@@ -1015,21 +917,10 @@ def _apply_step_feedback(
         )
         return update
     out = apply_feedback(
-        state=dict(state), feedback=feedback, note=note, card_id=card_id, library=get_plan_library(),
-        observations=observations,
+        state=dict(state), feedback=feedback, note=note, card_id=card_id, library=get_plan_library(), answer=answer,
     )
-    if out.outcome == "next" and out.plan_cursor:
-        # 新事实使当前计划不再适用 → 不继续该计划，进入重新评估
-        from app.diagnose.observations import known_observations, known_option_ids
-
-        issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
-        known = known_option_ids(known_observations(issue, state.get("symptom_interview"), get_plan_library()))
-        if get_plan_library().get(out.plan_cursor["plan_id"]).observation_gate(known)[0] == "excluded":
-            out = exhaust_plan(
-                {**state, "step_attempts": out.step_attempts}, out.plan_cursor["plan_id"], counters=out.counters,
-                executed=out.steps_executed, exhausted=out.exhausted_plans,
-            )
-            out.trace = {**out.trace, "rule": "excluded_by_observation"}
+    if out.observation is not None or out.missing_material:
+        update.update(_record_card_answer(state, out.observation, out.missing_material))
     log.info(
         "cp_verify session=%s card=%s feedback=%s outcome=%s rule=%s counters=%s",
         session_id,
@@ -1074,6 +965,36 @@ def _apply_step_feedback(
         update["escalate_reason"] = out.escalate_reason
     if out.outcome == "reassess":
         update.update(_apply_next_action({**state, **update}, feedback=feedback))
+    return update
+
+
+def _record_card_answer(state: SessionState, observation: dict[str, Any] | None, missing: str | None) -> SessionState:
+    """问句卡的回答进入 issue.facts（observation，来源用户），材料暂缺进入 observations；synthesize 下次评估可见。"""
+    from app.conversation.reduce import stable_id
+
+    issues = copy.deepcopy(state.get("issues") or {})
+    issue = issues.get(state.get("active_issue_id") or "")
+    update: SessionState = {}
+    if issue is None:
+        return update
+    facts = issue.setdefault("facts", [])
+    if observation is not None:
+        fact = {
+            "fact_id": stable_id(state.get("input_id", ""), "answer", len(facts)),
+            "issue_id": state.get("active_issue_id"), "device_ref_id": (issue.get("device_ref") or {}).get("device_ref_id"),
+            "status": "active", "revision": 1, "source_kind": "card_answer", "source_entry_ids": [state.get("input_id", "")],
+            "recorded_at": state.get("at"), "context_field": None, "timing": None, "occurred_at": None,
+            "time_expression": None, "precision": None, **observation,
+        }
+        facts.append(fact)
+        issue["observations"] = [f["value"] for f in facts if f["status"] == "active" and f["kind"] == "observation"]
+        issue["issue_revision"] = int(issue.get("issue_revision") or 0) + 1
+        update["observations"] = list(issue["observations"])
+    if missing:
+        note = f"待补材料：{missing}"
+        issue["observations"] = [*(issue.get("observations") or []), note]
+        update["observations"] = list(issue["observations"])
+    update["issues"] = issues
     return update
 
 
@@ -1132,7 +1053,7 @@ def _apply_next_action(state: SessionState, *, feedback: str | None = None) -> S
 
 
 async def reassess(state: SessionState) -> SessionState:
-    """自由文本补上观察结果（或明确无法提供）后，依据更新后的事实重新决定下一动作。"""
+    """操作条件或事实变化后，依据更新后的状态重新决定下一动作。"""
     get_stream_writer()({"type": "progress", "stage": "guide"})
     update: SessionState = {"stage": "guide", "substage": None, "_verify": None}
     update.update(_apply_next_action({**state, **update}))
@@ -1143,105 +1064,37 @@ def route_after_reassess(state: SessionState) -> str:
     verify = state.get("_verify") or {}
     if state.get("escalate_reason"):
         return "escalate"
-    return {"next": "guide", "ask": "ask_observation", "done": "close"}.get(verify.get("outcome"), "dialogue")
+    return {"next": "guide", "ask": "ask_operation", "done": "close"}.get(verify.get("outcome"), "dialogue")
 
 
-def observation_question_text(question: dict[str, Any]) -> str:
-    """正文只留问题本身：选项与「答不上来」都在卡片上，再在一句话里用 ／ 罗列一遍只会变成一长串。"""
-    prefix = "再确认一下：" if int(question.get("attempt", 1)) > 1 else ""
-    return f"{prefix}{question['question']}"
-
-
-async def ask_observation(state: SessionState) -> SessionState:
-    """向用户追问一个会改变后续处理的观察结果（design §3.3 第 4 步）。固定文案，不调模型。"""
+async def ask_operation(state: SessionState) -> SessionState:
+    """追问操作条件（operation_blocker：为什么做不了 / 资源是否恢复）。固定文案，不调模型，不出卡。"""
     from app.conversation.reduce import stable_id
 
     question = (state.get("next_action") or {}).get("question") or {}
     writer = get_stream_writer()
-    writer({"type": "progress", "stage": "guide", "substage": "await_observation"})
-    message_id = stable_id(state.get("input_id"), "ask_observation", question.get("observation_id") or question.get("key"))
-    is_blocker = question.get("kind") == "operation_blocker"
-    is_scope = question.get("kind") == "scope_conflict"
-    text = acknowledge_current_turn(
-        dict(state), question["question"] if is_blocker or is_scope else observation_question_text(question)
-    )
+    writer({"type": "progress", "stage": "guide", "substage": "await_operation_conditions"})
+    message_id = stable_id(state.get("input_id"), "ask_operation", question.get("card_id") or question.get("resource"))
+    text = acknowledge_current_turn(dict(state), question["question"])
     writer({"type": "message_start", "message_id": message_id, "issue_id": state.get("active_issue_id"), "reply_to_input_id": state.get("input_id")})
     writer({"type": "message", "message_id": message_id, "delta": text})
     writer({"type": "message_end", "message_id": message_id, "status": "completed"})
-    msgs = [*(state.get("visible_messages") or []), {"message_id": message_id, "kind": "ask_observation", "text": text, "model_tier": None}]
-    if is_scope:
-        # 范围冲突走问诊的 symptom_selection 受理路径：下一轮「都有 / 1 / 2」由 symptom_question_answer 确定性解析，
-        # 自由文本由 intake 模型按 options 选择；选了新故障族即扩展症状码，码外计划按正常候选进入。
-        interview = dict(question["interview"])
-        interview["question"] = {
-            **interview["question"],
-            "asked_input_id": state.get("input_id"),
-            "question_id": f"{state.get('active_issue_id')}:{state.get('input_id')}:{question['key']}",
-        }
-        return {
-            "stage": "guide", "substage": "await_scope", "pending_card": None, "plan_cursor": None,
-            "visible_messages": msgs, "symptom_interview": interview,
-            "guide_trace": [{"event": "ask_scope", "plan_id": question.get("plan_id"),
-                             "observation_id": question.get("observation_id"), "option_id": question.get("option_id")}],
-        }
-    if is_blocker:
-        conditions = conditions_for(state)
-        for blocker in conditions.blockers:
-            if blocker.card_id == question.get("card_id"):
-                blocker.asked = True
-        if question.get("resource"):
-            conditions.resource_asks[question["resource"]] = state.get("input_id")
-        return {
-            "stage": "guide", "substage": "await_operation_conditions", "pending_card": None,
-            "plan_cursor": None, "visible_messages": msgs, "operation_conditions": conditions.model_dump(),
-            "guide_trace": [{"event": "ask_operation_conditions", "card_id": question.get("card_id"),
-                             "resource": question.get("resource")}],
-        }
-    requests = [
-        *(state.get("observation_requests") or []),
-        {
-            "observation_id": question.get("observation_id"),
-            "plan_id": question.get("plan_id"),
-            "issue_id": state.get("active_issue_id"),
-            "input_id": state.get("input_id"),
-            "asked_at": state.get("at"),
-            "status": "asked",
-            "attempt": question.get("attempt", 1),
-        },
-    ]
-    card_id = stable_id(state.get("input_id"), "observation", question.get("observation_id"))
+    msgs = [*(state.get("visible_messages") or []), {"message_id": message_id, "kind": "ask_operation", "text": text, "model_tier": None}]
+    conditions = conditions_for(state)
+    for blocker in conditions.blockers:
+        if blocker.card_id == question.get("card_id"):
+            blocker.asked = True
+    if question.get("resource"):
+        conditions.resource_asks[question["resource"]] = state.get("input_id")
     return {
-        "stage": "guide",
-        "substage": "await_observation",
-        # 出卡让选项可点：option_id 直达事实写入，绕开只认唯一字面命中的 match_reply。
-        # 自由文本回答仍然受理（输入框不禁用），两条路都通。
-        "pending_card": {
-            "card_id": card_id,
-            "input_token": stable_id(card_id, "token"),
-            "kind": "answer_observation",
-            "payload": {
-                "observation": {
-                    "observation_id": question.get("observation_id"),
-                    "question": question.get("question"),
-                    "options": list(question.get("options") or []),
-                },
-                "plan_id": question.get("plan_id"),
-                "attempt": question.get("attempt", 1),
-            },
-        },
-        "plan_cursor": None,
-        "visible_messages": msgs,
-        "observation_requests": requests,
-        "guide_trace": [{"event": "ask_observation", "observation_id": question.get("observation_id"), "card_id": card_id}],
+        "stage": "guide", "substage": "await_operation_conditions", "pending_card": None,
+        "plan_cursor": None, "visible_messages": msgs, "operation_conditions": conditions.model_dump(),
+        "guide_trace": [{"event": "ask_operation_conditions", "card_id": question.get("card_id"),
+                         "resource": question.get("resource")}],
     }
 
 
 # ---------------- 票 25：范围外 R8 与 request_human ----------------
-
-
-def route_after_ask_observation(state: SessionState) -> str:
-    """观察题出卡；操作条件追问（operation_blocker）没有卡片，直接提交。"""
-    return "await_input" if state.get("pending_card") else "commit_issue"
 
 
 async def understand(state: SessionState) -> SessionState:
@@ -1276,21 +1129,41 @@ async def understand(state: SessionState) -> SessionState:
             from app.conversation.tasks import task_business
             resumed_task = task
             state = {**state, "business_context": task_business(task, BusinessContext.restore(state)).model_dump(mode="json")}
-            meaning = meaning.model_copy(update={"primary_intent": task["intent"], "secondary_intents": [], "business_reference": None, "answer_request": None})
+            meaning = meaning.model_copy(update={
+                "primary_intent": task["intent"], "secondary_intents": [], "business_reference": None,
+                "answer_request": AnswerRequest.model_validate(task["answer_request"]) if task.get("answer_request") else None,
+            })
         else:
             meaning = meaning.model_copy(update={"primary_intent": "unknown", "clarification": "请说明要优先处理哪项需求。"})
     if get_services() is not None and meaning.secondary_intents:
         from app.conversation.tasks import ordered_intents
         intents=ordered_intents(meaning.primary_intent, meaning.secondary_intents)
         meaning=meaning.model_copy(update={"primary_intent":intents[0],"secondary_intents":intents[1:]})
-    if meaning.answer_request and meaning.primary_intent not in {"replacement_request", "refund_request", "address_update", "report_problem", "request_human"}:
+    meaning, request_rejections = ground_additional_queries(meaning, text)
+    if (
+        get_services() is not None
+        and meaning.primary_intent in {"refund_request", "replacement_request"}
+        and "logistics_query" in meaning.secondary_intents
+        and not state.get("case_id")
+    ):
+        # SOP：没收到货先查物流（送达不补发 / 未送达补发），不能直接按换货退款判质保。
+        rest = [i for i in meaning.secondary_intents if i != "logistics_query"]
+        meaning = meaning.model_copy(update={"primary_intent": "logistics_query", "secondary_intents": rest})
+    if get_services() is not None and meaning.clarification and meaning.primary_intent in {
+        "logistics_query", "warranty_query", "order_query", "replacement_request", "refund_request",
+    }:
+        from app.actions.params import extract_params
+        if extract_params(text):
+            # 原话里已有订单 / 运单号：业务事实由服务端查询，模型对「订单状态缺失」的追问不成立。
+            meaning = meaning.model_copy(update={"clarification": None})
+    if meaning.answer_request and meaning.primary_intent not in {*REMEDY_INTENTS, "report_problem", "request_human"}:
         # A single factual question can require several reads. Those reads are
         # planned by the answer module, not queued as duplicate user tasks.
         meaning = meaning.model_copy(update={"secondary_intents": [i for i in meaning.secondary_intents if i not in {"order_query", "warranty_query", "logistics_query"}]})
     requested_business = None
     business_order_no = None
     if get_services() is not None and state.get("entry") == "message" and (
-        meaning.primary_intent in {"replacement_request", "refund_request", "address_update"}
+        meaning.primary_intent in REMEDY_INTENTS
         or (state.get("requested_remedy") and (state.get("stage") == "context" or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"})
             and meaning.primary_intent in {"supplement", "unknown", "answer_pending"})
     ):
@@ -1305,7 +1178,7 @@ async def understand(state: SessionState) -> SessionState:
         binding = requested_business.bind("warranty.check")
         if binding.status == "ready":
             business_order_no = binding.params.get("order_no")
-        if meaning.primary_intent not in {"replacement_request", "refund_request", "address_update"} and state.get("case_order_no") and business_order_no != state["case_order_no"]:
+        if meaning.primary_intent not in REMEDY_INTENTS and state.get("case_order_no") and business_order_no != state["case_order_no"]:
             requested_business, business_order_no = None, None
     # Context reported while discussing another order belongs to that subject,
     # not to the still-open service issue. Keep the full meaning for subject storage.
@@ -1321,8 +1194,28 @@ async def understand(state: SessionState) -> SessionState:
         business_order_no=business_order_no,
         new_business_subject=requested_business is not None and requested_business.status == "missing",
     )
+    update["turn_decision"]["request_rejections"] = request_rejections
     if context.get("source") == "product_question":
         update["turn_decision"]["product_answered"] = True
+    # 文字追问的回答由服务端绑定，不看 intake 的意图标签（会话 44ba4626：「yes」被标成 step_feedback 落进 dialogue）。
+    # 明确在问别的（查历史、要解释…）时回答留到下一轮；intake 理解失败的说明文案要让用户看到，也不算回答。
+    awaiting = clarify_mod.awaiting_text_answer(dict(state))
+    answers_text_question = bool(
+        awaiting and state.get("entry") == "message" and text.strip()
+        and meaning.primary_intent not in clarify_mod.CONVERSATIONAL_INTENTS
+        and context.get("source") not in {"unavailable", "degraded", "context_budget"}
+        and update.get("active_issue_id") == state.get("active_issue_id")
+    )
+    update["turn_decision"]["answers_text_question"] = answers_text_question
+    asked = state.get("diagnose_outcome") or {}
+    if (answers_text_question and update.get("issues") and asked.get("mode") == "clarify"
+            and asked.get("reason") == "needs_confirmation" and (awaiting or {}).get("reason") == "applicability"):
+        # 客户对候选前提追问的回答是证据：记下来交给 synthesize，同一前提不再问（dbc144 答了 yes 又被问一遍）
+        answers = [*(update.get("precondition_answers") or []), {
+            "plan_id": asked.get("plan_id"), "missing_fact": asked.get("missing_fact"), "question": asked.get("question"),
+            "answer": text.strip()[:300], "input_id": state["input_id"]}]
+        update["precondition_answers"] = answers
+        update["issues"][update["active_issue_id"]]["precondition_answers"] = answers
     update["l3_route"] = None
     if state.get("entry") == "message":
         emotion_update = evaluate_emotion(
@@ -1335,7 +1228,7 @@ async def understand(state: SessionState) -> SessionState:
         observed = next((e for e in emotion_update["emotion_track"] if e["input_id"] == state["input_id"]), {})
         source = observed.get("source") or ("unavailable" if context.get("source") in {"unavailable", "degraded", "context_budget"} else "no_signal")
         record("emotion_strategy", session_id=state["session_id"], run_id=state["run_id"], level=emotion_update["emotion"]["level"], observed_level=observed.get("level"), source=source, trend=emotion_update["emotion_trend"], strategy=emotion_update["emotion"]["strategy"])
-    if update["turn_decision"].get("business_switched") and state.get("requested_remedy") and meaning.primary_intent not in {"replacement_request", "refund_request", "address_update"}:
+    if update["turn_decision"].get("business_switched") and state.get("requested_remedy") and meaning.primary_intent not in REMEDY_INTENTS:
         update["requested_remedy"] = state["requested_remedy"]
     from app.actions.runtime import get_services
     if get_services() is not None:
@@ -1345,10 +1238,17 @@ async def understand(state: SessionState) -> SessionState:
         ).model_dump(mode="json")
         from app.conversation.tasks import enqueue
         from app.sessions.l3 import say
-        tasks, notice = enqueue(update.get("task_queue") or [],meaning.primary_intent,meaning.secondary_intents,text,state["input_id"], business=BusinessContext.restore({**state, **update}))
+        tasks, notice = enqueue(update.get("task_queue") or [], meaning.primary_intent, meaning.secondary_intents,
+                                text, state["input_id"], business=BusinessContext.restore({**state, **update}),
+                                request_quotes=meaning.request_quotes, answer_request=meaning.answer_request,
+                                answer_scope=update["turn_decision"].get("answer_scope", "focus"))
         if resumed_task:
             tasks = [{**task, "status": "active" if task["task_id"] == resumed_task["task_id"] else "pending"} if task["status"] in {"pending", "active"} else task for task in tasks]
             update["turn_decision"]["task_id"] = resumed_task["task_id"]
+            update["turn_decision"]["answer_scope"] = resumed_task.get("answer_scope", "focus")
+            # This request was grounded when queued; the short resume command
+            # need not repeat its original question quote.
+            update["turn_decision"]["answer_request"] = resumed_task.get("answer_request")
         update["task_queue"]=tasks
         if notice:
             say({**state,**update},notice)
@@ -1356,7 +1256,7 @@ async def understand(state: SessionState) -> SessionState:
         context_sources = dict(update.get("context_sources") or {})
         reported = {
             fact.context_field: fact.value for fact in meaning.facts
-            if fact.kind == "context" and fact.context_field and fact.quote and fact.quote in text
+            if fact.kind == "context" and fact.context_field and quoted(fact.quote, text)
             and (fact.context_field != "purchase_date" or receipt_mod.stated_purchase_date(fact.value, state["at"]))
         }
         business = BusinessContext.restore({**state, **update}).remember(reported, state["input_id"], order_no=update.get("case_order_no") if update["turn_decision"].get("answer_scope") in {"case", "issue"} else None)
@@ -1368,6 +1268,9 @@ async def understand(state: SessionState) -> SessionState:
                 if context_sources.get(key) != "receipt":
                     context_values[key], context_sources[key] = value, "user"
         update.update(service_context=context_values, context_sources=context_sources)
+        if state.get("awaiting_evidence") and state.get("case_id") and (reported or _new_fault_images(state)):
+            # 补齐 SOP 证据的回复：回到质保 / 方案节点重新核对，缺什么再问什么。
+            update["turn_decision"]["evidence_supplied"] = True
     if context.get("source") != "validated_action":
         update["model_trace"] = [
             *state.get("model_trace", []),
@@ -1378,6 +1281,13 @@ async def understand(state: SessionState) -> SessionState:
                 "attempts": context.get("attempts", 1),
             },
         ]
+        recovery = context.get("problem_description") or {}
+        if recovery and recovery.get("outcome") != "not_needed":
+            update["model_trace"].append({
+                "task": "intake", "purpose": "problem_description", "input_id": state["input_id"],
+                "model_used": recovery.get("model_used", "skipped"), "lane": context.get("lane", _lane()),
+                "attempts": recovery.get("attempts", 0), "outcome": recovery["outcome"], "accepted": recovery.get("accepted", 0),
+            })
     pending = update.get("pending_card") or {}
     current_input = next(
         (e for e in state.get("history", []) if e["entry_id"] == state["input_id"]), {}
@@ -1437,7 +1347,7 @@ async def understand(state: SessionState) -> SessionState:
     if get_services() is not None:
         from app.sessions.l3 import reopening_request
         reopening = await reopening_request({**state, **update}, meaning)
-    if update["turn_decision"].get("symptom_answered") or update["turn_decision"].get("operation_changed"):
+    if update["turn_decision"].get("operation_changed"):
         update["turn_decision"].update(reply_mode="diagnose", clarification=None)
         command, clarification = None, None
     elif reopening and not reopening.get("clarification"):
@@ -1495,6 +1405,14 @@ async def dialogue(state: SessionState) -> SessionState:
     return result
 
 
+async def product_help(state: SessionState) -> SessionState:
+    return await answer_product_question(
+        dict(state), writer=get_stream_writer(), catalog=get_catalog(),
+        adapter=get_knowledge_adapter(), router=get_model_router(),
+        rules=get_rules_service(), lane=_lane(),
+    )
+
+
 async def commit_issue(state: SessionState) -> SessionState:
     from app.actions.runtime import get_services
     from app.analytics.l3 import episode
@@ -1534,6 +1452,27 @@ async def commit_issue(state: SessionState) -> SessionState:
     }
 
 
+def _troubleshoot_before_remedy(state: SessionState, intent: str) -> bool:
+    """换货 / 退款诉求是否应当先走一轮排障（主办方 SOP：保内排障无效才换货）。
+
+    四个条件缺一不可，每一个都是为了不把客户困在排障里：
+    - 只管换货 / 退款：补发、承运商调查、改地址、改订单与排障无关；
+    - 本会话还没排过任何一步（执行过的步骤为空），排过就照常进办理；
+    - 客户确实描述了故障现象，否则无障可排；
+    - 还没进入办理流程（没有 case、没有待办卡片），不打断进行中的办理。
+    """
+    from app.conversation.operation_conditions import execution_history
+
+    return (
+        intent in {"replacement_request", "refund_request"}
+        and not execution_history(dict(state))
+        and bool(state.get("symptoms"))
+        and not state.get("case_id")
+        and not state.get("pending_card")
+        and not state.get("requested_remedy")
+    )
+
+
 def route_after_close(state: SessionState) -> str:
     from app.actions.runtime import get_services
     return "advance_tasks" if get_services() is not None else "commit_issue"
@@ -1553,15 +1492,18 @@ def route_entry(state: SessionState) -> str:
         return "receipt_extract"
     if decision.get("escalation_trigger"):
         return "escalate"
-    if decision.get("observation_answered") or decision.get("observation_attempted"):
-        return "reassess"
     if decision.get("operation_changed"):
+        from app.conversation.operation_conditions import execution_history
+        if not state.get("plans_ranked") and not execution_history(dict(state)):
+            # 从未排障的问题（T31 首封「despite wiping clean…」被读成操作条件）：先检索，再谈操作条件。
+            # 没有候选时 reassess 只会直接 R2 交接。
+            return "disambiguate"
         return "reassess"
     if decision.get("primary_intent") == "complaint" and state.get("plans_ranked") and not state.get("pending_card") and not state.get("case_id"):
         return "reassess"
     if decision.get("business_ambiguous"):
         return "dialogue"
-    if decision.get("symptom_answered") or decision.get("product_answered"):
+    if decision.get("product_answered"):
         return "disambiguate"
     if decision.get("business_switched"):
         return "service_context"
@@ -1571,6 +1513,10 @@ def route_entry(state: SessionState) -> str:
         # Accepted card commands have already been scoped and validated. They
         # must be applied before free-text business routing can advance a flow.
         return "apply_action"
+    if handles_product_question(state):
+        # 读图不随意图走：客户带图问产品（T48 拍指示灯问绿灯含义，图里还有外壳裂纹）也先读图，
+        # 读到的事实进问题记录、过安全检查，再回到产品咨询
+        return "vision" if _new_fault_images(state) else "product_help"
     if get_services() is not None:
         intent = decision.get("primary_intent")
         from app.conversation.answers import FACTUAL_INTENTS
@@ -1580,14 +1526,23 @@ def route_entry(state: SessionState) -> str:
             return "consult"
         if intent == "confirm_received" and state.get("case_id"):
             return "track"
-        if intent in {"replacement_request","refund_request","address_update"}:
+        if intent in REMEDY_INTENTS:
+            # 主办方 SOP：「保内**排障无效**可换货」—— 排障是换货 / 退款的前置条件，不是另一条路。
+            # 客户张口就要换货但同时描述了故障、而本会话还没排过障时，先走排障（T49：吸奶器开不了机，
+            # 官方 Q&A bp-0123 / bp-0151 有对应条目，原行为直接转人工跳过了这一步）。
+            # 只对「可排障的故障诉求」生效：没有现象可排（如纯物流补发、改地址）不受影响；
+            # 排过一轮之后 executed_steps 非空，照常进入办理流程，不会把客户困在排障里。
+            if _troubleshoot_before_remedy(state, intent):
+                return "disambiguate"
             return "service_context"
+        if decision.get("evidence_supplied"):
+            return "propose"
         if state.get("requested_remedy") and (state.get("stage") == "context" or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"}) and intent in {"supplement", "unknown", "answer_pending"}:
             return "service_context"
         if state.get("human_request_info") and intent in {"supplement","correct","answer_pending"}:
             return "service_context"
         if state.get("case_id") and state.get("stage") == "awaiting_human":
-            return "dialogue"
+            return "disambiguate" if retry_after_handoff(state) else "dialogue"
         if intent == "report_problem" and decision.get("allowed_operations") and not state.get("pending_card"):
             return "disambiguate"
     if decision.get("diagnostic_request") and decision.get("allowed_operations") and not state.get("pending_card"):
@@ -1597,6 +1552,8 @@ def route_entry(state: SessionState) -> str:
                 return "dialogue"
             return "disambiguate"
     if decision.get("reply_mode") in {"dialogue", "clarify"}:
+        if decision.get("answers_text_question") and decision.get("allowed_operations", True):
+            return "disambiguate"
         if (decision.get("primary_intent") in {"report_problem", "supplement", "unknown", "answer_pending"}
                 and decision.get("allowed_operations", True) and _new_fault_images(state)):
             return "disambiguate"
@@ -1608,8 +1565,8 @@ def out_of_scope_text(name: str, category_name: str) -> str:
     """范围外说明：支持范围从目录 in_scope 品类所属的产品线生成，不写死品牌与品类。"""
     lines = list(dict.fromkeys(spec.line for spec in get_catalog().categories.values() if spec.in_scope))
     return (
-        f"当前智能排障覆盖 {' / '.join(lines)} 产品线的常见品类。"
-        f"您咨询的「{name}」属于{category_name}，暂不在支持范围内；我会整理问题记录，供您交给人工客服继续处理。"
+        f"Our assistant currently supports {' / '.join(lines)} products. "
+        f"\"{name}\" ({category_name}) isn't covered yet; I'll put together a record you can pass to our support team."
     )
 
 
@@ -1621,7 +1578,7 @@ async def out_of_scope(state: SessionState) -> SessionState:
     product = dict(state.get("product_confirmed") or {})
     category = product.get("category") or state.get("category") or ""
     spec = catalog.categories.get(category)
-    category_name = spec.name if spec else (category or "其他品类")
+    category_name = (spec.name_en or spec.name) if spec else (category or "other")
     update: SessionState = {"stage": "out_of_scope", "escalate_reason": "R8"}
     if not product:
         # 只提到范围外品类、没有具体型号：摘要里的产品写品类（02 §5 product_confirmed.sku 可选）
@@ -1656,6 +1613,62 @@ def knowledge_scope_of(state: SessionState) -> KnowledgeScope:
     return KnowledgeScope(ps, category, product.get("sku") if ps == "confirmed_sku" else None, category_skus=category_skus)  # type: ignore[arg-type]
 
 
+def exact_code_hits(state: SessionState, scope: KnowledgeScope) -> dict[str, Any]:
+    """客户消息里的错误码在官方 Q&A 里的精确命中（按已确认型号；型号未定时按码反查唯一型号族）。
+
+    返回 codes / evidence（本地证据，source=qa_exact）/ warranty（命中条目为硬件故障结论时的计划 id）/
+    miss（报了码但官方未收录）。
+    """
+    from app.official.message import parse_message
+    from app.official.qa_index import get_qa_index
+
+    index = get_qa_index()
+    # 本问题所有用户原话里的码：首轮表单被读成别的意图（T22 复跑：判成产品咨询）时，后面报现象也要能精确命中
+    issue = (state.get("issues") or {}).get(state.get("active_issue_id")) or {}
+    sources = {sid for f in issue.get("facts") or [] if f.get("status") == "active" for sid in f.get("source_entry_ids") or []}
+    earlier = [m.get("text") or "" for m in state.get("messages") or [] if m.get("role") == "user" and m.get("input_id") in sources]
+    texts = [state.get("text") or "", *earlier, *[str(s) for s in state.get("symptoms") or []]]
+    codes: list[str] = list(dict.fromkeys(c for t in texts for c in parse_message(t).codes))
+    codes += [c for c in state.get("error_codes") or [] if c not in codes]
+    if not codes:
+        return {"codes": [], "evidence": [], "warranty": None, "steps": None, "miss": False}
+    guides = []
+    for code in codes:
+        guides += [g for g in index.lookup(scope.sku, code) if g.visible and g not in guides]
+    if not guides:
+        return {"codes": codes, "evidence": [], "warranty": None, "steps": None, "miss": True}
+    evidence = [
+        {
+            "evidence_id": f"qa:{g.qa_id}",
+            "source": "qa_exact",
+            "doc_id": g.qa_id,
+            "doc_version": index.version,
+            "chunk_id": g.qa_id,
+            "snippet": g.answer[:400] if g.kind != "steps" else " ".join(st.text for st in g.steps)[:400],
+            "score": 1.0,
+            "status": "ok",
+            "knowledge_title": g.title,
+        }
+        for g in guides
+    ]
+    warranty = next((g.plan_id for g in guides if g.kind == "warranty"), None)
+    # 同型号同码唯一命中一条步骤类 Q&A：官方已经按这个码写好了排查顺序，不必再让模型判适用性
+    # （T18 / T30 实测模型会反过来追问「是 3212 还是 3202」或判成不适用）。
+    steps = guides[0].plan_id if len(guides) == 1 and guides[0].kind in {"steps", "answer"} else None
+    return {"codes": codes, "evidence": evidence, "warranty": warranty if len(guides) == 1 else None,
+            "steps": steps, "miss": False}
+
+
+def retrieval_basis(state: SessionState) -> dict[str, Any]:
+    """本次候选依据的事实修订号、计划库版本与已确认型号；三者都没变时不重新检索（_after_product）。
+    型号纠正（X10 → E28）必须作废旧候选，所以 sku 也是依据的一部分。"""
+    return {
+        "issue_revision": ((state.get("issues") or {}).get(state.get("active_issue_id")) or {}).get("issue_revision"),
+        "plans_version": get_plan_library().version,
+        "sku": (state.get("product_confirmed") or {}).get("sku"),
+    }
+
+
 def retrieval_query(state: SessionState) -> str:
     """规范化查询（03 §1.4.1）：已确认产品 / 品类 + 有效症状；症状为空退回原文；unknown 返回空串。"""
     return build_query(dict(state))
@@ -1687,6 +1700,7 @@ async def _search_round(
     run_id: str,
     remaining_ms: int | None = None,
     allow_rerank: bool = True,
+    english: str | None = None,
 ):
     """一轮：委托 app.knowledge.search.search_round（阶段 3：原 query + 可选同义变体 × 两库并发 → RRF → 可选 rerank，
     + 可选本地 FAQ）。开关全关时 = 两库各一次并发（P0-1）。返回 (results, trace_entries)。"""
@@ -1702,9 +1716,9 @@ async def _search_round(
         round_no=round_no,
         session_id=session_id,
         run_id=run_id,
-        faq_index=get_faq_index() if rcfg.faq.enabled else None,
         reranker=_reranker(rcfg) if rcfg.rerank.enabled else None,
         allow_rerank=allow_rerank,
+        english=english,
     )
     for t in out.trace:
         if "event" not in t:
@@ -1740,19 +1754,6 @@ async def _grade_second_round(
     # 第二次调用失败（阶段 5 实测 7/56）不能把第一次已成立的结论降级成 unknown
     return hits, second if second.status == "graded" else assessment
 
-
-async def _expand_parents(adapter, hits, rcfg) -> list[str] | None:
-    """适配器支持时（真实 WeKnora 适配器或录制包装器透传）做 small-to-big；不支持返回 None。"""
-    real = getattr(adapter, "inner", adapter)
-    expand = getattr(real, "expand_parents", None)
-    if expand is None:
-        return None
-    refresh = getattr(real, "refresh_chunks", None)
-    if refresh is not None and getattr(real, "chunks_loaded_at", 0) is None:
-        await refresh()
-    return expand(
-        hits, max_items=rcfg.parent_expand.max_items, max_chars=rcfg.parent_expand.max_chars
-    )
 
 
 _reranker_cache: dict[str, DashScopeReranker] = {}
@@ -1868,36 +1869,99 @@ async def retrieve(state: SessionState) -> SessionState:
                 }
             ],
         }
-    # 票 33：产品确认后预加载故障卡（≤ 800 token 常驻），按症状 / 查询命中的条目作为 fault_card 证据
-    fc_lib = get_fault_card_library()
-    card = fc_lib.for_scope(sku=scope.sku, category=scope.category) if fc_lib else None
-    fault_card_state = None
-    fc_evidence: list[dict[str, Any]] = []
-    if card is not None:
-        fc_hits = card.match([query, *[str(s) for s in state.get("symptoms") or []]], symptom_codes=state.get("symptom_codes") or [])
-        signature_ids=signature_plans(state.get('fault_localization'), card.faults)
-        fc_hits=[*[f for f in card.faults if f.plan_id in signature_ids], *[f for f in fc_hits if f.plan_id not in signature_ids]]
-        allowed_ids = {
-            p.plan_id for p in constrain_plans(state, get_plan_library().allowed_for(
-                category=scope.category, sku=scope.sku,
-            ))
+    # 错误码精确命中（官方 Q&A 标题里的码 + 型号）：先于语义检索，作为本地证据进入排序与步骤主引用。
+    exact = exact_code_hits(state, scope)
+    exact_evidence: list[dict[str, Any]] = exact["evidence"]
+    if exact["miss"]:
+        # 客户报了错误码、官方 Q&A 未收录：不拿相近码顶替（T13 的 5116 ≠ 5112），如实说明后转人工。
+        return {
+            "stage": "diagnose",
+            "substage": "retrieve",
+            "knowledge_status": "code_miss",
+            "query": query,
+            "error_codes": exact["codes"],
+            "plans_ranked": [],
+            "diagnose_outcome": {"mode": "escalate", "reason": "R5", "knowledge_status": "code_miss",
+                                 "codes": exact["codes"], "cause": "knowledge_gap"},
+            "escalate_reason": "R5",
+            "plan_cursor": None,
+            "observations": [*(state.get("observations") or []),
+                             "错误码 " + "、".join(exact["codes"]) + " 未在官方知识库收录，需人工核实"],
+            "retrieval_trace": [{"round": 0, "status": "code_miss", "codes": exact["codes"],
+                                 "session_id": session_id, "run_id": run_id}],
         }
-        fc_hits = [f for f in fc_hits if f.plan_id in allowed_ids]
-        fault_card_state = {
-            "key": card.key,
-            "doc_version": card.doc_version,
-            "tokens": card.tokens(),
-            "text": card.render(fc_hits),
+    damage = None if exact["codes"] else physical_damage(parse_message(state.get("text") or "").problem_text or state.get("text") or "")
+    if damage:
+        # 客户描述了可见物理损坏（部件断裂 / 脱落）：排障步骤修不好，按 SOP 直接进质保判断（T42 / T44）
+        return {
+            "stage": "diagnose",
+            "substage": "retrieve",
+            "knowledge_status": "ok",
+            "query": query,
+            "plans_ranked": [],
+            "diagnose_outcome": {"mode": "warranty", "reason": "physical_damage"},
+            "escalate_reason": "R6",
+            "plan_cursor": None,
+            "observations": [*(state.get("observations") or []), f"客户描述物理损坏：{damage}，按 SOP 进入质保判断"],
+            "retrieval_trace": [{"round": 0, "status": "physical_damage", "quote": damage,
+                                 "session_id": session_id, "run_id": run_id}],
         }
-        fc_evidence = card.evidence_items(fc_hits)
+    if exact["warranty"]:
+        # 官方 Q&A 判定为硬件故障（hardware malfunction / warranty service）：不发排障步骤，直接进质保判断。
+        items = [{k: v for k, v in it.items() if k != "knowledge_title"} for it in exact_evidence]
+        writer({"type": "evidence", "items": items})
+        for it in items:
+            evidence[it["evidence_id"]] = it
+        return {
+            "stage": "diagnose",
+            "substage": "retrieve",
+            "knowledge_status": "ok",
+            "evidence": evidence,
+            "current_evidence_ids": [it["evidence_id"] for it in exact_evidence],
+            "query": query,
+            "error_codes": exact["codes"],
+            "plans_ranked": [{"plan_id": exact["warranty"], "version": 1, "confidence": 1.0,
+                              "evidence_ids": [it["evidence_id"] for it in exact_evidence], "source": "exact_code"}],
+            "diagnose_outcome": {"mode": "warranty", "reason": "hardware_malfunction", "plan_id": exact["warranty"]},
+            "escalate_reason": "R6",
+            "plan_cursor": None,
+            "observations": [*(state.get("observations") or []),
+                             "官方知识判定为硬件故障（" + exact["warranty"] + "），按 SOP 进入质保判断"],
+            "retrieval_trace": [{"round": 0, "status": "exact_code_warranty", "codes": exact["codes"],
+                                 "plan_id": exact["warranty"], "session_id": session_id, "run_id": run_id}],
+        }
+    if exact["steps"] and exact["steps"] not in effective_exhausted(state):
+        items = [{k: v for k, v in it.items() if k != "knowledge_title"} for it in exact_evidence]
+        writer({"type": "evidence", "items": items})
+        for it in items:
+            evidence[it["evidence_id"]] = it
+        symptoms = [s for s in [*(state.get("symptoms") or []), parse_message(state.get("text") or "").problem_text] if s]
+        ranked = [{"plan_id": exact["steps"], "version": get_plan_library().get(exact["steps"]).version, "confidence": 1.0,
+                   "evidence_ids": [it["evidence_id"] for it in exact_evidence], "source": "exact_code",
+                   "supported_symptoms": symptoms or [", ".join(exact["codes"])]}]
+        return {
+            "stage": "diagnose",
+            "substage": "retrieve",
+            "knowledge_status": "ok",
+            "evidence": evidence,
+            "current_evidence_ids": [it["evidence_id"] for it in exact_evidence],
+            "query": query,
+            "error_codes": exact["codes"],
+            "plans_ranked": ranked,
+            "retrieval_trace": [{"round": 0, "status": "exact_code_steps", "codes": exact["codes"],
+                                 "plan_id": exact["steps"], "session_id": session_id, "run_id": run_id}],
+            "retrieval_basis": retrieval_basis(state),
+            **_diagnose_outcome(ranked, knowledge_status="ok", exact_hits=[e["chunk_id"] for e in exact_evidence],
+                                exhausted_plans=sorted(effective_exhausted(state)), state=state),
+        }
     local_hits = [
         Hit(
             evidence_id=it["evidence_id"], knowledge_id=it["doc_id"], chunk_id=it["chunk_id"],
             doc_id=it["doc_id"], doc_version=it["doc_version"], source=it["source"],
             snippet=it["snippet"], score=it["score"], content=it["snippet"],
-            knowledge_title=f"故障卡 {it['doc_id']}",
+            knowledge_title=it.get("knowledge_title") or it["doc_id"],
         )
-        for it in fc_evidence
+        for it in exact_evidence
     ]
     writer(
         {
@@ -1916,11 +1980,11 @@ async def retrieve(state: SessionState) -> SessionState:
                 "tool_id": tool_id,
                 "name": "knowledge.search",
                 "status": "failed",
-                "summary": "知识库暂不可用，按标准排障流程",
+                "summary": "知识库暂不可用",
             }
         )
-        for it in fc_evidence:
-            evidence[it["evidence_id"]] = it
+        for it in exact_evidence:
+            evidence[it["evidence_id"]] = {k: v for k, v in it.items() if k != "knowledge_title"}
         selection = pack_hits(
             local_hits, max_items=rcfg.retrieval.final_k,
             max_chars=rcfg.retrieval.context_chars, item_chars=rcfg.retrieval.item_chars,
@@ -1932,8 +1996,11 @@ async def retrieve(state: SessionState) -> SessionState:
             _diagnose_outcome(
                 plans.get("plans_ranked") or [],
                 knowledge_status="unavailable",
-                fault_card_hits=[e["chunk_id"] for e in fc_evidence],
+                exact_hits=[e["chunk_id"] for e in exact_evidence],
                 exhausted_plans=state.get("exhausted_plans") or [],
+                clarifications=plans.pop("clarifications", []),
+                previous_outcome=state.get("diagnose_outcome"),
+                state=state,
             )
         )
         return {
@@ -1942,8 +2009,7 @@ async def retrieve(state: SessionState) -> SessionState:
             "knowledge_status": "unavailable",
             "evidence": evidence,
             "current_evidence_ids": list(round_evidence),
-            "fault_card": fault_card_state,
-            "fault_card_hits": [e["chunk_id"] for e in fc_evidence],
+            "error_codes": exact["codes"],
             "query": query,
             "retrieval_trace": [
                 {
@@ -1976,6 +2042,7 @@ async def retrieve(state: SessionState) -> SessionState:
         session_id=session_id,
         run_id=run_id,
         remaining_ms=_remaining_ms(state),
+        english=state.get("search_query_en"),
     )
     # 票 30 的 vision 节点已在本 run 先行读图（R4 已在其后直接升级）；这里只消费观察项
     observations = (
@@ -2168,7 +2235,7 @@ async def retrieve(state: SessionState) -> SessionState:
                 "tool_id": tool_id,
                 "name": "knowledge.search",
                 "status": "failed",
-                "summary": "知识库暂不可用，按标准排障流程",
+                "summary": "知识库暂不可用",
             }
         )
     else:
@@ -2182,7 +2249,7 @@ async def retrieve(state: SessionState) -> SessionState:
                 + ("（已补检索）" if rounds == 2 else "")
             )
         else:
-            summary = "未找到匹配知识，按标准排障流程"
+            summary = "未找到匹配的官方说明"
         writer(
             {
                 "type": "tool_call",
@@ -2195,21 +2262,6 @@ async def retrieve(state: SessionState) -> SessionState:
         if items:
             writer({"type": "evidence", "items": items})
     candidates = [*hits, *local_hits]
-    selected = select_hits(candidates, rcfg.retrieval.final_k)
-    # 只扩展已选中的代表，按命中位置保留上下文；SSE 仍发布命中子块摘要。
-    if selected and rcfg.parent_expand.enabled:
-        expanded = await _expand_parents(adapter, selected, rcfg)
-        if expanded is not None:
-            trace.append(
-                {
-                    "round": rounds,
-                    "kb": "kb_manual",
-                    "event": "parent_expanded",
-                    "ids": expanded,
-                    "session_id": session_id,
-                    "run_id": run_id,
-                }
-            )
     selection = pack_hits(
         candidates, max_items=rcfg.retrieval.final_k,
         max_chars=rcfg.retrieval.context_chars, item_chars=rcfg.retrieval.item_chars,
@@ -2222,16 +2274,47 @@ async def retrieve(state: SessionState) -> SessionState:
         "rounds": {h.evidence_id: h.round for h in selection.hits},
         "session_id": session_id, "run_id": run_id,
     })
-    for it in fc_evidence:
-        evidence.setdefault(it["evidence_id"], it)
+    for it in exact_evidence:
+        evidence.setdefault(it["evidence_id"], {k: v for k, v in it.items() if k != "knowledge_title"})
     plans = await _synthesize_step(state, round_evidence, lane, rcfg)
     trace += plans.pop("retrieval_trace", [])
+    # 首批无法支持操作时，给被预算裁掉的候选一次机会；单次上下文预算保持不变。
+    # 不重试已读片段，不重新查询知识库，也不把 needs_confirmation 当成 supported。
+    # 首批已有待确认的追问（needs_confirmation）就先问，不补查：补查只看得到被裁掉的几条、没有首批作对照，
+    # 容易把勉强沾边的候选判成适用并顶掉首批的追问（T36：首批 rv-0341 待确认 0.62，补查把「集尘时异响」rv-0315 判适用）。
+    omitted = [hit for hit in candidates if selection.excluded.get(hit.evidence_id) in {"item_limit", "char_limit"}]
+    if not plans.get("plans_ranked") and not plans.get("clarifications") and omitted and get_model_router() is not None:
+        if _remaining_ms(state) >= rcfg.retrieval.min_remaining_for_second_round_ms:
+            recovery = pack_hits(
+                omitted, max_items=rcfg.retrieval.final_k,
+                max_chars=rcfg.retrieval.context_chars, item_chars=rcfg.retrieval.item_chars,
+            )
+            extra_evidence = {hit.evidence_id: hit.as_internal_item() for hit in recovery.hits}
+            trace.append({"event": "context_recovery", "selected_ids": list(extra_evidence),
+                          "excluded": recovery.excluded, "context_chars": recovery.chars,
+                          "session_id": session_id, "run_id": run_id})
+            if extra_evidence:
+                extra = await _synthesize_step({**state, "model_trace": plans.get("model_trace", [])}, extra_evidence, lane, rcfg)
+                trace += extra.pop("retrieval_trace", [])
+                # 恢复调用失败时不能把检索顺序降级结果升级成可执行方案。
+                extra["plans_ranked"] = [plan for plan in extra["plans_ranked"] if plan.get("source") == "synthesize"]
+                round_evidence.update(extra_evidence)
+                if extra.get("plans_ranked") or not plans.get("clarifications"):
+                    plans = extra
+                else:
+                    plans["model_trace"] = extra.get("model_trace", [])
+        else:
+            trace.append({"event": "context_recovery_skipped", "reason": "budget",
+                          "session_id": session_id, "run_id": run_id})
     plans.update(
         _diagnose_outcome(
             plans.get("plans_ranked") or [],
             knowledge_status=status,
-            fault_card_hits=[e["chunk_id"] for e in fc_evidence],
+            exact_hits=[e["chunk_id"] for e in exact_evidence],
             exhausted_plans=sorted(effective_exhausted(state)),
+            clarifications=plans.pop("clarifications", []),
+            previous_outcome=state.get("diagnose_outcome"),
+            state=state,
         )
     )
     return {
@@ -2249,13 +2332,9 @@ async def retrieve(state: SessionState) -> SessionState:
             if assessment is not None and assessment.status == "graded"
             else None
         ),
-        "fault_card": fault_card_state,
-        "fault_card_hits": [e["chunk_id"] for e in fc_evidence],
+        "error_codes": exact["codes"],
         # 本次候选依据的事实修订号与计划库版本；两者都没变时 _after_product 不再重新检索
-        "retrieval_basis": {
-            "issue_revision": ((state.get("issues") or {}).get(state.get("active_issue_id")) or {}).get("issue_revision"),
-            "plans_version": get_plan_library().version,
-        },
+        "retrieval_basis": retrieval_basis(state),
         **plans,
     }
 
@@ -2263,24 +2342,20 @@ async def retrieve(state: SessionState) -> SessionState:
 async def _synthesize_step(
     state: SessionState, round_evidence: dict[str, dict[str, Any]], lane: str, rcfg
 ) -> dict[str, Any]:
+    """候选计划 = 本轮命中的官方 Q&A 对应的计划（错误码精确命中优先，其次检索命中），由模型在其中排序。"""
     scope = knowledge_scope_of(state)
-    codes = set(state.get("symptom_codes") or [])
-    chosen = set(selected_symptom_codes(state))
-    library = get_plan_library().allowed_for(category=scope.category, sku=scope.sku)
-    if chosen:
-        # 用户在问诊里亲自选定的现象是事实：码外计划不进模型可选集合（票 19），没有码内计划就按 R5 如实结束，
-        # 否则模型会被迫从无关计划里挑（会话 e84456：选了「拖地异常」却下发了四步吸力排查）
-        allowed = [p for p in library if chosen.intersection(p.symptom_codes)]
-    else:
-        # 自由文本的粗分类只决定候选顺序（码内优先），不把码外计划删掉，
-        # 否则分类一错，正确的计划模型永远看不到（会话 37cea3：「很慢」被归入 pb_no_input）
-        allowed = sorted(library, key=lambda p: not codes.intersection(p.symptom_codes))
-    allowed = constrain_plans(state, allowed)
+    library = get_plan_library()
+    allowed_by_id = {p.plan_id: p for p in library.allowed_for(category=scope.category, sku=scope.sku)}
+    hit_ids: list[str] = []
+    for item in round_evidence.values():
+        plan_id = "qa_" + str(item.get("doc_id") or "").replace("-", "_")
+        if plan_id in allowed_by_id and plan_id not in hit_ids:
+            hit_ids.append(plan_id)
+    allowed = [allowed_by_id[i] for i in hit_ids]
     out = await synthesize(
         get_model_router(),
         state=dict(state),
         allowed=allowed,
-        symptom_codes=sorted(codes),
         evidence=list(round_evidence.values()),
         observations=list(state.get("image_observations") or []),
         budget_ms=min(rcfg.synthesize.budget_ms, max(1000, _remaining_ms(state) - 2000)),
@@ -2288,7 +2363,7 @@ async def _synthesize_step(
         session_id=state.get("session_id"),
         lane=lane,
     )
-    update: dict[str, Any] = {"plans_ranked": out["plans_ranked"]}
+    update: dict[str, Any] = {"plans_ranked": out["plans_ranked"], "clarifications": out.get("clarifications", [])}
     if out["model_trace"]:
         update["model_trace"] = [*state.get("model_trace", []), out["model_trace"]]
     if out["dropped"] or out["degraded"]:
@@ -2304,20 +2379,123 @@ async def _synthesize_step(
     return update
 
 
+# 现象里不带信息的词：整机 / 品类词、系动词、冠词与指代（英 / 荷 / 德 / 法 / 西，63 单工单语言）
+_NON_SYMPTOM_WORDS = {
+    "the", "a", "an", "my", "it", "is", "are", "was", "keeps", "robot", "vacuum", "device", "machine", "pump", "camera",
+    "de", "het", "een", "mijn", "der", "die", "das", "ist", "mein", "le", "la", "les", "mon", "est",
+    "el", "los", "las", "mi", "está", "esta", "es", "roboter", "robotstofzuiger", "aspiradora", "stofzuiger",
+}
+
+
+def vague_symptoms(state: SessionState) -> list[str]:
+    """本问题的现象全都只有一两个词、又没有错误码时返回这些现象原话：一句话太笼统，检索词和英文资料对不上
+    （T43「desconectado」）；否则返回空列表。"""
+    if state.get("error_codes"):
+        return []
+    issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
+    symptoms = [f for f in issue.get("facts", []) if f.get("status") == "active" and f.get("kind") == "symptom"
+                and f.get("polarity", "affirmed") == "affirmed"]
+    def short(value: str) -> bool:
+        # 拉丁字母按内容词数，汉字按字数（「不吸了」「滚刷缠头发」本身就是具体现象）。整机词、系动词、冠词不是现象信息：
+        # 同一句「El robot está desconectado」模型有时抽成「desconectado」、有时抽成「robot está desconectado」，
+        # 按原始词数后者算具体，追问不触发、直接交人工（2026-10-12 重放 2/3）
+        words = [w for w in re.findall(r"[^\W\d_]+", value.casefold()) if w not in _NON_SYMPTOM_WORDS]
+        return not re.search(r"[一-鿿]", value) and len(words) <= 2
+
+    values = [str(f.get("quote") or f.get("value") or "").strip() for f in symptoms]
+    return [v for v in values if v] if symptoms and all(short(str(f.get("value") or "")) for f in symptoms) else []
+
+
 def _diagnose_outcome(
-    plans_ranked: list[dict[str, Any]], *, knowledge_status: str, fault_card_hits: list[str],
+    plans_ranked: list[dict[str, Any]], *, knowledge_status: str, exact_hits: list[str],
     exhausted_plans: list[str] = (),
+    clarifications: list[dict] = (), previous_outcome: dict | None = None,
+    state: SessionState | None = None,
 ) -> dict[str, Any]:
-    """票 33 / 09 §4：有假设 → 进 guide；来源 synthesize（有证据）或 standard_flow（预写计划默认顺序）；无适用计划 → R5。"""
+    """经过适用性核验或精确码核实的方案进入 guide；无可执行方案先澄清或交接。"""
+    clarifications = [candidate for candidate in clarifications if candidate["plan_id"] not in exhausted_plans]
+    previous = previous_outcome or {}
+    attempts = previous.get("attempts", 0) if previous.get("mode") == "clarify" else 0
+    if previous.get("mode") == "clarify" and str(previous.get("reason") or "").endswith("_mismatch"):
+        # 对象 / 时机冲突的澄清只问一次（T52）：冲突由已记录的事实与候选标题决定，用户怎么答都消不掉；
+        # 重算时换个候选只会换个对象再问（真实复跑：问完盒子又问泵）。这是「候选不对」而不是「信息不足」：
+        # 同类冲突答过一次后不再追问，换别的澄清或走无方案出口。
+        # 模型提出的前提确认（needs_confirmation）不在此列，用户答「不确定」时按 R7 预算再问一次。
+        clarifications = [c for c in clarifications if c.get("reason") != previous["reason"]]
+    if (not plans_ranked and (state or {}).get("unparsed_problem", {})
+            and state["unparsed_problem"].get("status") == "unparsed" and not state.get("error_codes")
+            and attempts < clarify_mod.MAX_CLARIFICATIONS):
+        question = "I've kept your description. Please confirm the main fault you want help with, in one sentence."
+        return {
+            "diagnose_outcome": {"mode": "clarify", "reason": "unparsed_problem", "attempts": attempts + 1, "question": question},
+            "_decision": {"outcome": "clarify", "reason": "applicability", "question": question},
+            "escalate_reason": None, "plan_cursor": None,
+        }
+    if not plans_ranked and clarifications and attempts < clarify_mod.MAX_CLARIFICATIONS:
+        candidate = clarifications[0]
+        return {
+            "diagnose_outcome": {"mode": "clarify", **candidate, "attempts": attempts + 1},
+            "_decision": {"outcome": "clarify", "reason": "applicability", "question": candidate["question"]},
+            "escalate_reason": None, "plan_cursor": None,
+        }
+    # 检索落空，或有命中但没有一条适用：输入不够具体时都一样，先问（T60 复跑：选完型号后命中但全部不适用）
+    if not plans_ranked and knowledge_status in {"no_match", "ok"} and state is not None and missing_for_retrieval(state):
+        # 信息不足不是知识缺失（T60）：型号没定、或没有客户原话支持的具体现象时，检索的输入本身太泛，落空是意料之中。
+        # 先问缺的那一项（型号优先：官方 Q&A 按型号分化），与 disambiguate 的追问共用同一个预算，问满才交接。
+        missing = missing_for_retrieval(state)
+        clar = dict(state.get("clarification") or {})
+        if "product" in missing and state.get("category") and not state.get("prepare_card_calls"):
+            catalog = get_catalog()
+            cands = [p.to_candidate().model_dump() for p in catalog.products if p.category == state["category"] and p.in_scope]
+            if 1 < len(cands) <= clarify_mod.MAX_MODEL_CARD:
+                return {
+                    "diagnose_outcome": {"mode": "clarify", "reason": "product_missing", "missing": missing},
+                    "_decision": {"outcome": "model_card"}, "product_candidates": cands,
+                    "escalate_reason": None, "plan_cursor": None,
+                }
+        subject = clarify_mod.clarify_subject("symptom")
+        asked = int(clar.get("attempts") or 0) if clar.get("question") and clar.get("subject") == subject else 0
+        if "symptoms" in missing and asked < clarify_mod.MAX_CLARIFICATIONS:
+            # 计数由 clarify 节点的 count_attempt 统一 +1；这里只把预算绑定到「症状」这个主题，不改 attempts。
+            return {
+                "diagnose_outcome": {"mode": "clarify", "reason": "symptom_missing", "attempts": asked + 1, "missing": missing},
+                "_decision": {"outcome": "clarify", "reason": "symptom"},
+                "clarification": {**clar, "reason": "symptom", "subject": subject} if clar.get("reason") == "symptom"
+                else {"reason": "symptom", "attempts": 0, "subject": subject},
+                "escalate_reason": None, "plan_cursor": None,
+            }
+    # 现象只有一个笼统的词（T43 西语「El robot está desconectado」→ 症状「desconectado」）：召回有结果、却没有一条适用、
+    # 模型也没提追问。检索词与英文资料对不上，不是资料没有：先请客户把这个词说具体，带着新描述重新检索；
+    # 只问一次，答完仍查不到再交人工。追问记在症状澄清的同一个预算上（与 symptom_missing 共用主题），
+    # 文案引客户原话，不按某一品类举例。已有具体描述（多个词）的现象落空照旧交人工。
+    if (not plans_ranked and knowledge_status == "ok" and state is not None and not clarifications
+            and previous.get("reason") != "vague_symptom" and (vague := vague_symptoms(state))):
+        clar = dict(state.get("clarification") or {})
+        subject = clarify_mod.clarify_subject("symptom")
+        question = clarify_mod.fixed_question("vague_symptom", {"symptom": vague[0]})
+        return {
+            "diagnose_outcome": {"mode": "clarify", "reason": "vague_symptom", "attempts": attempts + 1, "question": question},
+            "_decision": {"outcome": "clarify", "reason": "symptom", "question": question},
+            "clarification": {**clar, "reason": "symptom", "subject": subject} if clar.get("reason") == "symptom"
+            else {"reason": "symptom", "attempts": 0, "subject": subject},
+            "escalate_reason": None, "plan_cursor": None,
+        }
+    # 走到这里，症状追问 / 前提追问已经有了结果（命中方案或交人工）：澄清不再带到下一轮。前提追问的次数记在
+    # diagnose_outcome.attempts，清掉 clarification 不影响 R7；残留会让检索一直按「澄清中」关闭改写（in_clarify）
+    settled = {"clarification": None} if ((state or {}).get("clarification") or {}).get("reason") in {"symptom", "applicability"} else {}
     if not plans_ranked:
         return {
             "diagnose_outcome": {
                 "mode": "escalate",
                 "reason": "R5",
                 "knowledge_status": knowledge_status,
+                # 交接摘要据此区分「问过仍不够」与「问清了资料没有」（T60）
+                "cause": ("insufficient_information" if state is not None and missing_for_retrieval(state) else "knowledge_gap")
+                if knowledge_status in {"no_match", "ok"} else None,
             },
             "escalate_reason": "R5",
             "plan_cursor": None,
+            **settled,
         }
     available = [p for p in plans_ranked if p["plan_id"] not in exhausted_plans]
     if not available:
@@ -2326,21 +2504,34 @@ def _diagnose_outcome(
             "escalate_reason": "R2",
             "plan_cursor": None,
             "next_action": {"kind": "handoff_offer", "reason": "no_supported_followup", "compat_rule": "R2"},
+            **settled,
         }
     first = available[0]
-    mode = (
-        "standard_flow"
-        if first.get("source") == "standard_flow"
-        else ("fault_card" if fault_card_hits and knowledge_status != "ok" else "evidence")
-    )
-    note = {
-        "evidence": None,
-        "fault_card": "依据产品故障卡",
-        "standard_flow": "按标准排障流程"
-        if knowledge_status == "no_match"
-        else "知识库暂不可用，按标准排障流程",
-    }[mode]
+    # 可执行方案旁待确认的候选（T40 对症的 rv-0073）留作后备：方案碰到原文缺后续说明时先按它追问，再谈交人工
+    fallback = {"fallback_clarification": clarifications[0]} if clarifications and attempts < clarify_mod.MAX_CLARIFICATIONS \
+        else {"fallback_clarification": None}
+    mode = "exact_code" if exact_hits else "evidence"
+    note = {"evidence": None, "exact_code": "依据官方错误码说明"}[mode]
     plan = get_plan_library().get(first["plan_id"])
+    entry = plan.first_step()
+    answered: dict[str, Any] = {}
+    # 问句先对事实（T53）：计划首问是「你遇到哪种故障」而模型已从现象核实了小节，就替用户记一条回答，
+    # 直接从该小节首步开始；回答写进 step_attempts，与用户点选走同一条重放边（decide_next / prepare_step）。
+    if first.get("matched_section") and entry.kind == "question" and first["matched_section"] in entry.branches:
+        from app.guide.steps import step_card_id
+
+        option = first["matched_section"]
+        answered = {
+            "step_attempts": [*((state or {}).get("step_attempts") or []), {
+                "plan_id": plan.plan_id, "step_id": entry.step_id,
+                "card_id": step_card_id((state or {}).get("session_id", ""), plan.plan_id, entry.step_id),
+                "title": entry.title, "instruction_src": entry.instruction_src, "kind": entry.kind,
+                "feedback": None, "note": None, "answer": {"option": option, "source": "fact"},
+                "ts": datetime.now(UTC).isoformat(),
+            }],
+            "guide_trace": [{"event": "question_answered_from_facts", "plan_id": plan.plan_id,
+                             "step_id": entry.step_id, "option": option}],
+        }
     return {
         "diagnose_outcome": {
             "mode": mode,
@@ -2351,15 +2542,22 @@ def _diagnose_outcome(
         "plan_cursor": {
             "plan_id": plan.plan_id,
             "version": plan.version,
-            "step_id": plan.first_step().step_id,
+            "step_id": entry.branches[first["matched_section"]] if answered else entry.step_id,
             "source": first.get("source"),
         },
+        **answered,
+        **fallback,
+        **settled,
     }
 
 
 def route_after_retrieve(state: SessionState) -> str:
     if state.get("escalate_reason"):
         return "escalate"
+    if (state.get("_decision") or {}).get("outcome") == "model_card":
+        return "prepare_card"
+    if (state.get("diagnose_outcome") or {}).get("mode") == "clarify":
+        return "clarify"
     # Only guide may publish operations, after evidence and pre-step policy checks.
     return "guide" if state.get("plan_cursor") else "reply"
 
@@ -2381,6 +2579,16 @@ async def guide(state: SessionState) -> SessionState:
     trace: list[dict[str, Any]] = []
     update: SessionState = {"stage": "guide", "substage": None, "_verify": None, "next_action": selected.get("next_action")}
     for _ in range(len(state.get("plans_ranked") or []) + 2):
+        cursor_plan = (work.get("plan_cursor") or {}).get("plan_id")
+        if cursor_plan:
+            # 步骤先对事实（P2 / P3）：用户已答的问句记成回答，条件不成立的步骤标记跳过；同一事实修订号下每个计划只判一次
+            checked = await check_plan_facts(
+                get_model_router(), work, get_plan_library().get(cursor_plan), library=get_plan_library(),
+                lane=_lane(), session_id=session_id, budget_ms=budget,
+            )
+            trace += checked.pop("guide_trace", [])
+            work.update(checked)
+            update.update(checked)
         prep = await prepare_step(
             state=work,
             library=get_plan_library(),
@@ -2391,6 +2599,9 @@ async def guide(state: SessionState) -> SessionState:
             budget_ms=budget,
         )
         trace += [{"event": "step_dropped", **d} for d in prep.dropped]
+        if prep.outcome != "blocked":
+            update["displayed_knowledge_nodes"] = prep.displayed_nodes
+            work["displayed_knowledge_nodes"] = prep.displayed_nodes
         if prep.outcome == "ready":
             from app.conversation.reduce import stable_id
             published_card_id = stable_id(state["input_id"], state["active_issue_id"], prep.card_id)
@@ -2463,9 +2674,47 @@ async def guide(state: SessionState) -> SessionState:
                 update["current_evidence_ids"] = list(dict.fromkeys([*state.get("current_evidence_ids", []), *prep.evidence]))
             if prep.model_trace:
                 update["model_trace"] = [*state.get("model_trace", []), prep.model_trace]
+            if state.get("case_status") == "awaiting_approval" and state.get("case_id") and get_services() is not None:
+                # 客户补信息后找到了官方步骤（T60 方案 A）：人工尚未处理的交接撤回队列，案件回到排障
+                row = await get_services().cases.resume_diagnosis(
+                    state["case_id"], input_id=state["input_id"], quote=state.get("text") or "")
+                get_stream_writer()(case_event(row, issue_id=state["active_issue_id"], reason="客户补充信息后找到官方排查步骤"))
+                update.update(case_status=row["status"], escalate_reason=None,
+                              task_queue=[{**t, "status": "active"} if t.get("status") == "waiting_human" else t
+                                          for t in state.get("task_queue", [])])
             return update
         if prep.outcome == "blocked":
             return {**update, **_apply_next_action(work)}
+        if prep.explanation:
+            message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{state['input_id']}:knowledge-explanation").hex
+            say_text(dict(state), writer, message_id, prep.explanation)
+            update["visible_messages"] = [*state.get("visible_messages", []), {
+                "message_id": message_id, "kind": "knowledge_explanation", "text": prep.explanation, "model_tier": None,
+            }]
+            if prep.evidence:
+                writer({"type": "evidence", "items": list(prep.evidence.values())})
+                update["evidence"] = {**state.get("evidence", {}), **prep.evidence}
+                update["current_evidence_ids"] = list(dict.fromkeys([*state.get("current_evidence_ids", []), *prep.evidence]))
+        if prep.outcome == "source_gap":
+            fallback = state.get("fallback_clarification") or {}
+            if fallback.get("question") and fallback.get("plan_id") not in (work.get("exhausted_plans") or []):
+                # 原文缺后续说明（已如实告知）不等于没有可用指南：旁边待确认前提的候选（T40 对症的 rv-0073）先问一次，
+                # 答完重新检索；没有后备才交人工
+                return {**update, "pending_card": None, "plan_cursor": None, "fallback_clarification": None,
+                        "diagnose_outcome": {"mode": "clarify", **fallback, "attempts": 1},
+                        "_decision": {"outcome": "clarify", "reason": "applicability", "question": fallback["question"]},
+                        "guide_trace": [*trace, {"event": "knowledge_source_gap", "fallback": fallback.get("plan_id")}]}
+            return {**update, "pending_card": None, "plan_cursor": None, "consult_answered": False,
+                    "escalate_reason": "R5", "_verify": {"outcome": "escalate", "rule": "R5"},
+                    "next_action": {"kind": "handoff_offer", "reason": "knowledge_coverage_missing", "compat_rule": "R5",
+                                    "issue_id": state.get("active_issue_id"), "input_id": state.get("input_id")},
+                    "guide_trace": [*trace, {"event": "knowledge_source_gap"}]}
+        if prep.outcome == "explained":
+            return {**update, "stage": "done", "pending_card": None, "plan_cursor": None,
+                    "next_action": None, "_verify": {"outcome": "explained"},
+                    "consult_answered": True,
+                    "diagnose_outcome": {"mode": "explained", "plan_id": (work.get("plan_cursor") or {}).get("plan_id")},
+                    "guide_trace": [*trace, {"event": "knowledge_explained"}]}
         # exhausted：本计划没有可下发的步骤 → 标记耗尽，依据事实重新决策
         cursor = work.get("plan_cursor") or {}
         out = exhaust_plan(work, cursor.get("plan_id", ""))
@@ -2510,9 +2759,13 @@ async def guide(state: SessionState) -> SessionState:
 def route_after_guide(state: SessionState) -> str:
     if state.get("escalate_reason"):
         return "escalate"
+    if (state.get("_decision") or {}).get("outcome") == "clarify":
+        return "clarify"
     verify = state.get("_verify") or {}
+    if verify.get("outcome") == "explained":
+        return route_after_close(state)
     if verify.get("outcome") == "ask":
-        return "ask_observation"
+        return "ask_operation"
     if verify.get("outcome") == "done":
         return "close"
     if verify.get("outcome") == "pause":
@@ -2528,14 +2781,18 @@ def closing_text(state: SessionState) -> str:
     steps = list(state.get("steps_executed") or [])
     solved = next((s for s in reversed(steps) if s.get("feedback") == "solved"), None)
     product = (state.get("product_confirmed") or {}).get("name")
-    who = f"您的 {product}" if product else "设备"
-    parts = ["太好了，问题已经解决！"]
-    if solved and solved.get("title"):
-        parts.append(f"这次是「{solved['title']}」起了作用，")
+    who = f"your {product}" if product else "your device"
+    parts = ["Great, the issue is resolved! "]
+    # 步骤标题是卡片展示用的，超长会被截断成「…」，而且 answer 型计划的标题就是 Q&A 的那句问句。
+    # 这两种都不该被引述成「"……" did the trick」（T12 实测引了一句带省略号的问句）。
+    title = (solved or {}).get("title") or ""
+    quotable = title and not title.endswith("…") and "?" not in title
+    if quotable:
+        parts.append(f"\"{title}\" did the trick, and ")
     else:
-        parts.append("按步骤处理后，")
-    parts.append(f"{who}现在可以正常使用了。")
-    parts.append("建议按说明书定期做同样的保养。之后如果再遇到问题，随时回来找我。")
+        parts.append("After following the steps, ")
+    parts.append(f"{who} should work normally now. ")
+    parts.append("Regular maintenance as described in the manual helps prevent this. If anything else comes up, just come back here.")
     return "".join(parts)
 
 
@@ -2604,11 +2861,13 @@ async def escalate(state: SessionState) -> SessionState:
 
 
 def route_escalate(state: SessionState) -> str:
-    if receipt_mod.diagnostic_only(state):
-        return "summarize"
     from app.actions.runtime import get_services
+    # 主办方 SOP：排障后仍未解决 → 确认是否进入换货 / 退款 → 订单质保判断。
+    # 质保节点给出换货单卡片，客户在卡片上确认或暂不办理，这一步就是「确认是否进入换货流程」。
     if get_services() is not None and state.get("product_state") == "confirmed_sku" and state.get("escalate_reason") in {"R1","R1b","R1c","R2","R6"}:
         return "service_context"
+    if receipt_mod.diagnostic_only(state):
+        return "summarize"
     s = dict(state)
     if receipt_mod.has_uploaded(s):
         return "receipt_extract"
@@ -2704,11 +2963,6 @@ async def summarize(state: SessionState) -> SessionState:
     session_id = state.get("session_id", "")
     run_id = state.get("run_id", "")
     message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:{run_id}:reassure").hex
-    text = acknowledge_current_turn(dict(state), reassurance_text(reason, dict(state)))
-    if not state.get("summary_refresh"):
-        writer({"type": "message_start", "message_id": message_id})
-        writer({"type": "message", "message_id": message_id, "delta": text})
-        writer({"type": "message_end", "message_id": message_id, "status": "completed"})
     summary = build_summary(
         dict(state), reason=reason, lane=os.environ.get("MODEL_LANE", "domestic")
     )
@@ -2719,8 +2973,64 @@ async def summarize(state: SessionState) -> SessionState:
         lane=os.environ.get("MODEL_LANE", "domestic"),
         budget_ms=max(0, _remaining_ms(state) - 2000),
     )
-    import copy
-
+    services = get_services()
+    case_update = {}
+    handoff_status = "prepared"
+    if services is not None and (not state.get("summary_refresh") or state.get("case_id")):
+        row = await services.cases.store.get(state["case_id"]) if state.get("case_id") else await services.cases.open(
+            session_id, state["active_issue_id"], state.get("product_confirmed") or {},
+            complaint_risk=complaint_flagged(state),
+        )
+        summary.case_id = row["case_id"]
+        if not state.get("summary_refresh") and row["status"] in {"closed", "closed_unresolved"}:
+            if reason in {"R3", "R4"}:
+                # 新的人工请求或安全事件不能被先前的免费服务结论吞掉。
+                row = await services.cases.reopen(
+                    row["case_id"], expected_revision=row["revision"],
+                    input_id=state["input_id"], quote=state.get("text") or summary.reason.text,
+                )
+            else:
+                await services.cases.record_handoff(row["case_id"], summary.model_dump(mode="json"))
+                return await propose_service_case({**state, "case_id": row["case_id"]})
+        if not state.get("summary_refresh") and row["status"] == "reopened":
+            row = await services.cases.transition(row["case_id"], "proposing", "重新受理后准备人工审核")
+        if state.get("summary_refresh"):
+            # 更新摘要不重新发起审批，也不撤回人工已经作出的决定。
+            row = await services.cases.record_handoff(row["case_id"], summary.model_dump(mode="json"))
+        else:
+            row = await services.cases.hand_off(
+                row["case_id"], requested=state.get("requested_remedy") or "human_support",
+                quote=state.get("text") or "", input_id=state["input_id"],
+                reason=summary.reason.text,
+                summary_of=lambda current: summary.model_dump(mode="json"),
+            )
+        handoff_status = "requested" if row["status"] == "awaiting_approval" else (
+            ((state.get("issues") or {}).get(state["active_issue_id"], {}).get("handoff") or {}).get("status", "prepared")
+        )
+        if handoff_status == "not_requested":
+            handoff_status = "prepared"
+        case_update = {"case_id": row["case_id"], "case_status": row["status"]}
+        if row["status"] == "awaiting_approval":
+            case_update.update(stage="awaiting_human", pending_card=None,
+                               task_queue=[{**task, "status": "waiting_human"} if task.get("status") == "active" else task
+                                           for task in state.get("task_queue", [])])
+        writer(case_event(row, issue_id=state["active_issue_id"], reason=summary.reason.text))
+    text = reassurance_text(reason, dict(state))
+    if handoff_status == "requested" and state.get("case_status") == "awaiting_approval":
+        # 已在人工队列里，客户补的信息仍没查到官方步骤：只更新交接记录，如实说明，不重复「已提交」也不承诺去查（T60）
+        text = ("Thanks, I've added this to your case for the support colleague. "
+                "I still couldn't find official troubleshooting guidance that matches it, so they'll continue from here.")
+    elif handoff_status == "requested":
+        text = (
+            ("For your safety, please stop using the device and do not charge it. " if reason == "R4" else
+             "I couldn't confirm official troubleshooting guidance for this issue. " if reason == "R5" else "")
+            + "I've submitted the issue and supporting information for review by a colleague. You can add information here while waiting."
+        )
+    text = acknowledge_current_turn({**state, **case_update}, text)
+    if not state.get("summary_refresh"):
+        writer({"type": "message_start", "message_id": message_id})
+        writer({"type": "message", "message_id": message_id, "delta": text})
+        writer({"type": "message_end", "message_id": message_id, "status": "completed"})
     from app.conversation.reduce import stable_id
 
     issue_id = state["active_issue_id"]
@@ -2740,7 +3050,7 @@ async def summarize(state: SessionState) -> SessionState:
         "updated_at": state["at"],
         "source_through_seq": state["input_seq"],
         "previous_card_id": previous.get("card_id"),
-        "handoff_status": "prepared",
+        "handoff_status": handoff_status,
     }
     writer(event)
     writer(
@@ -2764,15 +3074,17 @@ async def summarize(state: SessionState) -> SessionState:
     issue["latest_summary"] = {k: v for k, v in event.items() if k != "type"}
     issue["handoff"] = {
         "handoff_id": stable_id(issue_id, "handoff"),
-        "status": "prepared",
+        "status": handoff_status,
         "prepared_at": state["at"],
         "reason_refs": [state["input_id"]],
     }
     return {
         "stage": "escalate",
         "substage": "summarize",
+        "l3_route": "commit_issue",
         "issues": issues,
         "escalation_summary": dict(event, reason=reason),
+        **case_update,
     }
 
 
@@ -2804,8 +3116,7 @@ async def reply(state: SessionState) -> SessionState:
         for eid in state.get("current_evidence_ids", [])
         if eid in (state.get("evidence") or {})
     ]
-    # 票 33：故障卡常驻上下文；总输入 ≤ 8k token，超出先裁证据
-    card_text = (state.get("fault_card") or {}).get("text")
+    # 总输入 ≤ 8k token，超出先裁证据
     kept, _ = fit_prompt_budget([e.get("snippet", "") for e in evidence_items], budget=6000)
     primary, fallback = reply_messages(
         state.get("text", ""),
@@ -2813,7 +3124,6 @@ async def reply(state: SessionState) -> SessionState:
         summary={**_state_summary(state), "flow_note": outcome.get("note")},
         evidence=evidence_items[: len(kept)],
         knowledge_status=state.get("knowledge_status"),
-        fault_card=card_text,
     )
     message_id = uuid.uuid5(
         uuid.NAMESPACE_URL, f"{state.get('session_id')}:{state.get('run_id')}:reply"
@@ -2852,6 +3162,10 @@ async def reply(state: SessionState) -> SessionState:
             }
         )
         offer_human_after_stream(dict(state), out.text, writer)
+    elif out.error:
+        from app.conversation.reply import stream_failed
+
+        stream_failed(dict(state), writer, out.error)
     return {
         "stage": "diagnose",
         "visible_messages": msgs,
@@ -2902,13 +3216,13 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
     from app.sessions import l3
     g = StateGraph(SessionState)
     l3_routes = {
-        "service_context": ["await_input", "prepare_receipt", "propose"],
-        "propose": ["commit_issue", "await_human", "summarize", "await_input"],
+        "service_context": ["await_input", "prepare_receipt", "propose", "commit_issue", "advance_tasks"],
+        "propose": ["commit_issue", "await_human", "summarize", "await_input", "advance_tasks"],
         "authorize": ["execute", "await_human", "commit_issue", "service_context"],
-        "execute": ["commit_issue", "await_human", "track", "await_input"],
+        "execute": ["commit_issue", "await_human", "advance_tasks", "await_input"],
         "track": ["advance_tasks"],
-        "await_human": ["commit_issue"],
-        "consult": ["commit_issue", "summarize", "advance_tasks"],
+        "await_human": ["commit_issue", "advance_tasks"],
+        "consult": ["commit_issue", "summarize", "advance_tasks", "service_context"],
         "apply_human_decision": ["await_input", "authorize", "propose", "commit_issue"],
         "apply_case_command": ["commit_issue"],
         "reopen_case": ["service_context", "escalate"],
@@ -2918,9 +3232,11 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
         g.add_conditional_edges(name, l3.route, {target: target for target in targets})
     g.add_node("understand", durable_node(understand))
     g.add_node("dialogue", durable_node(dialogue))
+    g.add_node("product_help", durable_node(product_help))
     g.add_node("commit_issue", durable_node(commit_issue))
     g.add_edge(START, "understand")
     g.add_edge("dialogue", "commit_issue")
+    g.add_edge("product_help", "commit_issue")
     g.add_node("reply", durable_node(reply))
     g.add_node("escalate", durable_node(escalate))
     g.add_node("summarize", durable_node(summarize))
@@ -2938,7 +3254,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
     )
     g.add_edge("prepare_receipt", "await_input")
     g.add_edge("receipt_extract", "await_input")  # 票 40：确认字段卡片
-    g.add_edge("summarize", "commit_issue")
+    g.add_conditional_edges("summarize", l3.route, {"commit_issue": "commit_issue", "advance_tasks": "advance_tasks"})
     g.add_node("disambiguate", durable_node(disambiguate))
     g.add_node("prepare_card", durable_node(prepare_card))
     g.add_node("await_input", durable_node(await_input))
@@ -2950,21 +3266,18 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
     g.add_node("vision_conflict",durable_node(l3.vision_conflict))
     g.add_edge("vision_conflict","commit_issue")
     g.add_conditional_edges(
-        "vision", route_after_vision, {"disambiguate": "disambiguate", "escalate": "escalate", "prepare_retake":"prepare_retake", "vision_conflict":"vision_conflict"}
+        "vision", route_after_vision, {"disambiguate": "disambiguate", "escalate": "escalate", "prepare_retake":"prepare_retake",
+                                        "vision_conflict":"vision_conflict", "product_help": "product_help"}
     )
     g.add_node("clarify", durable_node(clarify))
     g.add_node("out_of_scope", durable_node(out_of_scope))
     g.add_node("guide", durable_node(guide))
     g.add_node("reassess", durable_node(reassess))
-    g.add_node("ask_observation", durable_node(ask_observation))
-    g.add_conditional_edges(
-        "ask_observation",
-        route_after_ask_observation,
-        {"await_input": "await_input", "commit_issue": "commit_issue"},
-    )
+    g.add_node("ask_operation", durable_node(ask_operation))
+    g.add_edge("ask_operation", "commit_issue")
     g.add_conditional_edges(
         "reassess", route_after_reassess,
-        {"guide": "guide", "ask_observation": "ask_observation", "close": "close", "escalate": "escalate", "dialogue": "dialogue"},
+        {"guide": "guide", "ask_operation": "ask_operation", "close": "close", "escalate": "escalate", "dialogue": "dialogue"},
     )
     g.add_node("close", durable_node(close))
     g.add_node("advance_tasks",durable_node(l3.advance_tasks))
@@ -2974,12 +3287,13 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
         "understand",
         route_entry,
         {
-            **{name:name for name in ("consult","service_context","track","apply_human_decision","apply_case_command","reopen_case","vision")},
+            **{name:name for name in ("consult","service_context","propose","track","apply_human_decision","apply_case_command","reopen_case","vision")},
             "disambiguate": "disambiguate",
             "escalate": "escalate",
             "apply_action": "apply_action",
             "dialogue": "dialogue",
             "receipt_extract": "receipt_extract",
+            "product_help": "product_help",
             "reassess": "reassess",
         },
     )
@@ -3007,6 +3321,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
         route_after_apply,
         {
             **{target:target for target in ("service_context","authorize","propose","await_human","commit_issue")},
+            "disambiguate": "disambiguate",
             "reply": "reply",
             "retrieve": "retrieve",
             "reassess": "reassess",
@@ -3015,18 +3330,20 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
             "out_of_scope": "out_of_scope",
             "guide": "guide",
             "close": "close",
-            "ask_observation": "ask_observation",
+            "ask_operation": "ask_operation",
             "dialogue": "dialogue",
             "clarify": "clarify",
         },
     )
     g.add_conditional_edges(
-        "retrieve", route_after_retrieve, {"reply": "reply", "guide": "guide", "escalate": "escalate"}
+        "retrieve", route_after_retrieve,
+        {"reply": "reply", "guide": "guide", "escalate": "escalate", "clarify": "clarify", "prepare_card": "prepare_card"}
     )
     g.add_conditional_edges("reply", route_after_reply, {"guide": "guide", "end": "commit_issue"})
     g.add_conditional_edges(
         "guide", route_after_guide,
-        {"await_input": "await_input", "escalate": "escalate", "ask_observation": "ask_observation", "close": "close", "dialogue": "dialogue"},
+        {"await_input": "await_input", "escalate": "escalate", "ask_operation": "ask_operation", "close": "close", "dialogue": "dialogue",
+         "advance_tasks": "advance_tasks", "commit_issue": "commit_issue", "clarify": "clarify"},
     )
     g.add_edge("commit_issue", END)
     return g.compile(checkpointer=checkpointer)

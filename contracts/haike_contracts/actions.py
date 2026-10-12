@@ -6,18 +6,16 @@ from typing import Annotated, Literal, get_args
 
 from pydantic import Field, TypeAdapter
 
-from haike_contracts.common import Feedback, ObservationAnswer, ReceiptFields, Strict
+from haike_contracts.common import Feedback, ReceiptFields, StepAnswer, Strict
 
 ActionKind = Literal[
     "select_product",
     "step_feedback",
-    "answer_observation",
     "confirm_receipt",
     "skip_receipt",
     "request_human",
     "new_issue",
     "resume_issue",
-    "confirm_context",
     "confirm_proposal",
     "decline_proposal",
     "skip_retake",
@@ -31,23 +29,17 @@ class SelectProductPayload(Strict):
 
 
 class StepFeedbackPayload(Strict):
-    feedback: Feedback
+    """action 卡交 feedback；question / material_request 卡交 answer；statement 卡两者都可省（确认已读）。
+    服务端按卡片 kind 校验组合（sessions/router.py）。"""
+
+    feedback: Feedback | None = None
     note: str | None = None
-    # 步骤声明了 observations 时可携带的检查结果；未携带保持 unknown，不会被写成阴性
-    observations: list[ObservationAnswer] = Field(default_factory=list)
-
-
-class AnswerObservationPayload(Strict):
-    """observation_card 的作答；option_id 必须是该卡声明过的选项。
-    kind=unknown 的选项记为「答不上来」，不写成观察事实。"""
-
-    observation_id: str
-    option_id: str
+    answer: StepAnswer | None = None
 
 
 class ConfirmReceiptPayload(Strict):
     fields: ReceiptFields
-    edited: list[Literal["order_no", "channel", "purchase_date", "amount"]] = Field(
+    edited: list[Literal["order_no", "seller", "country", "purchase_date", "amount"]] = Field(
         default_factory=list
     )
 
@@ -84,11 +76,6 @@ class StepFeedbackAction(_CardAction):
     payload: StepFeedbackPayload
 
 
-class AnswerObservationAction(_CardAction):
-    kind: Literal["answer_observation"]
-    payload: AnswerObservationPayload
-
-
 class ConfirmReceiptAction(_CardAction):
     kind: Literal["confirm_receipt"]
     payload: ConfirmReceiptPayload
@@ -118,18 +105,6 @@ class ResumeIssueAction(_Action):
     kind: Literal["resume_issue"]
     target_issue_id: str
     payload: RequestHumanPayload = Field(default_factory=RequestHumanPayload)
-
-
-class ConfirmContextPayload(Strict):
-    region_purchase: str = Field(min_length=1, max_length=50)
-    region_use: str = Field(min_length=1, max_length=50)
-    channel: str = Field(min_length=1, max_length=50)
-    platform: str | None = None
-
-
-class ConfirmContextAction(_CardAction):
-    kind: Literal["confirm_context"]
-    payload: ConfirmContextPayload
 
 
 class ConfirmProposalPayload(Strict):
@@ -172,13 +147,11 @@ class RateSatisfactionAction(_CardAction):
 ActionRequest = Annotated[
     SelectProductAction
     | StepFeedbackAction
-    | AnswerObservationAction
     | ConfirmReceiptAction
     | SkipReceiptAction
     | RequestHumanAction
     | NewIssueAction
     | ResumeIssueAction
-    | ConfirmContextAction
     | ConfirmProposalAction
     | DeclineProposalAction
     | SkipRetakeAction

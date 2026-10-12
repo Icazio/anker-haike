@@ -19,14 +19,12 @@ CONTRACT_TYPES = {
     "message_end",
     "product_card",
     "step_card",
-    "observation_card",
     "evidence",
     "receipt_card",
     "awaiting_input",
     "escalation_summary",
     "error",
     "done",
-    "context_card",
     "proposal_card",
     "execution_card",
     "retake_card",
@@ -37,7 +35,7 @@ CONTRACT_TYPES = {
 
 def test_covers_all_15_types_from_contract_section_5():
     assert set(EVENT_TYPES) == CONTRACT_TYPES
-    assert len(EVENT_TYPES) == 26
+    assert len(EVENT_TYPES) == 24
     assert set(EVENTS) == CONTRACT_TYPES, "每种 type 都要有样例"
 
 
@@ -73,3 +71,13 @@ def test_step_card_step_object_nesting_and_summary_object_nesting():
     assert summ.summary.reason.rule_id == "R2"
     assert summ.summary.steps[0].feedback == "not_solved"
     assert summ.summary.receipt.status == "not_collected"
+
+
+def test_executed_step_needs_exactly_one_of_feedback_or_answer():
+    from haike_contracts.common import ExecutedStep
+
+    assert ExecutedStep(step_id="s3", title="是否加过第三方清洁液", answer="Not sure").feedback is None
+    with pytest.raises(ValidationError):
+        ExecutedStep(step_id="s3", title="x")
+    with pytest.raises(ValidationError):
+        ExecutedStep(step_id="s3", title="x", feedback="not_solved", answer="No")

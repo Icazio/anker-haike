@@ -7,7 +7,6 @@ import type { PendingInput } from '../types/snapshot';
 import styles from './Composer.module.css';
 
 export type Attachment = { id: string; file: File; previewUrl: string | null };
-type SkipReason = 'none' | 'unreadable' | 'later';
 type Props = {
   value: string;
   onChange: (v: string) => void;
@@ -15,19 +14,18 @@ type Props = {
   offline?: boolean;
   /** 返回 false 表示未被服务端接收，保留附件与草稿。 */
   onSend?: (text: string, files: File[], purpose: ImagePurpose) => void | boolean | Promise<void | boolean>;
-  onRequestHuman?: () => void;
-  onSkipReceipt?: (reason: SkipReason) => void | Promise<void>;
+  onSkipReceipt?: () => void | Promise<void>;
   pendingKind?: PendingInput['kind'] | null;
   purpose?: ImagePurpose;
   maxImages?: number;
   busy?: boolean;
   onCancel?: () => void;
+  /** 外部预置的附件（「载入真实工单」带的原图）；引用变化时加入附件区，走与手动选择相同的处理。 */
+  presetFiles?: File[] | null;
 };
 
 // 等待步骤时仍可正常对话，是否更新排障由本轮语义决定。
 export const REDIAGNOSE_HINT = '可以追问原因、回顾记录、补充或纠正情况；完成操作后，也可以直接描述结果。';
-// 判别问题出卡后输入框照旧可用：点选只是更省事的那条路，用自己的话说同样会被接住。
-export const OBSERVATION_HINT = '在上方卡片选一项最快；也可以用自己的话描述看到的情况。';
 let seq = 0;
 function makePreview(file: File): string | null {
   try { return typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : null; }
@@ -57,7 +55,7 @@ function autoGrow(el: HTMLTextAreaElement | null) {
   el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
 }
 
-export function Composer({ value, onChange, offline, inputRef, onSend, onRequestHuman, onSkipReceipt, pendingKind = null, purpose = 'fault', maxImages = 3, busy: runBusy = false, onCancel }: Props) {
+export function Composer({ value, onChange, offline, inputRef, onSend, onSkipReceipt, pendingKind = null, purpose = 'fault', maxImages = 3, busy: runBusy = false, onCancel, presetFiles = null }: Props) {
   const inputId = useId();
   const fileRef = useRef<HTMLInputElement>(null);
   const localRef = useRef<HTMLTextAreaElement>(null);
@@ -73,7 +71,6 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onRequest
   const touchPrimary = useTouchPrimary();
   const receipt = pendingKind === 'upload_receipt';
   const rediagnose = pendingKind === 'step_feedback';
-  const observing = pendingKind === 'answer_observation';
   const busy = processing || submitting;
   const inputBlocked = !!offline || runBusy || busy;
   const hasContent = value.trim().length > 0 || attachments.length > 0;
@@ -95,6 +92,16 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onRequest
       attachmentsRef.current = [];
     };
   }, [purpose, pendingKind]);
+
+  useEffect(() => {
+    if (presetFiles?.length) {
+      release(attachmentsRef.current);
+      updateAttachments([]);
+      void addFiles(presetFiles.slice(0, maxImages));
+    }
+    // 只在载入新工单（新数组引用）时触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetFiles]);
 
   function setRefs(el: HTMLTextAreaElement | null) {
     localRef.current = el;
@@ -181,28 +188,26 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onRequest
     }
   }
 
-  async function skip(reason: SkipReason) {
+  async function skip() {
     if (inputBlocked || submittingRef.current || !onSkipReceipt) return;
     submittingRef.current = true;
     setSubmitting(true);
     const batch = generation.current;
-    try { await onSkipReceipt(reason); }
+    try { await onSkipReceipt(); }
     catch { if (batch === generation.current) setImageError('暂时无法跳过，请重试。'); }
     finally { if (batch === generation.current) { submittingRef.current = false; setSubmitting(false); } }
   }
 
   const hint = offline ? '可以先填写问题；对话服务暂未接通，目前无法发送。'
-    : observing ? OBSERVATION_HINT
     : rediagnose ? REDIAGNOSE_HINT
     : receipt ? '请上传订单截图、发票或收据，可附带备注；单张 5 MB 内。也可以跳过，由人工协助核实。'
     : '支持文字与图片（单张 5 MB 内，会自动压缩），说不清楚也没关系。';
   // 键盘用法只在能用上的设备提示；离线时发不出去，不提发送键。
   const keyHint = offline || touchPrimary ? null : 'Enter 发送，Shift+Enter 换行，截图可直接粘贴到输入框。';
-  const label = receipt ? '凭证备注（选填）' : observing ? '回答上方的问题' : rediagnose ? '补充新情况或纠正' : '描述你的问题';
+  const label = receipt ? '凭证备注（选填）' : rediagnose ? '补充新情况或纠正' : '描述你的问题';
   const placeholder = receipt ? '可补充购买平台、店铺或其他需要说明的信息…'
-    : rediagnose ? '也可以直接描述结果，例如：其实还有异响 / 说错了，我的是 X10…'
-    : observing ? '选项之外的情况，用自己的话说…'
-    : '一句话说说设备型号和遇到的问题，例如：我的耳机只有一边有声音，重置后还是不行…';
+    : rediagnose ? '也可以直接描述结果，例如：其实还有异响 / 说错了，我的是 Omni E28…'
+    : '说说设备型号和问题，例如：Omni E25 报 3212 错误，滚刷拖布卡住了；也可以直接贴 App 报错或订单号…';
 
   return (
     <form className={styles.composer} onSubmit={(e) => { e.preventDefault(); void submit(); }} aria-label={receipt ? '上传购买凭证' : '发送消息'}>
@@ -232,16 +237,12 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onRequest
             placeholder={placeholder}
             aria-describedby={keyHint ? `${inputId}-hint ${inputId}-keys` : `${inputId}-hint`} />
           {runBusy && onCancel && <button type="button" className={styles.ghost} onClick={onCancel}>取消</button>}
-          {onRequestHuman && <button type="button" className={styles.ghost} disabled={offline} onClick={onRequestHuman}>请求人工</button>}
           <button type="submit" className={styles.send} disabled={!canSend}>{submitting ? '提交中…' : receipt ? '上传凭证' : '发送'}</button>
         </div>
       </div>
       {receipt && onSkipReceipt && (
-        <div className={styles.skipOptions} aria-label="暂不上传凭证">
-          <span>暂不上传：</span>
-          <button type="button" disabled={inputBlocked} onClick={() => void skip('none')}>没有凭证，跳过</button>
-          <button type="button" disabled={inputBlocked} onClick={() => void skip('unreadable')}>看不清，跳过</button>
-          <button type="button" disabled={inputBlocked} onClick={() => void skip('later')}>稍后再提供</button>
+        <div className={styles.skipOptions}>
+          <button type="button" disabled={inputBlocked} onClick={() => void skip()}>暂时没有凭证，跳过</button>
         </div>
       )}
       {imageError && <p role="alert" className={styles.imageError}>{imageError}</p>}

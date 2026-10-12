@@ -1,6 +1,6 @@
 // Generated file. Do not edit; run npm --prefix frontend run contracts:generate.
 // Source: contracts/schema/events.schema.json
-// SHA-256: cacb3f5997233163925bde51ae65e0f28679b27920c4a074a98e67b7196d1cf4
+// SHA-256: 403588f03a4f84b6d8db48b0897640cbf5553d7ed8c8390298f1abf32987e3f2
 import * as z from 'zod';
 import type { ServerEvent } from '../types/events';
 
@@ -38,10 +38,8 @@ export const serverEventSchema = z.fromJSONSchema({
           "enum": [
             "select_product",
             "step_feedback",
-            "answer_observation",
             "upload_receipt",
             "confirm_receipt",
-            "confirm_context",
             "confirm_proposal",
             "upload_retake",
             "rate_satisfaction"
@@ -215,170 +213,6 @@ export const serverEventSchema = z.fromJSONSchema({
         "updated_at"
       ],
       "title": "CaseStatusEvent",
-      "type": "object"
-    },
-    "Clause": {
-      "additionalProperties": false,
-      "properties": {
-        "clause_id": {
-          "title": "Clause Id",
-          "type": "string"
-        },
-        "doc_version": {
-          "title": "Doc Version",
-          "type": "string"
-        },
-        "policy_version": {
-          "title": "Policy Version",
-          "type": "string"
-        },
-        "source_doc": {
-          "title": "Source Doc",
-          "type": "string"
-        },
-        "source_url": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Url"
-        },
-        "text": {
-          "title": "Text",
-          "type": "string"
-        }
-      },
-      "required": [
-        "clause_id",
-        "text",
-        "source_doc",
-        "doc_version",
-        "policy_version"
-      ],
-      "title": "Clause",
-      "type": "object"
-    },
-    "ContextCardEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "card_id": {
-          "title": "Card Id",
-          "type": "string"
-        },
-        "choices": {
-          "additionalProperties": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "title": "Choices",
-          "type": "object"
-        },
-        "event_id": {
-          "title": "Event Id",
-          "type": "string"
-        },
-        "fields": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Fields",
-          "type": "array"
-        },
-        "issue_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Issue Id"
-        },
-        "prefilled": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "title": "Prefilled",
-          "type": "object"
-        },
-        "recorded_at": {
-          "title": "Recorded At",
-          "type": "string"
-        },
-        "run_id": {
-          "title": "Run Id",
-          "type": "string"
-        },
-        "seq": {
-          "description": "会话内单调递增",
-          "minimum": 1,
-          "title": "Seq",
-          "type": "integer"
-        },
-        "sources": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "title": "Sources",
-          "type": "object"
-        },
-        "type": {
-          "const": "context_card",
-          "title": "Type",
-          "type": "string"
-        },
-        "version": {
-          "minimum": 0,
-          "title": "Version",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "seq",
-        "run_id",
-        "event_id",
-        "recorded_at",
-        "card_id",
-        "version",
-        "type",
-        "fields"
-      ],
-      "title": "ContextCardEvent",
-      "type": "object"
-    },
-    "DispatchEstimate": {
-      "additionalProperties": false,
-      "properties": {
-        "action": {
-          "const": "replacement.create",
-          "default": "replacement.create",
-          "title": "Action",
-          "type": "string"
-        },
-        "actions_version": {
-          "title": "Actions Version",
-          "type": "string"
-        },
-        "working_days": {
-          "exclusiveMinimum": 0,
-          "title": "Working Days",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "working_days",
-        "actions_version"
-      ],
-      "title": "DispatchEstimate",
       "type": "object"
     },
     "Done": {
@@ -568,6 +402,17 @@ export const serverEventSchema = z.fromJSONSchema({
       "additionalProperties": false,
       "description": "escalation_summary 的唯一层级：summary 对象（08 §5）。",
       "properties": {
+        "business": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HandoffBusiness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "case_id": {
           "anyOf": [
             {
@@ -635,19 +480,6 @@ export const serverEventSchema = z.fromJSONSchema({
           "title": "Observations",
           "type": "array"
         },
-        "policy_decision_brief": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Policy Decision Brief"
-        },
         "problem": {
           "title": "Problem",
           "type": "string"
@@ -683,6 +515,17 @@ export const serverEventSchema = z.fromJSONSchema({
           },
           "title": "Task Queue",
           "type": "array"
+        },
+        "warranty": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WarrantyDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -893,23 +736,36 @@ export const serverEventSchema = z.fromJSONSchema({
     },
     "ExecutedStep": {
       "additionalProperties": false,
+      "description": "排查记录的一条：操作步骤带 feedback；问句卡（2026-10-10 段落拆分后的诊断问句、确认问句）带 answer，\n是客户选的选项或短答原文。两者恰有一个。",
       "properties": {
-        "feedback": {
-          "enum": [
-            "solved",
-            "not_solved",
-            "cannot_do"
+        "answer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Feedback",
-          "type": "string"
+          "default": null,
+          "title": "Answer"
         },
-        "observed": {
-          "description": "该步骤记录到的观察结果（选项文字）",
-          "items": {
-            "type": "string"
-          },
-          "title": "Observed",
-          "type": "array"
+        "feedback": {
+          "anyOf": [
+            {
+              "enum": [
+                "solved",
+                "not_solved",
+                "cannot_do"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feedback"
         },
         "step_id": {
           "title": "Step Id",
@@ -922,8 +778,7 @@ export const serverEventSchema = z.fromJSONSchema({
       },
       "required": [
         "step_id",
-        "title",
-        "feedback"
+        "title"
       ],
       "title": "ExecutedStep",
       "type": "object"
@@ -1024,6 +879,18 @@ export const serverEventSchema = z.fromJSONSchema({
             "type": "string"
           },
           "title": "Conflicts With Text",
+          "type": "array"
+        },
+        "content_kinds": {
+          "items": {
+            "enum": [
+              "fault_photo",
+              "document",
+              "other"
+            ],
+            "type": "string"
+          },
+          "title": "Content Kinds",
           "type": "array"
         },
         "findings": {
@@ -1238,6 +1105,50 @@ export const serverEventSchema = z.fromJSONSchema({
         "checks"
       ],
       "title": "GateResult",
+      "type": "object"
+    },
+    "HandoffBusiness": {
+      "additionalProperties": false,
+      "description": "交接摘要的业务块（2026-10-09 I7 / I8）：按业务类型带具体字段，已知、缺失、待办分别标明。\n\nkind 决定人工先看什么：订单暂停看订单 / 包裹 / 条件；设备故障看产品 / 症状 / 已做操作；配件采购看型号与部件。",
+      "properties": {
+        "kind": {
+          "enum": [
+            "device_fault",
+            "order_change",
+            "parts_purchase",
+            "warranty_review",
+            "safety",
+            "unknown"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "known": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Known",
+          "type": "object"
+        },
+        "missing": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing",
+          "type": "array"
+        },
+        "pending_requests": {
+          "items": {
+            "$ref": "#/$defs/PendingRequest"
+          },
+          "title": "Pending Requests",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "HandoffBusiness",
       "type": "object"
     },
     "ImageQuality": {
@@ -1643,110 +1554,6 @@ export const serverEventSchema = z.fromJSONSchema({
       "title": "ModelTraceItem",
       "type": "object"
     },
-    "ObservationCard": {
-      "additionalProperties": false,
-      "description": "计划级判别问题的卡片。与步骤内 observations 用同一份定义，独立追问时也要能点选 ——\n自由文本回答只能靠字面匹配，两次匹配不上该观察就被记为不可用，依赖它的计划再也解锁不了。",
-      "properties": {
-        "attempt": {
-          "minimum": 1,
-          "title": "Attempt",
-          "type": "integer"
-        },
-        "card_id": {
-          "title": "Card Id",
-          "type": "string"
-        },
-        "event_id": {
-          "title": "Event Id",
-          "type": "string"
-        },
-        "issue_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Issue Id"
-        },
-        "observation": {
-          "$ref": "#/$defs/StepObservation"
-        },
-        "plan_id": {
-          "title": "Plan Id",
-          "type": "string"
-        },
-        "recorded_at": {
-          "title": "Recorded At",
-          "type": "string"
-        },
-        "run_id": {
-          "title": "Run Id",
-          "type": "string"
-        },
-        "seq": {
-          "description": "会话内单调递增",
-          "minimum": 1,
-          "title": "Seq",
-          "type": "integer"
-        },
-        "type": {
-          "const": "observation_card",
-          "title": "Type",
-          "type": "string"
-        },
-        "version": {
-          "minimum": 0,
-          "title": "Version",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "seq",
-        "run_id",
-        "event_id",
-        "recorded_at",
-        "card_id",
-        "version",
-        "type",
-        "observation",
-        "plan_id",
-        "attempt"
-      ],
-      "title": "ObservationCard",
-      "type": "object"
-    },
-    "ObservationOption": {
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "default": "finding",
-          "enum": [
-            "finding",
-            "unknown"
-          ],
-          "title": "Kind",
-          "type": "string"
-        },
-        "label": {
-          "title": "Label",
-          "type": "string"
-        },
-        "option_id": {
-          "title": "Option Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "option_id",
-        "label"
-      ],
-      "title": "ObservationOption",
-      "type": "object"
-    },
     "PendingChanged": {
       "additionalProperties": false,
       "properties": {
@@ -1828,6 +1635,31 @@ export const serverEventSchema = z.fromJSONSchema({
       "title": "PendingChanged",
       "type": "object"
     },
+    "PendingRequest": {
+      "additionalProperties": false,
+      "description": "交接时队列里尚未办结的一项客户诉求。",
+      "properties": {
+        "intent": {
+          "title": "Intent",
+          "type": "string"
+        },
+        "quote": {
+          "title": "Quote",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent",
+        "quote",
+        "status"
+      ],
+      "title": "PendingRequest",
+      "type": "object"
+    },
     "Ping": {
       "additionalProperties": false,
       "properties": {
@@ -1863,139 +1695,6 @@ export const serverEventSchema = z.fromJSONSchema({
         "type"
       ],
       "title": "Ping",
-      "type": "object"
-    },
-    "PolicyCondition": {
-      "additionalProperties": false,
-      "properties": {
-        "actual": {
-          "title": "Actual"
-        },
-        "expected": {
-          "title": "Expected"
-        },
-        "met": {
-          "title": "Met",
-          "type": "boolean"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "expected",
-        "actual",
-        "met"
-      ],
-      "title": "PolicyCondition",
-      "type": "object"
-    },
-    "PolicyDecision": {
-      "additionalProperties": false,
-      "properties": {
-        "exclusions_hit": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Exclusions Hit",
-          "type": "array"
-        },
-        "fault_class": {
-          "enum": [
-            "quality",
-            "user_damage",
-            "safety",
-            "unknown"
-          ],
-          "title": "Fault Class",
-          "type": "string"
-        },
-        "matched": {
-          "default": false,
-          "title": "Matched",
-          "type": "boolean"
-        },
-        "missing_inputs": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Missing Inputs",
-          "type": "array"
-        },
-        "needs_human": {
-          "default": false,
-          "title": "Needs Human",
-          "type": "boolean"
-        },
-        "needs_human_reasons": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Needs Human Reasons",
-          "type": "array"
-        },
-        "policy_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Policy Id"
-        },
-        "policy_version": {
-          "title": "Policy Version",
-          "type": "string"
-        },
-        "remedies": {
-          "items": {
-            "$ref": "#/$defs/RemedyDecision"
-          },
-          "title": "Remedies",
-          "type": "array"
-        },
-        "trace_id": {
-          "title": "Trace Id",
-          "type": "string"
-        },
-        "warranty_end": {
-          "anyOf": [
-            {
-              "format": "date",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Warranty End"
-        },
-        "within_warranty": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Within Warranty"
-        }
-      },
-      "required": [
-        "policy_version",
-        "fault_class",
-        "trace_id"
-      ],
-      "title": "PolicyDecision",
       "type": "object"
     },
     "ProductCandidate": {
@@ -2229,10 +1928,6 @@ export const serverEventSchema = z.fromJSONSchema({
           "title": "Options",
           "type": "array"
         },
-        "policy_version": {
-          "title": "Policy Version",
-          "type": "string"
-        },
         "recorded_at": {
           "title": "Recorded At",
           "type": "string"
@@ -2272,8 +1967,7 @@ export const serverEventSchema = z.fromJSONSchema({
         "version",
         "type",
         "options",
-        "decision_summary",
-        "policy_version"
+        "decision_summary"
       ],
       "title": "ProposalCardEvent",
       "type": "object"
@@ -2281,73 +1975,19 @@ export const serverEventSchema = z.fromJSONSchema({
     "ProposalOption": {
       "additionalProperties": false,
       "properties": {
-        "auto_allowed": {
-          "default": false,
-          "title": "Auto Allowed",
-          "type": "boolean"
-        },
-        "clauses": {
-          "items": {
-            "$ref": "#/$defs/Clause"
-          },
-          "title": "Clauses",
-          "type": "array"
-        },
-        "conditions": {
-          "items": {
-            "$ref": "#/$defs/PolicyCondition"
-          },
-          "title": "Conditions",
-          "type": "array"
-        },
-        "cost_bearer": {
-          "anyOf": [
-            {
-              "enum": [
-                "company",
-                "customer",
-                "shared"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cost Bearer"
-        },
-        "dispatch_estimate": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DispatchEstimate"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
         },
         "option_id": {
           "title": "Option Id",
           "type": "string"
         },
-        "remedy": {
-          "enum": [
-            "parts",
-            "repair",
-            "replace",
-            "refund",
-            "paid_repair",
-            "none"
-          ],
-          "title": "Remedy",
-          "type": "string"
-        },
         "source": {
-          "default": "policy",
+          "default": "sop",
           "enum": [
-            "policy",
+            "sop",
             "human"
           ],
           "title": "Source",
@@ -2356,11 +1996,21 @@ export const serverEventSchema = z.fromJSONSchema({
         "title": {
           "title": "Title",
           "type": "string"
+        },
+        "type": {
+          "enum": [
+            "replace",
+            "refund",
+            "reship",
+            "carrier_investigation"
+          ],
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
         "option_id",
-        "remedy",
+        "type",
         "title"
       ],
       "title": "ProposalOption",
@@ -2446,18 +2096,6 @@ export const serverEventSchema = z.fromJSONSchema({
           "title": "Data",
           "type": "object"
         },
-        "eta_days": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Eta Days"
-        },
         "next_step": {
           "default": "",
           "title": "Next Step",
@@ -2488,7 +2126,7 @@ export const serverEventSchema = z.fromJSONSchema({
           "title": "Service Order No"
         },
         "source": {
-          "default": "业务系统（模拟）",
+          "default": "after-sales tool",
           "title": "Source",
           "type": "string"
         },
@@ -2620,7 +2258,7 @@ export const serverEventSchema = z.fromJSONSchema({
           "default": null,
           "title": "Amount"
         },
-        "channel": {
+        "country": {
           "anyOf": [
             {
               "type": "string"
@@ -2630,7 +2268,7 @@ export const serverEventSchema = z.fromJSONSchema({
             }
           ],
           "default": null,
-          "title": "Channel"
+          "title": "Country"
         },
         "order_no": {
           "anyOf": [
@@ -2655,6 +2293,18 @@ export const serverEventSchema = z.fromJSONSchema({
           ],
           "default": null,
           "title": "Purchase Date"
+        },
+        "seller": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seller"
         }
       },
       "title": "ReceiptFields",
@@ -2690,8 +2340,8 @@ export const serverEventSchema = z.fromJSONSchema({
             "order_verified",
             "order_product_mismatch",
             "needs_manual_check",
-            "channel_in_directory",
-            "channel_unknown"
+            "dealer_authorized",
+            "dealer_unauthorized"
           ],
           "title": "Status",
           "type": "string"
@@ -2708,69 +2358,6 @@ export const serverEventSchema = z.fromJSONSchema({
         "status"
       ],
       "title": "ReceiptOutcome",
-      "type": "object"
-    },
-    "RemedyDecision": {
-      "additionalProperties": false,
-      "properties": {
-        "auto_allowed": {
-          "title": "Auto Allowed",
-          "type": "boolean"
-        },
-        "clauses": {
-          "items": {
-            "$ref": "#/$defs/Clause"
-          },
-          "title": "Clauses",
-          "type": "array"
-        },
-        "conditions": {
-          "items": {
-            "$ref": "#/$defs/PolicyCondition"
-          },
-          "title": "Conditions",
-          "type": "array"
-        },
-        "cost_bearer": {
-          "anyOf": [
-            {
-              "enum": [
-                "company",
-                "customer",
-                "shared"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cost Bearer"
-        },
-        "eligible": {
-          "title": "Eligible",
-          "type": "boolean"
-        },
-        "remedy": {
-          "enum": [
-            "parts",
-            "repair",
-            "replace",
-            "refund",
-            "paid_repair",
-            "none"
-          ],
-          "title": "Remedy",
-          "type": "string"
-        }
-      },
-      "required": [
-        "remedy",
-        "eligible",
-        "auto_allowed"
-      ],
-      "title": "RemedyDecision",
       "type": "object"
     },
     "RetakeCardEvent": {
@@ -2974,33 +2561,29 @@ export const serverEventSchema = z.fromJSONSchema({
       "title": "StepCard",
       "type": "object"
     },
-    "StepObservation": {
+    "StepMedia": {
       "additionalProperties": false,
-      "description": "步骤要收集的检查结果：一个问题与有限选项。功能是否恢复仍由 feedback 三态表达。",
+      "description": "官方 Q&A 步骤里附带的图片 / 视频 / 文章链接（原样引用，不进模型上下文）。",
       "properties": {
-        "observation_id": {
-          "title": "Observation Id",
+        "kind": {
+          "enum": [
+            "image",
+            "video",
+            "link"
+          ],
+          "title": "Kind",
           "type": "string"
         },
-        "options": {
-          "items": {
-            "$ref": "#/$defs/ObservationOption"
-          },
-          "minItems": 2,
-          "title": "Options",
-          "type": "array"
-        },
-        "question": {
-          "title": "Question",
+        "url": {
+          "title": "Url",
           "type": "string"
         }
       },
       "required": [
-        "observation_id",
-        "question",
-        "options"
+        "url",
+        "kind"
       ],
-      "title": "StepObservation",
+      "title": "StepMedia",
       "type": "object"
     },
     "SummaryUpdated": {
@@ -3168,6 +2751,18 @@ export const serverEventSchema = z.fromJSONSchema({
           "default": null,
           "title": "Caution"
         },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context"
+        },
         "evidence_ids": {
           "items": {
             "type": "string"
@@ -3183,11 +2778,30 @@ export const serverEventSchema = z.fromJSONSchema({
           "title": "Instruction",
           "type": "string"
         },
-        "observations": {
+        "kind": {
+          "default": "action",
+          "enum": [
+            "action",
+            "question",
+            "statement",
+            "material_request",
+            "handoff"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "media": {
           "items": {
-            "$ref": "#/$defs/StepObservation"
+            "$ref": "#/$defs/StepMedia"
           },
-          "title": "Observations",
+          "title": "Media",
+          "type": "array"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Options",
           "type": "array"
         },
         "plan_id": {
@@ -3236,6 +2850,109 @@ export const serverEventSchema = z.fromJSONSchema({
       ],
       "title": "TroubleshootStep",
       "type": "object"
+    },
+    "WarrantyDecision": {
+      "additionalProperties": false,
+      "description": "主办方 SOP「订单质保判断」：有订单看订单质保结束日期；查不到订单看经销商名录（授权 = 购买日起 12 个月）。",
+      "properties": {
+        "as_of": {
+          "format": "date",
+          "title": "As Of",
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "order",
+            "dealer",
+            "none"
+          ],
+          "title": "Basis",
+          "type": "string"
+        },
+        "country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Country"
+        },
+        "dealer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dealer"
+        },
+        "order_no": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Order No"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "sku": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sku"
+        },
+        "status": {
+          "enum": [
+            "in_warranty",
+            "out_of_warranty",
+            "unauthorized_dealer",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "warranty_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warranty End"
+        }
+      },
+      "required": [
+        "status",
+        "basis",
+        "as_of",
+        "reason"
+      ],
+      "title": "WarrantyDecision",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3243,7 +2960,6 @@ export const serverEventSchema = z.fromJSONSchema({
     "mapping": {
       "awaiting_input": "#/$defs/AwaitingInput",
       "case_changed": "#/$defs/CaseStatusEvent",
-      "context_card": "#/$defs/ContextCardEvent",
       "done": "#/$defs/Done",
       "error": "#/$defs/Error",
       "escalation_summary": "#/$defs/EscalationSummaryEvent",
@@ -3254,7 +2970,6 @@ export const serverEventSchema = z.fromJSONSchema({
       "message": "#/$defs/Message",
       "message_end": "#/$defs/MessageEnd",
       "message_start": "#/$defs/MessageStart",
-      "observation_card": "#/$defs/ObservationCard",
       "pending_changed": "#/$defs/PendingChanged",
       "ping": "#/$defs/Ping",
       "product_card": "#/$defs/ProductCard",
@@ -3311,9 +3026,6 @@ export const serverEventSchema = z.fromJSONSchema({
       "$ref": "#/$defs/StepCard"
     },
     {
-      "$ref": "#/$defs/ObservationCard"
-    },
-    {
       "$ref": "#/$defs/Evidence"
     },
     {
@@ -3330,9 +3042,6 @@ export const serverEventSchema = z.fromJSONSchema({
     },
     {
       "$ref": "#/$defs/Done"
-    },
-    {
-      "$ref": "#/$defs/ContextCardEvent"
     },
     {
       "$ref": "#/$defs/ProposalCardEvent"

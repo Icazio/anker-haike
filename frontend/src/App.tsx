@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { type OfficialTicket, ticketFiles } from './api/officialTickets';
 import { HeaderBar } from './components/HeaderBar';
 import { ChatPane } from './components/ChatPane';
 import { Composer } from './components/Composer';
@@ -37,6 +38,12 @@ export function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [lastKey, state.ui]);
 
+  const [presetFiles, setPresetFiles] = useState<File[] | null>(null);
+  const loadTicket = useCallback(async (ticket: OfficialTicket) => {
+    pickPrompt(ticket.body);
+    setPresetFiles(ticket.attachments.length ? await ticketFiles(ticket) : null);
+  }, []);
+
   function pickPrompt(text: string) {
     setDraft(text);
     composerRef.current?.focus();
@@ -45,6 +52,15 @@ export function App() {
       if (!input) return;
       input.setSelectionRange(input.value.length, input.value.length);
     });
+  }
+
+  /** 新建会话按钮与 logo 共用：空白会话不动作；处理中或有待回答卡片先确认中断。 */
+  function goHome() {
+    if (!state.id) return;
+    const interruptible = busy || state.pendingInput !== null || state.activeRun !== null;
+    if (interruptible && !window.confirm('当前排查会中断，确定开始新会话？旧会话仍可从列表切回。')) return;
+    setRecordOpen(false);
+    void session.startNew();
   }
 
   const onAction = (kind: Parameters<typeof session.act>[0]['kind'], payload: Record<string, unknown>) => void session.act({ kind, payload });
@@ -63,13 +79,12 @@ export function App() {
   return (
     <div className={styles.app} data-ui={state.ui}>
       <a href="#main" className={styles.skip}>跳到主要内容</a>
-      <HeaderBar {...health}>
+      <HeaderBar {...health} onHome={goHome}>
         <SessionSwitcher
           currentId={state.id}
           recent={session.recent}
-          interruptible={busy || state.pendingInput !== null || state.activeRun !== null}
           busy={busy}
-          onNew={() => void session.startNew()}
+          onNew={goHome}
           onSwitch={(id) => void session.switchTo(id)}
         />
       </HeaderBar>
@@ -82,7 +97,7 @@ export function App() {
       <main id="main" className={styles.layout}>
         <section className={styles.conv} aria-label="智能售后对话">
           <div className={styles.stream} ref={streamRef}>
-            {!hasHistory && <ChatPane onPick={pickPrompt} disabled={busy} />}
+            {!hasHistory && <ChatPane onPick={pickPrompt} onLoadTicket={loadTicket} disabled={busy} />}
             <Timeline state={state} onAction={onAction} onHover={setHover} dockPending />
             {state.stalled && busy && <p className={cardStyles.stallNote} role="status">仍在处理，请稍候…</p>}
             {busy && !state.stalled && <p className={cardStyles.sysRow} role="status">{state.ui === 'tool_running' ? '正在检索知识库…' : state.ui === 'recovering' ? '正在恢复连接…' : '正在处理…'}</p>}
@@ -96,15 +111,15 @@ export function App() {
               key={composerContext}
               pendingKind={pendingKind}
               purpose={receiptUpload ? 'receipt' : 'fault'}
-              onSkipReceipt={(reason) => session.act({ kind: 'skip_receipt', payload: { reason } })}
+              onSkipReceipt={() => session.act({ kind: 'skip_receipt', payload: { reason: 'none' } })}
               inputRef={composerRef}
               value={draft}
               onChange={setDraft}
               offline={false}
               busy={busy || state.pendingActionId !== null}
               onSend={(text, files, purpose) => session.send(text, { files, purpose })}
-              onRequestHuman={hasHistory ? undefined : () => void session.requestHuman()}
               onCancel={state.activeRun ? () => void session.cancel() : undefined}
+              presetFiles={presetFiles}
             />
           </div>
         </section>

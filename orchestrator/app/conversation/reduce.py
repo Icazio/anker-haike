@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import uuid
 
 from app.conversation.interpret import TurnInterpretation
@@ -11,6 +12,8 @@ from app.conversation.operation_conditions import (
     resolve_operation_reply,
     update_conditions,
 )
+from app.conversation.quotes import normalize, quoted
+from app.official.message import parse_message
 
 # The diagnostic engine sees a projection. Only these fields may return to an issue.
 ISSUE_FIELDS = {
@@ -31,10 +34,13 @@ ISSUE_FIELDS = {
     "abandoned_card": None,
     "observations": [],
     "product_hints": [],
+    "product_question": None,
     "symptoms": [],
-    "symptom_codes": [],
+    # intake 给的英文现象描述，只参与检索（官方 Q&A 是英文，T43 西语「desconectado」与英文条目没有词面交集）；
+    # 不是事实，不进摘要和适用性判断
+    "search_query_en": None,
+    "unparsed_problem": None,
     "diagnostic_decision": None,
-    "symptom_interview": None,
     "evidence": {},
     "current_evidence_ids": [],
     "image_observations": [],
@@ -45,25 +51,28 @@ ISSUE_FIELDS = {
     "rewrite_used": False,
     "evidence_quality": None,
     "query": None,
-    "fault_card": None,
-    "fault_card_hits": [],
+    "error_codes": [],
     "diagnose_outcome": None,
     "plan_cursor": None,
     "steps_executed": [],
+    "displayed_knowledge_nodes": [],
     "step_attempts": [],
+    "step_checks": {},
+    # 客户答过的候选前提追问：{plan_id, missing_fact, question, answer, input_id}。答过就是证据，同一前提不再问
+    "precondition_answers": [],
+    "fallback_clarification": None,
     "operation_conditions": {},
     "counters": {},
     "exhausted_plans": [],
-    "observation_requests": [],
     "next_action": None,
     "receipt": None,
     "vision_status": None,
     "processed_fault_image_ids": [],
     "visual_product": None,
     "visible_parts": [],
-    "service_context": {}, "context_sources": {}, "policy_decision": None,
+    "service_context": {}, "context_sources": {}, "warranty": None, "sop_evidence": {}, "awaiting_evidence": [], "logistics_announced": False,
     "proposal": None, "case_id": None, "execution": None, "gate_result": None,
-    "prior_remedies": [], "requested_remedy": None, "consult_intent": None,
+    "requested_remedy": None, "consult_intent": None,
     "last_consult_params": {},
     "consult_params": {}, "consult_attempts": 0, "consult_answered": False,
     "emotion_trend": "stable", "emotion_actions": [], "unresolved_turns": 0,
@@ -74,17 +83,69 @@ ISSUE_FIELDS = {
 }
 
 
-# 一个观察请求在写出观察事实之前都还接受回答；answered 之后才是终态。
-OPEN_OBSERVATION_STATUS = frozenset({"asked", "unparsed", "unknown"})
-
-
 def stable_id(*parts) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, ":".join(map(str, parts))).hex
 
 
-def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool = False, business_order_no: str | None = None, new_business_subject: bool = False) -> dict:
-    from app.conversation.taxonomy import canonical_codes
+def device_message_spans(text: str) -> list[str]:
+    """首封表单里由设备 / App 写出的句子：推送提示与问题描述字段。
 
+    T11：「Click to contact customer service for assistance」出现在 Problem Push 里，是错误码附带的固定文案。
+    引文落在这些字段里说明是设备在说话，不能当作用户自己的请求；作为故障现象仍然有效。
+    """
+    fields = parse_message(text or "").fields
+    spans = []
+    for key in ("push", "description"):
+        value = (fields.get(key) or "").strip()
+        if not value:
+            continue
+        norm = normalize(value)
+        if any(norm in normalize(s) or normalize(s) in norm for s in spans):
+            continue
+        spans.append(value)
+    return spans
+
+
+def quote_source(quote: str | None, spans: list[str]) -> str:
+    return "device_message" if quote and any(normalize(quote) in normalize(span) for span in spans) else "user_statement"
+
+
+SAFETY_CONFIRM_QUESTION = (
+    "Before we continue, I need to check one thing for your safety: is there any smoke, burning smell, "
+    "visible swelling of the battery, leaking liquid, or is the device too hot to touch? Please reply yes or no."
+)
+
+
+def _unconfirmed_risk(risks: list[dict], target: str | None) -> dict | None:
+    return next((r for r in risks if r.get("status") == "unconfirmed" and r.get("issue_id") in {None, target}), None)
+
+
+def answers_pending_step(meaning: TurnInterpretation, pending: dict | None, text: str) -> bool:
+    """本轮是否在回答当前步骤卡：反馈或问句回答，且引文出自本轮原话。"""
+    if not pending or pending.get("kind") != "step_feedback":
+        return False
+    answer = meaning.pending_answer
+    if answer is not None and answer.kind == "step_answer":
+        return bool(quoted(answer.quote, text))
+    return meaning.feedback is not None and bool(quoted(meaning.feedback_quote, text))
+
+
+_CODE_OR_MODEL = re.compile(r"\b(?:T\d{4}[A-Z0-9]*|T8D\d+|E[0-9A-Z]{1,3}|EB[0-9A-Z]{1,2}|\d{4})\b")
+
+
+def search_query_en(meaning: TurnInterpretation, text: str) -> str | None:
+    """本轮报告了现象时的英文检索描述；不允许出现原文没有的型号 / 错误码（检索范围与精确命中另有来源，凭空的码会把检索带偏）。
+    没有现象的轮次返回 None，保留上一轮的描述。"""
+    english = " ".join((meaning.search_query_en or "").split())
+    if not english or not any(f.kind == "symptom" for f in meaning.facts):
+        return None
+    source = text.upper()
+    if any(token.upper() not in source for token in _CODE_OR_MODEL.findall(english)):
+        return None
+    return english[:160]
+
+
+def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool = False, business_order_no: str | None = None, new_business_subject: bool = False) -> dict:
     issues = copy.deepcopy(state.get("issues") or {})
     iid, at = state["input_id"], state["at"]
     current = state.get("active_issue_id")
@@ -195,12 +256,13 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         text = ((state.get("last_action") or {}).get("payload") or {}).get("text", "")
     facts = issue.setdefault("facts", [])
     applied = []
+    spans = device_message_spans(text)
     for index, correction in enumerate(meaning.corrections):
         old = next(
             (f for f in facts if f["fact_id"] == correction.fact_id and f["status"] == "active"),
             None,
         )
-        if not old or not correction.quote.strip() or correction.quote not in text:
+        if not old or not quoted(correction.quote, text):
             clarify = "请指出需要更正的是哪项记录，以及正确的情况。"
             continue
         old["status"] = "superseded" if correction.value else "retracted"
@@ -217,30 +279,41 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
                 old,
                 fact_id=stable_id(iid, "replace", index),
                 value=correction.value,
-                symptom_codes=canonical_codes(correction.value, category=issue.get("category") or meaning.device_category)[0] if old["kind"] == "symptom" else [],
-                symptom_code=None,
                 status="active",
                 source_entry_ids=[iid],
                 recorded_at=at,
                 supersedes=old["fact_id"],
                 revision=old["revision"] + 1,
             )
-            if old.get("observation_id"):
-                # 更正后的观察重新匹配选项；匹配不到则保持未知，不沿用旧选项
-                replacement["option_id"] = _rematch_option(old["observation_id"], correction.value)
             facts.append(replacement)
     if meaning.primary_intent == "correct" and not meaning.corrections:
         clarify = clarify or "您刚才哪句话说错了？请告诉我正确的设备或现象，我会更新对应记录。"
-    normalization_disagreements = []
-    from app.diagnose.decision import accept_answer
-    for index, candidate in enumerate(meaning.facts):
-        if not candidate.quote.strip() or candidate.quote not in text:
+    candidates = list(meaning.facts)
+    parsed = parse_message(text)
+    grounded_symptoms = [candidate for candidate in candidates if candidate.kind == "symptom" and quoted(candidate.quote, text)]
+    if grounded_symptoms and issue.get("unparsed_problem"):
+        issue["unparsed_problem"] = {**issue["unparsed_problem"], "status": "interpreted", "interpreted_by_input_id": iid}
+    if (
+        meaning.primary_intent == "report_problem"
+        and state.get("entry") != "action"
+        and parsed.format in {"app_report", "rma"}
+        and parsed.description
+        and not grounded_symptoms
+        and not meaning.corrections
+    ):
+        # 原文证据和语义事实是两层：解析未完成不代表用户“不确定”。
+        issue["unparsed_problem"] = {"text": parsed.description, "source_entry_ids": [iid], "status": "unparsed"}
+    for index, candidate in enumerate(candidates):
+        if not quoted(candidate.quote, text):
             continue
-        if any(f["value"] == candidate.value and f["status"] == "active" for f in facts):
-            continue
-        codes, disagreement = canonical_codes(candidate.quote, candidate.symptom_code, issue.get("category") or meaning.device_category) if candidate.kind == "symptom" else ([], None)
-        if disagreement:
-            normalization_disagreements.append({**disagreement, "quote": candidate.quote})
+        previous = next((f for f in facts if f["value"] == candidate.value
+                         and f["kind"] == candidate.kind and f["status"] == "active"), None)
+        if previous:
+            if previous.get("polarity") != "uncertain" or candidate.polarity == "uncertain":
+                continue
+            # 新的、有本轮引文支持的明确事实可确认原先不确定的记录；保留旧版本来源。
+            previous["status"] = "superseded"
+            previous["superseded_by_input_id"] = iid
         fact = {
             "fact_id": stable_id(iid, "add", index),
             "kind": candidate.kind,
@@ -249,19 +322,24 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
             "issue_id": target,
             "device_ref_id": issue["device_ref"]["device_ref_id"],
             "status": "active",
-            "revision": 1,
+            "revision": previous["revision"] + 1 if previous else 1,
             "source_kind": "user_report",
+            "source": quote_source(candidate.quote, spans),
+            "subject": candidate.subject,
+            "polarity": candidate.polarity,
+            "timing": candidate.timing,
             "source_entry_ids": [iid],
             "recorded_at": at,
             "occurred_at": candidate.occurred_at,
             "time_expression": candidate.time_expression,
             "precision": candidate.precision,
             "quote": candidate.quote,
-            "symptom_codes": codes,
-            "symptom_code": codes[0] if len(codes) == 1 else None,
         }
+        if previous:
+            fact["supersedes"] = previous["fact_id"]
         facts.append(fact)
-        applied.append({"op": "add", "fact_id": fact["fact_id"], "input_id": iid})
+        applied.append({"op": "replace" if previous else "add",
+                        "fact_id": previous["fact_id"] if previous else fact["fact_id"], "input_id": iid})
     hints = [
         hint
         for hint in meaning.product_hints
@@ -280,24 +358,24 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
             product_state="unknown",
             category=None,
             current_evidence_ids=[],
-            fault_card=None,
-            fault_card_hits=[],
+            error_codes=[],
             plans_ranked=[],
             plan_cursor=None,
             query=None,
             knowledge_status=None,
-            symptom_interview=None,
-            symptom_codes=[],
         )
     elif hints:
         issue["product_hints"] = list(dict.fromkeys([*issue.get("product_hints", []), *hints]))
     changed_ids = {patch["fact_id"] for patch in applied}
+    corrected = bool(product_corrected or any(p["op"] in {"replace", "retract"} for p in applied))
     basis_changed = bool(
-        product_corrected
-        or any(p["op"] in {"replace", "retract"} for p in applied)
+        corrected
         or any(f["fact_id"] in changed_ids and f["kind"] == "symptom" for f in facts)
     )
-    if basis_changed and issue.get("pending_card"):
+    # 先承接再撤卡（2026-10-10 多轮复现 T22 / T46）：本轮有引文支持的回答指向当前步骤卡时，同句新增的现象
+    # 不撤这张卡，回答由 resolve_command 提交、verify 写进 step_attempts；新现象照常进事实。纠正旧记录仍撤卡。
+    keeps_card = not corrected and answers_pending_step(meaning, issue.get("pending_card"), text)
+    if basis_changed and issue.get("pending_card") and not keeps_card:
         pc = issue["pending_card"]
         pending_changes.append(
             {
@@ -309,40 +387,33 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         )
         issue["pending_card"] = None
         resumed_pending = False
+    if (english := search_query_en(meaning, text)) is not None:
+        issue["search_query_en"] = english
+    elif applied:
+        # 本轮只更正了事实、没报新现象：旧的英文描述是按更正前的事实写的，作废；下一轮有现象再生成
+        issue["search_query_en"] = None
+    # 否定句（「没有冒烟」「no suction loss」）是反证，不是现象：留在 facts 里供摘要与适用性核对，不进症状。
     issue["symptoms"] = [
-        f["value"] for f in facts if f["status"] == "active" and f["kind"] == "symptom"
+        f["value"] for f in facts
+        if f["status"] == "active" and f["kind"] == "symptom" and f.get("polarity", "affirmed") != "negated"
     ]
     issue["observations"] = [
         f["value"] for f in facts if f["status"] == "active" and f["kind"] == "observation"
     ]
-    symptom_update, symptom_answered = accept_answer(
-        issue, meaning.symptom_answer, text=text, input_id=iid,
-        changed_fact_ids={p["fact_id"] for p in applied},
-        answer_expected=meaning.primary_intent in {"answer_pending", "unknown"},
-    )
-    issue.update(symptom_update)
     operation_proposal, operation_clarification = resolve_operation_reply(text, issue)
     operation_proposal = operation_proposal or meaning.operation_update
+    # 「despite wiping clean the electrical connections」是已做过的排查（action_taken），不是操作条件变了（T31）。
+    # 同一段原话既被抽成已做操作又被当成 operation_update 时，以事实为准，不触发 reassess。
+    if operation_proposal is not None and any(
+        f.kind == "action_taken" and f.quote and (
+            normalize(operation_proposal.quote) in normalize(f.quote) or normalize(f.quote) in normalize(operation_proposal.quote)
+        )
+        for f in meaning.facts
+    ):
+        operation_proposal = None
     if operation_clarification:
         operation_proposal = None
         clarify = operation_clarification
-    observation_answered = observation_attempted = False
-    if not operation_clarification:
-        observation_answered, observation_attempted = _accept_observation_reply(
-            issue, text, iid, at, intent=meaning.primary_intent, applied=applied,
-            entry=state.get("entry"),
-        )
-    pc = issue.get("pending_card")
-    if pc and pc.get("kind") == "answer_observation":
-        obs_id = ((pc.get("payload") or {}).get("observation") or {}).get("observation_id")
-        # 用户改用文本答了同一个问题时收掉卡片；未解析的那一轮保留，问题还开着就还该能点。
-        if any(
-            r.get("observation_id") == obs_id and r.get("status") in {"answered", "unknown"}
-            for r in issue.get("observation_requests") or []
-        ):
-            pending_changes.append({"issue_id": target, "pending_id": pc["card_id"], "status": "consumed", "reason": "answered_in_text"})
-            issue["pending_card"] = None
-            resumed_pending = False
     conditions, operation_changed = update_conditions(issue, operation_proposal, text=text, input_id=iid)
     issue["operation_conditions"] = conditions
     if operation_changed:
@@ -352,35 +423,46 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
             pending_changes.append({"issue_id": target, "pending_id": pc["card_id"], "status": "invalidated", "reason": "operation_conditions_changed"})
             issue["pending_card"] = None
             resumed_pending = False
-    if basis_changed or symptom_answered:
+    if basis_changed:
         issue["diagnostic_decision"] = None
     if issue["symptoms"]:
         issue["status"] = "open"
         issue["title"] = "、".join(issue["symptoms"])
     risks = copy.deepcopy(state.get("risk_cases") or [])
-    new_risk = (
-        meaning.device_safety_assertion == "reported" and meaning.device_safety_quote and meaning.device_safety_quote in text
-    )
+    # R4 语义门（2026-10-10）：模型标 reported 且原话存在，只证明「客户说过这句话」，不证明它是物理危险。
+    # T23 第十轮：设备推送「E41: Battery abnormal」被当成安全事件。与 R3 同一模式——引文落在设备字段里不算用户报告；
+    # 用户自己写的但词表没命中，先问一句封闭式确认（期间暂停动作），确认再升级；词表命中仍立即 R4，保护不降。
+    claimed = meaning.device_safety_assertion == "reported" and quoted(meaning.device_safety_quote, text)
+    claim_source = quote_source(meaning.device_safety_quote, spans) if claimed else None
     validated_negation = meaning.device_safety_assertion == "negated" and bool(
-        meaning.device_safety_quote and meaning.device_safety_quote in text
+        quoted(meaning.device_safety_quote, text)
     )
-    uncertain_risk = precheck_risk and not new_risk and not validated_negation
-    if new_risk or uncertain_risk:
+    pending = _unconfirmed_risk(risks, target)
+    new_risk = (precheck_risk and not validated_negation) or (claimed and claim_source == "user_statement" and pending is not None)
+    unconfirmed_claim = claimed and claim_source == "user_statement" and not new_risk
+    if unconfirmed_claim:
+        clarify = clarify or SAFETY_CONFIRM_QUESTION
+    if pending is not None and (new_risk or validated_negation):
+        pending["status"] = "reported" if new_risk else "cleared"
+        pending.setdefault("source_input_ids", []).append(iid)
+    elif new_risk or unconfirmed_claim:
         risk_target = target if new_device or meaning.device_relation == "current" else None
         risks.append(
             {
                 "risk_id": stable_id(iid, "risk"),
                 "rule_id": "R4",
-                "status": "reported",
+                "status": "reported" if new_risk else "unconfirmed",
                 "source_input_ids": [iid],
                 "reported_at": at,
                 "issue_id": risk_target,
                 "device_ref_id": issue["device_ref"]["device_ref_id"] if risk_target else None,
                 "restriction": "no_operations",
-                "policy_version": "2026-09-13",
+                "policy_version": "2026-10-10",
                 "last_evidence_seq": state.get("input_seq"),
+                **({"quote": meaning.device_safety_quote} if claimed else {}),
             }
         )
+    uncertain_risk = False
     corrected_sources = {
         source
         for f in facts
@@ -400,7 +482,7 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
                 risk["status"] = "disputed"
                 risk.setdefault("dispute_refs", []).append(iid)
     restriction = any(
-        r["status"] in {"reported", "disputed"}
+        r["status"] in {"reported", "disputed", "unconfirmed"}
         and (
             r.get("issue_id") in {None, target}
             or issue["status"] == "draft"
@@ -425,13 +507,20 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
     intent = meaning.primary_intent
     if intent in {"replacement_request", "refund_request", "address_update"}:
         issue["requested_remedy"] = {"replacement_request": "replace", "refund_request": "refund", "address_update": "address_update"}[intent]
-    if intent == "request_human" and state.get("entry") != "action" and not (
-        meaning.human_request_quote and meaning.human_request_quote.strip() and meaning.human_request_quote in text
-    ):
-        # A classifier's recommendation is not a user request to cancel a task.
-        intent = "complaint" if meaning.emotion_level in {"dissatisfied", "angry", "complaint_risk"} else "unknown"
-        if intent == "unknown":
-            clarify = clarify or "请说明是需要接入人工客服，还是继续处理当前问题。"
+    human_request_source = None
+    if intent == "request_human" and state.get("entry") != "action":
+        in_text = quoted(meaning.human_request_quote, text)
+        if in_text and quote_source(meaning.human_request_quote, spans) == "user_statement":
+            human_request_source = "user_statement"
+        elif in_text and (parse_codes(text) or any(c.kind == "symptom" for c in meaning.facts)):
+            # 引文确实在原文里，但落在设备推送字段（T11 的「Click to contact customer service」），
+            # 而这封消息报的是故障：这是一条故障求助，按排障处理。
+            intent = "report_problem"
+        else:
+            # A classifier's recommendation is not a user request to cancel a task.
+            intent = "complaint" if meaning.emotion_level in {"dissatisfied", "angry", "complaint_risk"} else "unknown"
+            if intent == "unknown":
+                clarify = clarify or "请说明是需要接入人工客服，还是继续处理当前问题。"
     mode = (
         "clarify"
         if clarify
@@ -450,9 +539,6 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         }
         else "diagnose"
     )
-    attempts = (issue.get("symptom_interview") or {}).get("response_attempts", [])
-    if intent == "unknown" and attempts and attempts[-1]["input_id"] == iid:
-        mode = "diagnose"
     if issue.get("pending_card") and intent == "supplement" and not basis_changed:
         mode = "dialogue"
     trigger = "R4" if new_risk or uncertain_risk else "R3" if intent == "request_human" else None
@@ -479,15 +565,13 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         resumed_pending = False
     if restriction and mode == "diagnose" and not trigger:
         mode = "dialogue"
-    if observation_answered:
-        mode = "diagnose"
-    if applied or open_new or product_corrected or symptom_answered or operation_changed:
+    if applied or open_new or product_corrected or operation_changed:
         issue["issue_revision"] = issue.get("issue_revision", 0) + 1
     decision = {
         "input_id": iid,
         "primary_intent": intent,
-        "answer_scope": meaning.business_reference.relation if meaning.business_reference and meaning.business_reference.relation in {"case", "issue"} and meaning.business_reference.quote.strip() and meaning.business_reference.quote in text else "focus",
-        "answer_request": meaning.answer_request.model_dump() if meaning.answer_request and meaning.answer_request.quote.strip() and meaning.answer_request.quote in text else None,
+        "answer_scope": meaning.business_reference.relation if meaning.business_reference and meaning.business_reference.relation in {"case", "issue"} and quoted(meaning.business_reference.quote, text) else "focus",
+        "answer_request": meaning.answer_request.model_dump() if meaning.answer_request and quoted(meaning.answer_request.quote, text) else None,
         "secondary_intents": meaning.secondary_intents,
         "target_issue_id": target,
         "reply_mode": mode,
@@ -501,16 +585,13 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         "resumed_pending": resumed_pending,
         "business_switched": business_switched,
         "business_ambiguous": business_ambiguous,
-        "symptom_answered": symptom_answered,
-        "observation_answered": observation_answered,
-        "observation_attempted": observation_attempted,
         "operation_changed": operation_changed,
-        "diagnostic_request": bool(meaning.diagnostic_request_quote and meaning.diagnostic_request_quote.strip() and meaning.diagnostic_request_quote in text),
-        "normalization_disagreements": normalization_disagreements,
+        "diagnostic_request": quoted(meaning.diagnostic_request_quote, text),
+        "human_request_source": human_request_source,
     }
     result = {key: copy.deepcopy(issue.get(key, default)) for key, default in ISSUE_FIELDS.items()}
     preferences = dict(state.get("session_preferences") or {})
-    if meaning.detail_level and meaning.preference_quote and meaning.preference_quote in text:
+    if meaning.detail_level and quoted(meaning.preference_quote, text):
         preferences.update(detail_level=meaning.detail_level, source_input_id=iid, updated_at=at)
     result["session_preferences"] = preferences
     result.update(
@@ -521,7 +602,7 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         context_revision=state.get("context_revision", 0)
         + (
             1
-            if applied or open_new or product_corrected or symptom_answered or operation_changed or risks != state.get("risk_cases", [])
+            if applied or open_new or product_corrected or operation_changed or risks != state.get("risk_cases", [])
             else 0
         ),
         applied_input_ids=[*state.get("applied_input_ids", []), iid],
@@ -533,82 +614,8 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
     return result
 
 
-def _rematch_option(observation_id, text):
-    from app.diagnose.observations import definitions, match_reply
-
-    obs = definitions().get(observation_id)
-    if obs is None:
-        return None
-    matched = match_reply(text, obs)
-    return None if matched in {None, "unknown"} else matched
-
-
-def _accept_observation_reply(issue, text, iid, at, *, intent, applied, entry):
-    """把自由文本回答接到尚未回答的观察问题上（design §3.1）。
-
-    请求在写出观察事实之前一直开着：匹配唯一选项 → 写观察事实，明确说不知道 → 记为 unknown
-    （decide_next 不再追问），其他文本按一次未解析尝试计数。unparsed / unknown 都不是终态——
-    会话 0f8809 里用户隔一轮逐字给出了选项标签，只认 asked 会把它整条丢掉。
-    返回 (observation_answered, observation_attempted)。
-    """
-    # 提到选项不等于确认现象；解释、历史和业务查询不能消费待答观察。
-    if (entry != "message" or not text.strip()
-            or intent not in {"answer_pending", "unknown", "supplement", "report_problem"}):
-        return False, False
-    open_requests = [
-        r for r in issue.get("observation_requests") or [] if r.get("status") in OPEN_OBSERVATION_STATUS
-    ]
-    if not open_requests:
-        return False, False
-    from app.diagnose.observations import definitions as load_definitions
-    from app.diagnose.observations import match_reply, record_observations
-
-    definitions = load_definitions()
-    if not definitions:  # 计划库不可用是系统问题，不把用户回答当作未回答
-        return False, False
-
-    answered = attempted = False
-    for request in open_requests:
-        obs = definitions.get(request["observation_id"])
-        if obs is None:
-            continue
-        matched = match_reply(text, obs)
-        if matched is None:
-            # 只有刚问过的那一轮记未解析：之后每条无关消息都改写记录会掩盖真正的回答
-            if request["status"] == "asked":
-                request["status"] = "unparsed"
-                request["quote"] = text
-                attempted = True
-            continue
-        if matched == "unknown":
-            if request["status"] != "unknown":
-                request.update(status="unknown", quote=text, answered_input_id=iid)
-                attempted = True
-            continue
-        if intent == "unknown":
-            # 理解不可用时仍接受完整选项短答，但不从引用或提问中的子串推断设备事实。
-            option = obs.option(matched)
-            if option is None or text.strip(" \n。！!，,、").casefold() not in {
-                phrase.casefold() for phrase in [option.label, *option.phrases]
-            }:
-                continue
-        updated, patches = record_observations(
-            issue,
-            [{"observation_id": obs.observation_id, "option_id": matched}],
-            definitions=definitions,
-            input_id=iid,
-            at=at,
-            source_kind="user_report",
-            binding={"plan_id": request.get("plan_id"), "asked_input_id": request.get("input_id")},
-        )
-        issue.clear()
-        issue.update(updated)
-        applied.extend(patches)
-        for r in issue.get("observation_requests") or []:
-            if r.get("observation_id") == obs.observation_id and r.get("status") in OPEN_OBSERVATION_STATUS:
-                r.update(status="answered", answered_input_id=iid, option_id=matched, quote=text)
-        answered = True
-    return answered, attempted
+def parse_codes(text: str) -> tuple[str, ...]:
+    return parse_message(text or "").codes
 
 
 def persist_issue(state: dict) -> dict:

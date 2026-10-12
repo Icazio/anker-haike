@@ -21,7 +21,7 @@ def _baseline_module():
     return _revision_module("0001_baseline.py")
 
 
-HEAD = "0008"  # 基线 + 图片 + 凭证参考表（票 41）+ analytics 观测台事实表 + 服务单调用方幂等键
+HEAD = "0009"  # 基线 + 图片 + 凭证参考表 + analytics + 服务单幂等键 + 主办方数据替换演示后端
 
 
 def _tables_in(ddl: str) -> set[str]:
@@ -33,17 +33,19 @@ def test_head_is_single_and_latest():
 
 
 def test_baseline_covers_every_store_ddl():
-    """各 store 的 DDL 建的表，基线迁移必须一张不落（结构唯一来源是 migrations/）。"""
+    """各 store 的 DDL 建的表，基线迁移必须一张不落（结构唯一来源是 migrations/）。
+
+    plans 表仍由基线建，但计划改由官方 Q&A 在内存生成（app.plans.qa），已没有 store 写它；
+    session_actions 由 0005 删除。基线里除这两张外不应再有无主的表。
+    """
     from app.catalog import store as catalog_store
-    from app.plans import store as plans_store
     from app.sessions import store as sessions_store
 
     baseline = _baseline_module()
     migrated = _tables_in("\n".join(baseline.STATEMENTS))
-    expected = (
-        _tables_in(sessions_store.DDL) | _tables_in(catalog_store.DDL) | _tables_in(plans_store.DDL)
-    )
+    expected = _tables_in(sessions_store.DDL) | _tables_in(catalog_store.DDL)
     assert expected <= migrated, expected - migrated
+    assert migrated - expected == {"plans", "session_actions"}
     assert set(baseline.BUSINESS_TABLES) == migrated
 
 
@@ -96,9 +98,11 @@ async def test_real_db_current_equals_head_after_upgrade():
     assert out["upgraded"] is False and out["after"] == HEAD
 
 
-def test_receipt_reference_migration_covers_store_ddl():
-    from app.warranty import store
-
-    rev = _revision_module("0003_receipt_reference.py")
-    assert rev.down_revision == "0002"
-    assert _tables_in("\n".join(rev.STATEMENTS)) == _tables_in(store.DDL) == {"orders_mock", "dealers"}
+def test_official_backend_migration_drops_demo_tables():
+    """0009：订单 / 经销商改读主办方数据，演示表全部删除；服务单落新表 service_orders。"""
+    rev = _revision_module("0009_official_backend.py")
+    assert rev.down_revision == "0008"
+    ddl = "\n".join(rev.STATEMENTS)
+    for table in ("service_orders_mock", "shipments_mock", "orders_mock", "dealers"):
+        assert f"drop table if exists {table}" in ddl
+    assert "create table service_orders(" in ddl

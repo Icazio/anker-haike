@@ -15,7 +15,7 @@
 - 复杂需求用 planning-with-files 拆解，目录 `docs/planning/YYYY-MM-DD-HHMM_任务名/`（如 `docs/planning/2026-09-03_storage-governance/`）。
 - 开发开始后 plan.md 保持原样；复评、勘误、每轮回顾写同目录 `addendum.md`，`progress.md` / `task_plan.md` 作为流水记录。
 - 非复杂任务写 spec：Claude 放 `docs/claude/spec_YYYY-MM-DD-HHMM_xxx.md`，Codex 放 `docs/codex/spec_YYYY-MM-DD_xxx.md`。
-- 不确定时问我。
+- 不确定的时候问我。
 
 ## 数据与密钥
 
@@ -60,6 +60,7 @@
 - 只提交本次会话自己改的文件；`git add` 显式路径；提交前 `git status` 核对。
 - 提交信息格式 `{feat,fix,docs,test,chore,style}(scope): 中文描述`，scope 用模块名（diagnose / sessions / knowledge / contracts / release / spec / planning 等），信息量足且简洁。
 - 用户要求才提交。
+- 评测运行产生的 JSON（如 `reports/eval/` 下的会话、method、verification、health、version 快照）默认只留本机；新增此类产物时主动补齐 `.gitignore`，无需用户重复提醒。结论文档正常入库。
 - 禁止：`git reset --hard`、`git checkout .`、`git clean -fd`、`git stash`、`git add -A`、`git add .`、`git commit --no-verify`、force push。
 - rebase 冲突只解自己改过的文件；别人文件冲突时 abort 并问用户。
 

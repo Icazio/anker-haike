@@ -1,94 +1,118 @@
 import { useState } from 'react';
-import type { ObservationAnswer, StepCardItem, StepObservation } from '../types/snapshot';
+import type { StepAnswer, StepCardItem } from '../types/snapshot';
 import styles from './Cards.module.css';
 
 type Feedback = 'solved' | 'not_solved' | 'cannot_do';
+export type StepReply = { feedback?: Feedback; note?: string; answer?: StepAnswer };
 type Props = {
   item: StepCardItem;
   active: boolean;
   disabled?: boolean;
-  onFeedback: (feedback: Feedback, note?: string, observations?: ObservationAnswer[]) => void;
+  onReply: (reply: StepReply) => void;
   onHover?: (ids: string[]) => void;
 };
 
 const LABEL: Record<Feedback, string> = { solved: '解决了', not_solved: '还没解决', cannot_do: '做不到 / 跳过' };
+const KIND_LABEL = { action: '步骤', question: '请回答', statement: '请查看', material_request: '请提供', handoff: '交人工' } as const;
 
-/** 已记录的观察答案 → 「问题：选项」文字；unknown 选项照样显示，让用户看到自己没有被记成阴性。 */
-export function observationSummary(observations: StepObservation[] | undefined, answers: ObservationAnswer[] | undefined): string[] {
-  return (answers ?? []).flatMap((a) => {
-    const obs = observations?.find((o) => o.observation_id === a.observation_id);
-    const option = obs?.options.find((o) => o.option_id === a.option_id);
-    return obs && option ? [`${obs.question}${option.label}`] : [];
-  });
+function answeredText(item: StepCardItem): string | null {
+  if (item.feedback) return `${LABEL[item.feedback]}${item.note ? `（${item.note}）` : ''}`;
+  const a = item.answer;
+  if (!a) return null;
+  if (a.unavailable) return '暂时没有';
+  return a.option ?? a.text ?? null;
 }
 
-/** 步骤卡（票 34 前端）：标题、操作、预期结果、caution、来源角标；旧卡折叠为一行。
- *  seen 是读图结果的隐式确认，排在操作之前单独一行 —— 用户要能一眼分清
- *  「我们看到的」和「让你做的」，看错了才好立刻纠正。
- *  observations（design §3.1）是「检查得到什么」，与「问题是否解决」分开：每个观察一组单选，
- *  不选保持未知，绝不默认成阴性；随三态反馈一起提交。 */
-export function StepCard({ item, active, disabled, onFeedback, onHover }: Props) {
+/** 步骤卡（票 34 前端；2026-10-09 第二批按 kind 分型）：
+ *  action 问「解决了 / 没解决 / 做不到」；question 给选项或短答；material_request 可上传或说暂时没有；
+ *  statement 只需「知道了」。事实问题不用操作结果来答，标题与说明不计已操作。
+ *  seen 是读图结果的隐式确认，排在操作之前单独一行。 */
+export function StepCard({ item, active, disabled, onReply, onHover }: Props) {
   const [note, setNote] = useState('');
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const answered = item.feedback ?? null;
-  const observations = item.step.observations ?? [];
-  const recorded = observationSummary(observations, item.observation_answers);
-  if (!active && answered) {
+  const [text, setText] = useState('');
+  const kind = item.step.kind ?? 'action';
+  const answered = answeredText(item);
+  const off = !active || disabled;
+  if (!active && answered !== null) {
     return (
-      <div className={styles.stepCollapsed} data-kind="step_card">
-        <span>步骤 {item.step.step_no}：{item.step.title}</span><span className={styles.doneTag}>{LABEL[answered]}</span>
-        {recorded.length > 0 && <span className={styles.observed}>{recorded.join('；')}</span>}
+      <div className={styles.stepCollapsed} data-kind="step_card" data-step-kind={kind}>
+        <span>{KIND_LABEL[kind]} {item.step.step_no}：{item.step.title}</span><span className={styles.doneTag}>{answered}</span>
       </div>
     );
   }
-  const submit = (feedback: Feedback) => {
-    const selected: ObservationAnswer[] = Object.entries(answers).map(([observation_id, option_id]) => ({ observation_id, option_id }));
-    // 没选观察时不传第三个参数：保持未知，也让旧的两参数调用方 / 测试不受影响
-    if (selected.length > 0) onFeedback(feedback, note.trim() || undefined, selected);
-    else onFeedback(feedback, note.trim() || undefined);
-  };
+  const feedback = (fb: Feedback) => onReply({ feedback: fb, ...(note.trim() ? { note: note.trim() } : {}) });
+  const answer = (a: StepAnswer) => onReply({ answer: a });
+  let controls;
+  if (answered !== null) {
+    controls = <p className={styles.answered}>您的{kind === 'action' ? '反馈' : '回答'}：{answered}</p>;
+  } else if (kind === 'question') {
+    controls = (
+      <div className={styles.feedback}>
+        {(item.step.options?.length ?? 0) > 0 && (
+          <div className={styles.feedbackButtons} role="group" aria-label="选项">
+            {item.step.options!.map((o) => (
+              <button key={o} type="button" data-option={o} disabled={off} onClick={() => answer({ option: o, text: null, unavailable: false })}>{o}</button>
+            ))}
+          </div>
+        )}
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="或用几句话描述" aria-label="短答" disabled={off} />
+        <div className={styles.feedbackButtons}>
+          <button type="button" data-answer="text" disabled={off || !text.trim()} onClick={() => answer({ option: null, text: text.trim(), unavailable: false })}>提交回答</button>
+        </div>
+      </div>
+    );
+  } else if (kind === 'material_request') {
+    controls = (
+      <div className={styles.feedback}>
+        <p className={styles.expected}><span>怎么提供</span>直接在下方输入框附上图片或视频链接发送；没有的话点「暂时没有」。</p>
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="可补充说明（选填）" aria-label="材料说明" disabled={off} />
+        <div className={styles.feedbackButtons}>
+          <button type="button" data-answer="text" disabled={off || !text.trim()} onClick={() => answer({ option: null, text: text.trim(), unavailable: false })}>提交说明</button>
+          <button type="button" data-answer="unavailable" disabled={off} onClick={() => answer({ option: null, text: null, unavailable: true })}>暂时没有</button>
+        </div>
+      </div>
+    );
+  } else if (kind === 'statement') {
+    controls = (
+      <div className={styles.feedbackButtons}>
+        <button type="button" data-answer="ack" disabled={off} onClick={() => onReply({})}>知道了</button>
+      </div>
+    );
+  } else {
+    controls = (
+      <div className={styles.feedback}>
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="可补充说明（选填）" aria-label="补充说明" disabled={off} />
+        <div className={styles.feedbackButtons}>
+          {(Object.keys(LABEL) as Feedback[]).map((k) => (
+            <button key={k} type="button" data-feedback={k} disabled={off} onClick={() => feedback(k)}>{LABEL[k]}</button>
+          ))}
+        </div>
+      </div>
+    );
+  }
   return (
-    <section className={styles.card} data-kind="step_card" data-pending={active && !answered ? true : undefined} aria-label={`排障步骤 ${item.step.step_no}`} onMouseEnter={() => onHover?.(item.step.evidence_ids ?? [])} onMouseLeave={() => onHover?.([])}>
+    <section className={styles.card} data-kind="step_card" data-step-kind={kind} data-pending={active && answered === null ? true : undefined} aria-label={`${KIND_LABEL[kind]} ${item.step.step_no}`} onMouseEnter={() => onHover?.(item.step.evidence_ids ?? [])} onMouseLeave={() => onHover?.([])}>
       <header className={styles.cardHead}>
-        <strong>步骤 {item.step.step_no}：{item.step.title}</strong>
+        <strong>{KIND_LABEL[kind]} {item.step.step_no}：{item.step.title}</strong>
         {(item.step.evidence_ids?.length ?? 0) > 0 && <span className={styles.sourceTag} title="依据见右侧服务记录">依据 {item.step.evidence_ids?.length}</span>}
       </header>
       {item.seen && <p className={styles.seen} data-kind="vision-echo">{item.seen}</p>}
-      <p className={styles.instruction}>{item.step.instruction}</p>
-      <p className={styles.expected}><span>预期结果</span>{item.step.expected_result}</p>
-      {item.step.caution && <p className={styles.caution} role="note">⚠ {item.step.caution}</p>}
-      {answered ? (
-        <>
-          <p className={styles.answered}>您的反馈：{LABEL[answered]}{item.note ? `（${item.note}）` : ''}</p>
-          {recorded.length > 0 && <p className={styles.observed} data-kind="observation-recorded">观察结果：{recorded.join('；')}</p>}
-        </>
-      ) : (
-        <div className={styles.feedback}>
-          {observations.map((obs) => (
-            <fieldset key={obs.observation_id} className={styles.observation} data-kind="observation" disabled={!active || disabled}>
-              <legend>{obs.question}</legend>
-              {obs.options.map((opt) => (
-                <label key={opt.option_id}>
-                  <input
-                    type="radio"
-                    name={`${item.card_id}:${obs.observation_id}`}
-                    value={opt.option_id}
-                    checked={answers[obs.observation_id] === opt.option_id}
-                    onChange={() => setAnswers((prev) => ({ ...prev, [obs.observation_id]: opt.option_id }))}
-                  />
-                  {opt.label}
-                </label>
-              ))}
-            </fieldset>
+      {item.step.context && <p className={styles.context} data-kind="step-context">{item.step.context}</p>}
+      {kind !== 'question' && <p className={styles.instruction}>{item.step.instruction}</p>}
+      {(item.step.media?.length ?? 0) > 0 && (
+        <ul className={styles.stepMedia} aria-label="官方图示">
+          {item.step.media!.map((m) => (
+            <li key={m.url}>
+              {m.kind === 'image'
+                ? <a href={m.url} target="_blank" rel="noreferrer"><img src={m.url} alt="官方操作图示" loading="lazy" /></a>
+                : <a href={m.url} target="_blank" rel="noreferrer">{m.kind === 'video' ? '▶ 观看官方操作视频' : '查看官方说明'}</a>}
+            </li>
           ))}
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="可补充说明（选填）" aria-label="补充说明" disabled={!active || disabled} />
-          <div className={styles.feedbackButtons}>
-            {(Object.keys(LABEL) as Feedback[]).map((k) => (
-              <button key={k} type="button" data-feedback={k} disabled={!active || disabled} onClick={() => submit(k)}>{LABEL[k]}</button>
-            ))}
-          </div>
-        </div>
+        </ul>
       )}
+      {kind === 'action' && <p className={styles.expected}><span>预期结果</span>{item.step.expected_result}</p>}
+      {item.step.caution && <p className={styles.caution} role="note">⚠ {item.step.caution}</p>}
+      {controls}
     </section>
   );
 }

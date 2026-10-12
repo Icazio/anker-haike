@@ -1,3 +1,5 @@
+import re
+
 import yaml
 
 from app.settings import CONFIG_DIR
@@ -9,11 +11,36 @@ def load_policy():
     return yaml.safe_load((CONFIG_DIR / "emotion_policy.yaml").read_text())
 
 
+def load_terms() -> dict[str, list[str]]:
+    return yaml.safe_load((CONFIG_DIR / "rules/complaint_terms.yaml").read_text())
+
+
+def emotion_terms() -> list[str]:
+    """全部情绪词（不分级）：判断一句话是否只是在表达情绪。"""
+    return [word for level in LEVELS if level != "calm" for word in load_terms().get(level, [])]
+
+
 def complaint_flagged(state) -> bool:
     """Case priority follows the strategy's action, so an angry-and-rising customer is flagged too."""
     return (state.get("emotion") or {}).get("level") == "complaint_risk" or "flag_complaint_risk" in (
         state.get("emotion_actions") or []
     )
+
+
+ZH_NEGATIONS = ("不", "不会", "没有", "不用", "不想", "无需", "别")
+LATIN_NEGATION = re.compile(r"\b(not|never|no|don'?t|doesn'?t|isn'?t|wasn'?t|niet|nicht|pas|no es)\s+(\w+\s+)?$", re.IGNORECASE)
+
+
+def term_hit(word: str, text: str) -> bool:
+    """情绪词命中：中文按子串、前面紧跟否定词不算；拉丁字母词忽略大小写、按整词匹配，前一两个词是否定词不算
+    （「not disappointed」不是失望，「scam」不能命中「scampi」）。"""
+    if not word.isascii() or not any(ch.isalpha() for ch in word):
+        start = text.find(word)
+        return start >= 0 and not any(text[max(0, start - 3) : start].endswith(n) for n in ZH_NEGATIONS)
+    for match in re.finditer(rf"(?<![\w]){re.escape(word)}(?![\w])", text, re.IGNORECASE):
+        if not LATIN_NEGATION.search(text[max(0, match.start() - 24) : match.start()]):
+            return True
+    return False
 
 
 def evaluate_emotion(level, text, track, input_id, *, unresolved_turns=0, risk=False, prior_emotion=None, cues=None):
@@ -30,16 +57,9 @@ def evaluate_emotion(level, text, track, input_id, *, unresolved_turns=0, risk=F
         # The model saw something it could not quote. Dropping it loses the signal
         # entirely; cap it at the lowest non-calm level instead.
         level, source = "dissatisfied", "cues_missing"
-    terms = yaml.safe_load((CONFIG_DIR / "rules/complaint_terms.yaml").read_text())
+    terms = load_terms()
     for candidate in ("complaint_risk", "angry", "dissatisfied"):
-        hits = []
-        for word in terms[candidate]:
-            start = text.find(word)
-            if start >= 0 and not any(
-                text[max(0, start - 3) : start].endswith(n)
-                for n in ("不", "不会", "没有", "不用", "不想", "无需", "别")
-            ):
-                hits.append(word)
+        hits = [word for word in terms[candidate] if term_hit(word, text)]
         if hits and LEVELS[candidate] > LEVELS.get(level, -1):
             level = candidate
             source = "rules"

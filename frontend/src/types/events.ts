@@ -1,6 +1,6 @@
 // Generated file. Do not edit; run npm --prefix frontend run contracts:generate.
 // Source: contracts/schema/events.schema.json
-// SHA-256: cacb3f5997233163925bde51ae65e0f28679b27920c4a074a98e67b7196d1cf4
+// SHA-256: 403588f03a4f84b6d8db48b0897640cbf5553d7ed8c8390298f1abf32987e3f2
 
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
@@ -20,14 +20,12 @@ export type ServerEvent =
   | MessageEnd
   | ProductCard
   | StepCard
-  | ObservationCard
   | Evidence
   | ReceiptCard
   | AwaitingInput
   | EscalationSummaryEvent
   | Error
   | Done
-  | ContextCardEvent
   | ProposalCardEvent
   | ExecutionCardEvent
   | RetakeCardEvent
@@ -215,19 +213,15 @@ export type Seen = string | null;
  */
 export type Seq12 = number;
 export type Caution = string | null;
+export type Context = string | null;
 export type EvidenceIds = string[];
 export type ExpectedResult = string;
 export type Instruction = string;
-export type ObservationId = string;
-/**
- * @minItems 2
- */
-export type Options = [ObservationOption, ObservationOption, ...ObservationOption[]];
-export type Kind = 'finding' | 'unknown';
-export type Label = string;
-export type OptionId = string;
-export type Question = string;
-export type Observations = StepObservation[];
+export type Kind = 'action' | 'question' | 'statement' | 'material_request' | 'handoff';
+export type Kind1 = 'image' | 'video' | 'link';
+export type Url = string;
+export type Media = StepMedia[];
+export type Options = string[];
 export type PlanId = string;
 export type PlanVersion = number;
 export type PrimaryEvidenceId = string | null;
@@ -236,20 +230,7 @@ export type StepNo = number;
 export type Title = string;
 export type Type12 = 'step_card';
 export type Version3 = number;
-export type Attempt = number;
-export type CardId3 = string;
 export type EventId13 = string;
-export type IssueId6 = string | null;
-export type PlanId1 = string;
-export type RecordedAt13 = string;
-export type RunId13 = string;
-/**
- * 会话内单调递增
- */
-export type Seq13 = number;
-export type Type13 = 'observation_card';
-export type Version4 = number;
-export type EventId14 = string;
 export type ChunkId = string;
 export type DocId = string;
 export type DocVersion = string;
@@ -259,64 +240,70 @@ export type Snippet = string;
 export type Source = string;
 export type Status3 = 'ok' | 'replay';
 export type Items = EvidenceItem[];
+export type RecordedAt13 = string;
+export type RunId13 = string;
+/**
+ * 会话内单调递增
+ */
+export type Seq13 = number;
+export type Type13 = 'evidence';
+export type CardId3 = string;
+export type EventId14 = string;
+export type Amount = string | null;
+export type Country = string | null;
+export type OrderNo = string | null;
+export type PurchaseDate = string | null;
+export type Seller = string | null;
+export type IssueId6 = string | null;
 export type RecordedAt14 = string;
 export type RunId14 = string;
 /**
  * 会话内单调递增
  */
 export type Seq14 = number;
-export type Type14 = 'evidence';
+export type Type14 = 'receipt_card';
+export type Unreadable = string[];
+export type Version4 = number;
 export type CardId4 = string;
 export type EventId15 = string;
-export type Amount = string | null;
-export type Channel = string | null;
-export type OrderNo = string | null;
-export type PurchaseDate = string | null;
+export type InputToken = string;
 export type IssueId7 = string | null;
+export type Kind2 =
+  | 'select_product'
+  | 'step_feedback'
+  | 'upload_receipt'
+  | 'confirm_receipt'
+  | 'confirm_proposal'
+  | 'upload_retake'
+  | 'rate_satisfaction';
 export type RecordedAt15 = string;
 export type RunId15 = string;
 /**
  * 会话内单调递增
  */
 export type Seq15 = number;
-export type Type15 = 'receipt_card';
-export type Unreadable = string[];
+export type Type15 = 'awaiting_input';
 export type Version5 = number;
 export type CardId5 = string;
 export type EventId16 = string;
-export type InputToken = string;
-export type IssueId8 = string | null;
-export type Kind1 =
-  | 'select_product'
-  | 'step_feedback'
-  | 'answer_observation'
-  | 'upload_receipt'
-  | 'confirm_receipt'
-  | 'confirm_context'
-  | 'confirm_proposal'
-  | 'upload_retake'
-  | 'rate_satisfaction';
+export type HandoffStatus = 'prepared' | 'requested' | 'accepted' | 'failed' | 'cancelled';
+export type IssueId8 = string;
+export type PreviousCardId1 = string | null;
 export type RecordedAt16 = string;
+export type Revision1 = number;
 export type RunId16 = string;
 /**
  * 会话内单调递增
  */
 export type Seq16 = number;
-export type Type16 = 'awaiting_input';
-export type Version6 = number;
-export type CardId6 = string;
-export type EventId17 = string;
-export type HandoffStatus = 'prepared' | 'requested' | 'accepted' | 'failed' | 'cancelled';
-export type IssueId9 = string;
-export type PreviousCardId1 = string | null;
-export type RecordedAt17 = string;
-export type Revision1 = number;
-export type RunId17 = string;
-/**
- * 会话内单调递增
- */
-export type Seq17 = number;
 export type SourceThroughSeq1 = number;
+export type Kind3 =
+  'device_fault' | 'order_change' | 'parts_purchase' | 'warranty_review' | 'safety' | 'unknown';
+export type Missing = string[];
+export type Intent = string;
+export type Quote = string;
+export type Status4 = string;
+export type PendingRequests = PendingRequest[];
 export type CaseId = string | null;
 export type DraftReply = string | null;
 export type Level = ('calm' | 'anxious' | 'dissatisfied' | 'angry' | 'complaint_risk') | null;
@@ -341,10 +328,7 @@ export type Lane = string;
 export type ModelUsed = string;
 export type Task = string;
 export type ModelTrace = ModelTraceItem[];
-export type Observations1 = string[];
-export type PolicyDecisionBrief = {
-  [k: string]: unknown;
-} | null;
+export type Observations = string[];
 export type Problem = string;
 export type Product = string;
 export type Cause = string | null;
@@ -352,163 +336,141 @@ export type RuleId = string;
 export type Text = string;
 export type Conflicts = string[];
 export type NextStep = string | null;
-export type Status4 =
+export type Status5 =
   | 'not_collected'
   | 'insufficient'
   | 'order_verified'
   | 'order_product_mismatch'
   | 'needs_manual_check'
-  | 'channel_in_directory'
-  | 'channel_unknown';
-export type AutoAllowed = boolean;
-export type ClauseId = string;
-export type DocVersion1 = string;
-export type PolicyVersion = string;
-export type SourceDoc = string;
-export type SourceUrl = string | null;
-export type Text1 = string;
-export type Clauses = Clause[];
-export type Met = boolean;
-export type Name3 = string;
-export type Conditions = PolicyCondition[];
-export type CostBearer = ('company' | 'customer' | 'shared') | null;
-export type Action = 'replacement.create';
-export type ActionsVersion = string;
-export type WorkingDays = number;
-export type OptionId1 = string;
-export type Remedy = 'parts' | 'repair' | 'replace' | 'refund' | 'paid_repair' | 'none';
-export type Source1 = 'policy' | 'human';
+  | 'dealer_authorized'
+  | 'dealer_unauthorized';
+export type Detail1 = string;
+export type OptionId = string;
+export type Source1 = 'sop' | 'human';
 export type Title1 = string;
+export type Type16 = 'replace' | 'refund' | 'reship' | 'carrier_investigation';
 export type RecommendedOptions = ProposalOption[];
-export type Feedback = 'solved' | 'not_solved' | 'cannot_do';
-/**
- * 该步骤记录到的观察结果（选项文字）
- */
-export type Observed = string[];
+export type Answer = string | null;
+export type Feedback = ('solved' | 'not_solved' | 'cannot_do') | null;
 export type StepId1 = string;
 export type Title2 = string;
 export type Steps = ExecutedStep[];
 export type TaskQueue = {
   [k: string]: unknown;
 }[];
+export type AsOf = string;
+export type Basis = 'order' | 'dealer' | 'none';
+export type Country1 = string | null;
+export type Dealer = string | null;
+export type OrderNo1 = string | null;
+export type Reason1 = string;
+export type Sku1 = string | null;
+export type Status6 = 'in_warranty' | 'out_of_warranty' | 'unauthorized_dealer' | 'unknown';
+export type WarrantyEnd = string | null;
 export type SummaryId1 = string;
 export type Type17 = 'escalation_summary';
 export type UpdatedAt1 = string;
 export type Code = string;
-export type EventId18 = string;
+export type EventId17 = string;
 export type Message1 = string;
-export type RecordedAt18 = string;
+export type RecordedAt17 = string;
 export type Recoverable = boolean;
 export type RetryWithSameAction = boolean;
+export type RunId17 = string;
+/**
+ * 会话内单调递增
+ */
+export type Seq17 = number;
+export type Type18 = 'error';
+export type EventId18 = string;
+export type Reason2 = 'completed' | 'awaiting_input' | 'error' | 'cancelled';
+export type RecordedAt18 = string;
 export type RunId18 = string;
 /**
  * 会话内单调递增
  */
 export type Seq18 = number;
-export type Type18 = 'error';
+export type Type19 = 'done';
+/**
+ * 本 run 结束后的会话版本
+ */
+export type Version6 = number;
+export type CardId6 = string;
+export type DecisionSummary = string;
 export type EventId19 = string;
-export type Reason1 = 'completed' | 'awaiting_input' | 'error' | 'cancelled';
+export type IssueId9 = string | null;
+export type Options1 = ProposalOption[];
 export type RecordedAt19 = string;
+export type Retry = boolean;
 export type RunId19 = string;
 /**
  * 会话内单调递增
  */
 export type Seq19 = number;
-export type Type19 = 'done';
-/**
- * 本 run 结束后的会话版本
- */
+export type Type20 = 'proposal_card';
 export type Version7 = number;
+export type ActionKind = string;
 export type CardId7 = string;
 export type EventId20 = string;
-export type Fields = string[];
+export type ExecutionId = string;
+export type IdempotencyKey = string;
 export type IssueId10 = string | null;
+export type NextStep1 = string;
+export type OrderNo2 = string | null;
+export type ServiceOrderNo = string | null;
+export type Source2 = string;
+export type Status7 = string;
+export type TrackingNo = string | null;
+export type UpdatedAt2 = string | null;
 export type RecordedAt20 = string;
 export type RunId20 = string;
 /**
  * 会话内单调递增
  */
 export type Seq20 = number;
-export type Type20 = 'context_card';
+export type Status8 = 'succeeded' | 'failed';
+export type Type21 = 'execution_card';
 export type Version8 = number;
 export type CardId8 = string;
-export type DecisionSummary = string;
 export type EventId21 = string;
+export type Guidance = string[];
 export type IssueId11 = string | null;
-export type Options1 = ProposalOption[];
-export type PolicyVersion1 = string;
+export type Reasons = string[];
 export type RecordedAt21 = string;
-export type Retry = boolean;
 export type RunId21 = string;
 /**
  * 会话内单调递增
  */
 export type Seq21 = number;
-export type Type21 = 'proposal_card';
+export type Type22 = 'retake_card';
 export type Version9 = number;
-export type ActionKind = string;
 export type CardId9 = string;
+export type CaseId1 = string | null;
 export type EventId22 = string;
-export type ExecutionId = string;
-export type IdempotencyKey = string;
 export type IssueId12 = string | null;
-export type EtaDays = number | null;
-export type NextStep1 = string;
-export type OrderNo1 = string | null;
-export type ServiceOrderNo = string | null;
-export type Source2 = string;
-export type Status5 = string;
-export type TrackingNo = string | null;
-export type UpdatedAt2 = string | null;
 export type RecordedAt22 = string;
 export type RunId22 = string;
 /**
  * 会话内单调递增
  */
 export type Seq22 = number;
-export type Status6 = 'succeeded' | 'failed';
-export type Type22 = 'execution_card';
+export type Type23 = 'rating_card';
 export type Version10 = number;
 export type CardId10 = string;
+export type CaseId2 = string;
+export type ComplaintRisk = boolean;
 export type EventId23 = string;
-export type Guidance = string[];
 export type IssueId13 = string | null;
-export type Reasons = string[];
+export type Owner = string | null;
+export type Priority = 'normal' | 'high';
+export type Reason3 = string;
 export type RecordedAt23 = string;
 export type RunId23 = string;
 /**
  * 会话内单调递增
  */
 export type Seq23 = number;
-export type Type23 = 'retake_card';
-export type Version11 = number;
-export type CardId11 = string;
-export type CaseId1 = string | null;
-export type EventId24 = string;
-export type IssueId14 = string | null;
-export type RecordedAt24 = string;
-export type RunId24 = string;
-/**
- * 会话内单调递增
- */
-export type Seq24 = number;
-export type Type24 = 'rating_card';
-export type Version12 = number;
-export type CardId12 = string;
-export type CaseId2 = string;
-export type ComplaintRisk = boolean;
-export type EventId25 = string;
-export type IssueId15 = string | null;
-export type Owner = string | null;
-export type Priority = 'normal' | 'high';
-export type Reason2 = string;
-export type RecordedAt25 = string;
-export type RunId25 = string;
-/**
- * 会话内单调递增
- */
-export type Seq25 = number;
-export type Status7 =
+export type Status9 =
   | 'open'
   | 'diagnosing'
   | 'proposing'
@@ -523,10 +485,11 @@ export type Status7 =
   | 'closed_unresolved'
   | 'reopened'
   | 'escalated_summary';
-export type Type25 = 'case_changed';
+export type Type24 = 'case_changed';
 export type UpdatedAt3 = string;
-export type Version13 = number;
+export type Version11 = number;
 export type ConflictsWithText = string[];
+export type ContentKinds = ('fault_photo' | 'document' | 'other')[];
 export type Cell =
   ('左上' | '上中' | '右上' | '左中' | '中心' | '右中' | '左下' | '下中' | '右下') | null;
 export type Evidence1 = string | null;
@@ -545,26 +508,6 @@ export type ModelHintCell =
 export type ModelHintImage = number | null;
 export type ModelHintReadable = 'full' | 'partial' | 'unreadable';
 export type ModelHintVerified = boolean;
-export type ExclusionsHit = {
-  [k: string]: unknown;
-}[];
-export type FaultClass = 'quality' | 'user_damage' | 'safety' | 'unknown';
-export type Matched = boolean;
-export type MissingInputs = string[];
-export type NeedsHuman = boolean;
-export type NeedsHumanReasons = string[];
-export type PolicyId = string | null;
-export type PolicyVersion2 = string;
-export type AutoAllowed1 = boolean;
-export type Clauses1 = Clause[];
-export type Conditions1 = PolicyCondition[];
-export type CostBearer1 = ('company' | 'customer' | 'shared') | null;
-export type Eligible = boolean;
-export type Remedy1 = 'parts' | 'repair' | 'replace' | 'refund' | 'paid_repair' | 'none';
-export type Remedies = RemedyDecision[];
-export type TraceId = string;
-export type WarrantyEnd = string | null;
-export type WithinWarranty = boolean | null;
 
 export interface ServerEventSchema {
   contract: ServerEvent;
@@ -785,10 +728,13 @@ export interface StepCard {
  */
 export interface TroubleshootStep {
   caution?: Caution;
+  context?: Context;
   evidence_ids?: EvidenceIds;
   expected_result: ExpectedResult;
   instruction: Instruction;
-  observations?: Observations;
+  kind?: Kind;
+  media?: Media;
+  options?: Options;
   plan_id: PlanId;
   plan_version: PlanVersion;
   primary_evidence_id?: PrimaryEvidenceId;
@@ -797,56 +743,26 @@ export interface TroubleshootStep {
   title: Title;
 }
 /**
- * 步骤要收集的检查结果：一个问题与有限选项。功能是否恢复仍由 feedback 三态表达。
+ * 官方 Q&A 步骤里附带的图片 / 视频 / 文章链接（原样引用，不进模型上下文）。
  *
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "StepObservation".
+ * via the `definition` "StepMedia".
  */
-export interface StepObservation {
-  observation_id: ObservationId;
-  options: Options;
-  question: Question;
-}
-/**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "ObservationOption".
- */
-export interface ObservationOption {
-  kind?: Kind;
-  label: Label;
-  option_id: OptionId;
-}
-/**
- * 计划级判别问题的卡片。与步骤内 observations 用同一份定义，独立追问时也要能点选 ——
- * 自由文本回答只能靠字面匹配，两次匹配不上该观察就被记为不可用，依赖它的计划再也解锁不了。
- *
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "ObservationCard".
- */
-export interface ObservationCard {
-  attempt: Attempt;
-  card_id: CardId3;
-  event_id: EventId13;
-  issue_id?: IssueId6;
-  observation: StepObservation;
-  plan_id: PlanId1;
-  recorded_at: RecordedAt13;
-  run_id: RunId13;
-  seq: Seq13;
-  type: Type13;
-  version: Version4;
+export interface StepMedia {
+  kind: Kind1;
+  url: Url;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "Evidence".
  */
 export interface Evidence {
-  event_id: EventId14;
+  event_id: EventId13;
   items: Items;
-  recorded_at: RecordedAt14;
-  run_id: RunId14;
-  seq: Seq14;
-  type: Type14;
+  recorded_at: RecordedAt13;
+  run_id: RunId13;
+  seq: Seq13;
+  type: Type13;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
@@ -867,17 +783,17 @@ export interface EvidenceItem {
  * via the `definition` "ReceiptCard".
  */
 export interface ReceiptCard {
-  card_id: CardId4;
+  card_id: CardId3;
   confidence?: Confidence;
-  event_id: EventId15;
+  event_id: EventId14;
   fields: ReceiptFields;
-  issue_id?: IssueId7;
-  recorded_at: RecordedAt15;
-  run_id: RunId15;
-  seq: Seq15;
-  type: Type15;
+  issue_id?: IssueId6;
+  recorded_at: RecordedAt14;
+  run_id: RunId14;
+  seq: Seq14;
+  type: Type14;
   unreadable?: Unreadable;
-  version: Version5;
+  version: Version4;
 }
 export interface Confidence {
   [k: string]: number;
@@ -888,40 +804,41 @@ export interface Confidence {
  */
 export interface ReceiptFields {
   amount?: Amount;
-  channel?: Channel;
+  country?: Country;
   order_no?: OrderNo;
   purchase_date?: PurchaseDate;
+  seller?: Seller;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "AwaitingInput".
  */
 export interface AwaitingInput {
-  card_id: CardId5;
-  event_id: EventId16;
+  card_id: CardId4;
+  event_id: EventId15;
   input_token: InputToken;
-  issue_id?: IssueId8;
-  kind: Kind1;
-  recorded_at: RecordedAt16;
-  run_id: RunId16;
-  seq: Seq16;
-  type: Type16;
-  version: Version6;
+  issue_id?: IssueId7;
+  kind: Kind2;
+  recorded_at: RecordedAt15;
+  run_id: RunId15;
+  seq: Seq15;
+  type: Type15;
+  version: Version5;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "EscalationSummaryEvent".
  */
 export interface EscalationSummaryEvent {
-  card_id: CardId6;
-  event_id: EventId17;
+  card_id: CardId5;
+  event_id: EventId16;
   handoff_status?: HandoffStatus;
-  issue_id: IssueId9;
+  issue_id: IssueId8;
   previous_card_id?: PreviousCardId1;
-  recorded_at: RecordedAt17;
+  recorded_at: RecordedAt16;
   revision: Revision1;
-  run_id: RunId17;
-  seq: Seq17;
+  run_id: RunId16;
+  seq: Seq16;
   source_through_seq: SourceThroughSeq1;
   summary: EscalationSummary;
   summary_id: SummaryId1;
@@ -935,6 +852,7 @@ export interface EscalationSummaryEvent {
  * via the `definition` "EscalationSummary".
  */
 export interface EscalationSummary {
+  business?: HandoffBusiness | null;
   case_id?: CaseId;
   draft_reply?: DraftReply;
   emotion: Emotion;
@@ -942,8 +860,7 @@ export interface EscalationSummary {
   gate_result?: GateResult | null;
   hypotheses?: Hypotheses;
   model_trace?: ModelTrace;
-  observations?: Observations1;
-  policy_decision_brief?: PolicyDecisionBrief;
+  observations?: Observations;
   problem: Problem;
   product: Product;
   reason: EscalationReason;
@@ -951,6 +868,35 @@ export interface EscalationSummary {
   recommended_options?: RecommendedOptions;
   steps?: Steps;
   task_queue?: TaskQueue;
+  warranty?: WarrantyDecision | null;
+}
+/**
+ * 交接摘要的业务块（2026-10-09 I7 / I8）：按业务类型带具体字段，已知、缺失、待办分别标明。
+ *
+ * kind 决定人工先看什么：订单暂停看订单 / 包裹 / 条件；设备故障看产品 / 症状 / 已做操作；配件采购看型号与部件。
+ *
+ * This interface was referenced by `ServerEventSchema`'s JSON-Schema
+ * via the `definition` "HandoffBusiness".
+ */
+export interface HandoffBusiness {
+  kind: Kind3;
+  known?: Known;
+  missing?: Missing;
+  pending_requests?: PendingRequests;
+}
+export interface Known {
+  [k: string]: string;
+}
+/**
+ * 交接时队列里尚未办结的一项客户诉求。
+ *
+ * This interface was referenced by `ServerEventSchema`'s JSON-Schema
+ * via the `definition` "PendingRequest".
+ */
+export interface PendingRequest {
+  intent: Intent;
+  quote: Quote;
+  status: Status4;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
@@ -1006,7 +952,7 @@ export interface EscalationReason {
 export interface ReceiptOutcome {
   conflicts?: Conflicts;
   next_step?: NextStep;
-  status: Status4;
+  status: Status5;
   verified_facts?: VerifiedFacts;
 }
 export interface VerifiedFacts {
@@ -1017,62 +963,41 @@ export interface VerifiedFacts {
  * via the `definition` "ProposalOption".
  */
 export interface ProposalOption {
-  auto_allowed?: AutoAllowed;
-  clauses?: Clauses;
-  conditions?: Conditions;
-  cost_bearer?: CostBearer;
-  dispatch_estimate?: DispatchEstimate | null;
-  option_id: OptionId1;
-  remedy: Remedy;
+  detail?: Detail1;
+  option_id: OptionId;
   source?: Source1;
   title: Title1;
+  type: Type16;
 }
 /**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "Clause".
- */
-export interface Clause {
-  clause_id: ClauseId;
-  doc_version: DocVersion1;
-  policy_version: PolicyVersion;
-  source_doc: SourceDoc;
-  source_url?: SourceUrl;
-  text: Text1;
-}
-/**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "PolicyCondition".
- */
-export interface PolicyCondition {
-  actual: Actual;
-  expected: Expected;
-  met: Met;
-  name: Name3;
-}
-export interface Actual {
-  [k: string]: unknown;
-}
-export interface Expected {
-  [k: string]: unknown;
-}
-/**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "DispatchEstimate".
- */
-export interface DispatchEstimate {
-  action?: Action;
-  actions_version: ActionsVersion;
-  working_days: WorkingDays;
-}
-/**
+ * 排查记录的一条：操作步骤带 feedback；问句卡（2026-10-10 段落拆分后的诊断问句、确认问句）带 answer，
+ * 是客户选的选项或短答原文。两者恰有一个。
+ *
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "ExecutedStep".
  */
 export interface ExecutedStep {
-  feedback: Feedback;
-  observed?: Observed;
+  answer?: Answer;
+  feedback?: Feedback;
   step_id: StepId1;
   title: Title2;
+}
+/**
+ * 主办方 SOP「订单质保判断」：有订单看订单质保结束日期；查不到订单看经销商名录（授权 = 购买日起 12 个月）。
+ *
+ * This interface was referenced by `ServerEventSchema`'s JSON-Schema
+ * via the `definition` "WarrantyDecision".
+ */
+export interface WarrantyDecision {
+  as_of: AsOf;
+  basis: Basis;
+  country?: Country1;
+  dealer?: Dealer;
+  order_no?: OrderNo1;
+  reason: Reason1;
+  sku?: Sku1;
+  status: Status6;
+  warranty_end?: WarrantyEnd;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
@@ -1080,13 +1005,13 @@ export interface ExecutedStep {
  */
 export interface Error {
   code: Code;
-  event_id: EventId18;
+  event_id: EventId17;
   message: Message1;
-  recorded_at: RecordedAt18;
+  recorded_at: RecordedAt17;
   recoverable: Recoverable;
   retry_with_same_action?: RetryWithSameAction;
-  run_id: RunId18;
-  seq: Seq18;
+  run_id: RunId17;
+  seq: Seq17;
   type: Type18;
 }
 /**
@@ -1094,58 +1019,30 @@ export interface Error {
  * via the `definition` "Done".
  */
 export interface Done {
-  event_id: EventId19;
-  reason: Reason1;
-  recorded_at: RecordedAt19;
-  run_id: RunId19;
-  seq: Seq19;
+  event_id: EventId18;
+  reason: Reason2;
+  recorded_at: RecordedAt18;
+  run_id: RunId18;
+  seq: Seq18;
   type: Type19;
-  version: Version7;
-}
-/**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "ContextCardEvent".
- */
-export interface ContextCardEvent {
-  card_id: CardId7;
-  choices?: Choices;
-  event_id: EventId20;
-  fields: Fields;
-  issue_id?: IssueId10;
-  prefilled?: Prefilled;
-  recorded_at: RecordedAt20;
-  run_id: RunId20;
-  seq: Seq20;
-  sources?: Sources;
-  type: Type20;
-  version: Version8;
-}
-export interface Choices {
-  [k: string]: string[];
-}
-export interface Prefilled {
-  [k: string]: string;
-}
-export interface Sources {
-  [k: string]: string;
+  version: Version6;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "ProposalCardEvent".
  */
 export interface ProposalCardEvent {
-  card_id: CardId8;
+  card_id: CardId6;
   decision_summary: DecisionSummary;
-  event_id: EventId21;
-  issue_id?: IssueId11;
+  event_id: EventId19;
+  issue_id?: IssueId9;
   options: Options1;
-  policy_version: PolicyVersion1;
-  recorded_at: RecordedAt21;
+  recorded_at: RecordedAt19;
   retry?: Retry;
-  run_id: RunId21;
-  seq: Seq21;
-  type: Type21;
-  version: Version9;
+  run_id: RunId19;
+  seq: Seq19;
+  type: Type20;
+  version: Version7;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
@@ -1153,18 +1050,18 @@ export interface ProposalCardEvent {
  */
 export interface ExecutionCardEvent {
   action_kind: ActionKind;
-  card_id: CardId9;
-  event_id: EventId22;
+  card_id: CardId7;
+  event_id: EventId20;
   execution_id: ExecutionId;
   idempotency_key: IdempotencyKey;
-  issue_id?: IssueId12;
+  issue_id?: IssueId10;
   receipt: Receipt;
-  recorded_at: RecordedAt22;
-  run_id: RunId22;
-  seq: Seq22;
-  status: Status6;
-  type: Type22;
-  version: Version10;
+  recorded_at: RecordedAt20;
+  run_id: RunId20;
+  seq: Seq20;
+  status: Status8;
+  type: Type21;
+  version: Version8;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
@@ -1172,12 +1069,11 @@ export interface ExecutionCardEvent {
  */
 export interface Receipt {
   data?: Data;
-  eta_days?: EtaDays;
   next_step?: NextStep1;
-  order_no?: OrderNo1;
+  order_no?: OrderNo2;
   service_order_no?: ServiceOrderNo;
   source?: Source2;
-  status: Status5;
+  status: Status7;
   tracking_no?: TrackingNo;
   updated_at?: UpdatedAt2;
 }
@@ -1189,53 +1085,53 @@ export interface Data {
  * via the `definition` "RetakeCardEvent".
  */
 export interface RetakeCardEvent {
-  card_id: CardId10;
-  event_id: EventId23;
+  card_id: CardId8;
+  event_id: EventId21;
   guidance: Guidance;
-  issue_id?: IssueId13;
+  issue_id?: IssueId11;
   reasons: Reasons;
-  recorded_at: RecordedAt23;
-  run_id: RunId23;
-  seq: Seq23;
-  type: Type23;
-  version: Version11;
+  recorded_at: RecordedAt21;
+  run_id: RunId21;
+  seq: Seq21;
+  type: Type22;
+  version: Version9;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "RatingCardEvent".
  */
 export interface RatingCardEvent {
-  card_id: CardId11;
+  card_id: CardId9;
   case_id?: CaseId1;
-  event_id: EventId24;
-  issue_id?: IssueId14;
-  recorded_at: RecordedAt24;
-  run_id: RunId24;
-  seq: Seq24;
-  type: Type24;
-  version: Version12;
+  event_id: EventId22;
+  issue_id?: IssueId12;
+  recorded_at: RecordedAt22;
+  run_id: RunId22;
+  seq: Seq22;
+  type: Type23;
+  version: Version10;
 }
 /**
  * This interface was referenced by `ServerEventSchema`'s JSON-Schema
  * via the `definition` "CaseStatusEvent".
  */
 export interface CaseStatusEvent {
-  card_id: CardId12;
+  card_id: CardId10;
   case_id: CaseId2;
   complaint_risk?: ComplaintRisk;
-  event_id: EventId25;
+  event_id: EventId23;
   external_refs?: ExternalRefs;
-  issue_id?: IssueId15;
+  issue_id?: IssueId13;
   owner?: Owner;
   priority?: Priority;
-  reason: Reason2;
-  recorded_at: RecordedAt25;
-  run_id: RunId25;
-  seq: Seq25;
-  status: Status7;
-  type: Type25;
+  reason: Reason3;
+  recorded_at: RecordedAt23;
+  run_id: RunId23;
+  seq: Seq23;
+  status: Status9;
+  type: Type24;
   updated_at: UpdatedAt3;
-  version: Version13;
+  version: Version11;
 }
 export interface ExternalRefs {
   [k: string]: string;
@@ -1246,6 +1142,7 @@ export interface ExternalRefs {
  */
 export interface FaultLocalization {
   conflicts_with_text?: ConflictsWithText;
+  content_kinds?: ContentKinds;
   findings?: Findings;
   image_quality?: ImageQuality;
   model_hint?: ModelHint;
@@ -1281,36 +1178,6 @@ export interface ImageQuality {
   guidance?: Guidance1;
   reasons?: Reasons1;
   usable: Usable;
-}
-/**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "PolicyDecision".
- */
-export interface PolicyDecision {
-  exclusions_hit?: ExclusionsHit;
-  fault_class: FaultClass;
-  matched?: Matched;
-  missing_inputs?: MissingInputs;
-  needs_human?: NeedsHuman;
-  needs_human_reasons?: NeedsHumanReasons;
-  policy_id?: PolicyId;
-  policy_version: PolicyVersion2;
-  remedies?: Remedies;
-  trace_id: TraceId;
-  warranty_end?: WarrantyEnd;
-  within_warranty?: WithinWarranty;
-}
-/**
- * This interface was referenced by `ServerEventSchema`'s JSON-Schema
- * via the `definition` "RemedyDecision".
- */
-export interface RemedyDecision {
-  auto_allowed: AutoAllowed1;
-  clauses?: Clauses1;
-  conditions?: Conditions1;
-  cost_bearer?: CostBearer1;
-  eligible: Eligible;
-  remedy: Remedy1;
 }
 
 export type PendingKind = Extract<ServerEvent, { type: 'awaiting_input' }>['kind'];

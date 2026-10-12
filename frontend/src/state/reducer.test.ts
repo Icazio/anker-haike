@@ -33,8 +33,8 @@ describe('session reducer (票 06)', () => {
     const before = structuredClone(initialState);
     const s = run(FIXTURE);
     expect(initialState).toEqual(before);
-    expect(s.lastSeq).toBe(20);
-    expect(s.timeline.map((t) => t.kind)).toEqual(['tool', 'assistant_message', 'product_card', 'step_card', 'evidence', 'receipt_card', 'escalation_summary', 'user_message', 'observation_card']);
+    expect(s.lastSeq).toBe(25);
+    expect(s.timeline.map((t) => t.kind)).toEqual(['tool', 'assistant_message', 'product_card', 'step_card', 'evidence', 'receipt_card', 'escalation_summary', 'user_message', 'proposal_card', 'execution_card', 'case_changed', 'retake_card', 'rating_card']);
   });
 
   it('drives idle → streaming → idle on run_started/done and tracks stage + version', () => {
@@ -75,10 +75,10 @@ describe('session reducer (票 06)', () => {
     const base = run([{ type: 'run_started', seq: 1, event_id: 'fixture-event', recorded_at: '2026-09-13T00:00:00Z', run_id: rid, resumed: false, deadline_ms: 25000 }] as ServerEvent[]);
     const s1 = reducer(base, { type: 'server_event', event: { type: 'tool_call', seq: 2, event_id: 'fixture-event', recorded_at: '2026-09-13T00:00:00Z', run_id: rid, tool_id: 't', name: 'knowledge.search', status: 'started' } as ServerEvent });
     expect(s1.ui).toBe('tool_running');
-    const s2 = reducer(s1, { type: 'server_event', event: { type: 'tool_call', seq: 3, event_id: 'fixture-event', recorded_at: '2026-09-13T00:00:00Z', run_id: rid, tool_id: 't', name: 'knowledge.search', status: 'failed', summary: '知识库暂不可用，按标准排障流程' } as ServerEvent });
+    const s2 = reducer(s1, { type: 'server_event', event: { type: 'tool_call', seq: 3, event_id: 'fixture-event', recorded_at: '2026-09-13T00:00:00Z', run_id: rid, tool_id: 't', name: 'knowledge.search', status: 'failed', summary: '知识库暂不可用' } as ServerEvent });
     expect(s2.ui).toBe('streaming');
     expect(s2.timeline.filter((t) => t.kind === 'tool')).toHaveLength(1);
-    expect(s2.timeline[0]).toMatchObject({ kind: 'tool', status: 'failed', summary: '知识库暂不可用，按标准排障流程' });
+    expect(s2.timeline[0]).toMatchObject({ kind: 'tool', status: 'failed', summary: '知识库暂不可用' });
   });
 
   it('awaiting_input + done(awaiting_input) yields awaiting_input ui with pending card; card upsert is idempotent by card_id', () => {

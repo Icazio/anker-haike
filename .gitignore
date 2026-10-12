@@ -44,6 +44,8 @@ logs/
 reports/bakeoff/*.json
 # 阶段 0/1 的字段级评测：结论表 bakeoff.md 入库，逐样本明细 JSON 不入库
 reports/bakeoff-*/*.json
+# 评测运行产物：会话、方法和校验快照 JSON 只留本机，结论文档入库
+/reports/eval/**/*.json
 # 真实评测照片只在本机
 data/bakeoff-images/
 reports/inspection/*.json
@@ -59,3 +61,30 @@ docs/planning/*_qa-video-recording/*.png
 # 票 43：回放校验失败明细只留本机
 replay/.failures/
 data/demo-photos/
+
+# 主办方资料包（46M docx/xlsx，评测 sources.json 只记路径与 sha256）
+docs/【黑客松智能服务赛道】工具资料包/
+
+# 2026-10 评测与复现：真实模型跑出的会话轨迹、探针脚本与日志只留本机，Markdown 结论与复核文档入库
+docs/planning/2026-10-*/**/*.json
+docs/planning/2026-10-*/**/*.py
+docs/planning/2026-10-*/**/*.log
+docs/planning/2026-10-*/**/*.diff
+docs/planning/2026-10-*/**/*.txt
+docs/planning/2026-10-*/**/*.jpg
+docs/planning/2026-10-*/**/*.jpeg
+docs/planning/2026-10-*/**/*.png
+
+# 评测原始会话：统一只留本机，不依赖日期或任务名，规划与报告文档入库
+docs/planning/**/conversations/
+
+# 多轮复现与复测：完整会话和逐轮翻译只留本机，结论与根因文档入库
+docs/planning/*_multiturn-reproduction/完整会话记录.md
+docs/planning/*_post-makeup-multiturn-retest/本次原文完整会话.md
+docs/planning/*_post-makeup-multiturn-retest/**/原文完整会话.md
+docs/planning/*_post-makeup-multiturn-retest/**/回复原文与中文翻译.md
+
+# 视觉模型对比：原始 jsonl、铭牌照片与明细 json 只留本机，methodology.md 入库
+reports/vision-comparison-20261009/*.jsonl
+reports/vision-comparison-*/*.json
+reports/vision-comparison-20261009/inputs/

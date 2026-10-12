@@ -6,6 +6,11 @@ import type { Outcome } from './types';
 export const OUTCOME: Record<Outcome, { label: string; role: Role; hint: string }> = {
   resolved: { label: '已解决', role: 'good', hint: '给出结束语，用户确认解决' },
   escalated: { label: '需人工处理', role: 'warning', hint: '问题摘要已整理；是否接单以实际人工状态为准' },
+  closed_unresolved: { label: '已结束但未解决', role: 'serious', hint: '本次服务流程已结束，设备问题未确认解决' },
+  executed_closed: { label: '办理已结案', role: 'good', hint: '业务执行已完成并结案' },
+  human_executed: { label: '人工办理已结案', role: 'good', hint: '有人工处理记录的已结案业务' },
+  consult_answered: { label: '咨询已答复', role: 'good', hint: '已提供所需说明，不表示设备已修复' },
+  awaiting_human: { label: '等待人工审核', role: 'neutral', hint: '已进入审核流程，不表示真人已接单' },
   abandoned: { label: '已放弃', role: 'serious', hint: '等用户回应但长时间没有下文' },
   errored: { label: '出错', role: 'critical', hint: '节点异常或超时' },
   awaiting_user: { label: '等用户', role: 'neutral', hint: '正等卡片反馈' },
@@ -20,8 +25,8 @@ export type Role = 'good' | 'warning' | 'critical' | 'serious' | 'neutral';
 /** 堆叠顺序：good → warning → critical → serious → neutral。
  *  这个相邻顺序通过了 dataviz 的 CVD 与常视觉分辨检查（warning 与 serious 不相邻）。 */
 export const STACK_ORDER: Outcome[] = [
-  'resolved', 'escalated', 'errored', 'abandoned',
-  'awaiting_user', 'clarifying', 'in_progress', 'interrupted', 'unknown',
+  'resolved', 'executed_closed', 'human_executed', 'consult_answered', 'escalated', 'errored', 'closed_unresolved', 'abandoned',
+  'awaiting_human', 'awaiting_user', 'clarifying', 'in_progress', 'interrupted', 'unknown',
 ];
 
 export function outcomeLabel(outcome: string): string {
@@ -35,9 +40,11 @@ export function outcomeRole(outcome: string): Role {
 /** 升级原因（规则号）→ 人话。R3/R4/R8 属政策，不计入「系统没解决」。 */
 export const REASON_TEXT: Record<string, string> = {
   R1: '步骤走完仍未解决', R1b: '步骤走完仍未解决', R1c: '步骤走完仍未解决',
-  R2: '适用步骤已耗尽', R3: '用户要求人工', R4: '安全风险',
-  R5: '没有适用排查方案', R7: '继续处理所需信息待确认', R8: '不在支持范围',
-  solved: '用户确认解决', plan_done: '计划执行完毕',
+  R2: '官方步骤已用尽', R3: '用户要求人工', R4: '安全风险',
+  R5: '没有对应的官方说明', R6: '转质保判断', R7: '继续处理所需信息待确认', R8: '不在支持范围',
+  solved: '用户确认解决', plan_done: '官方步骤执行完毕',
+  case_closed_unresolved: '流程结束，问题未解决', case_closed: '业务已结案',
+  partial_closed: '案件已结，仍有诉求在办', cancelled: '本轮已取消',
   server_restarted: '服务重启打断', node_failed: '节点异常',
   deadline_exceeded: '超过时限', no_checkpoint: '数据已过保留期',
   step_feedback: '等步骤反馈', select_product: '等选择产品',
@@ -52,7 +59,7 @@ export function reasonText(reason: string | null): string {
 /** 复盘原因标签 → 中文。键与后端 derive.REASON_TAGS 一致。 */
 export const TAG_TEXT: Record<string, string> = {
   intent_correct: '意图正确', intent_wrong: '意图有误',
-  knowledge_missing: '知识缺失', retrieval_mismatch: '检索错配', wrong_plan: '计划不对',
+  knowledge_missing: '知识缺失', retrieval_mismatch: '检索错配', wrong_plan: '命中的官方 Q&A 不对',
   bad_step_wording: '步骤话术差', model_quality: '模型输出差', model_fallback: '降级导致',
   rule_false_positive: '规则误触', product_unrecognized: '产品未识别',
   emotion_mishandled: '情绪处理不当', latency: '太慢', ui_flow: '交互问题',
@@ -68,17 +75,13 @@ export const CASE_STATUS_TEXT: Record<string, string> = {
 export const NODE_TEXT: Record<string, string> = {
   understand: '理解诉求', dialogue: '对话回应', commit_issue: '保存问题',
   service_context: '核实服务信息', propose: '计算方案', authorize: '检查授权', execute: '办理业务', track: '跟踪服务单', await_human: '等待人工审核', consult: '业务查询', apply_human_decision: '应用审核决定', advance_tasks: '接续下一需求', prepare_retake: '请求补拍', vision_conflict: '核实图文差异',
-  __start__: '开始', __end__: '结束', intake: '理解诉求', rediagnose: '补充信息',
-  reassure: '安抚', disambiguate: '产品消歧', prepare_card: '准备产品卡', clarify: '澄清追问',
+  reopen_case: '重开案件', apply_case_command: '执行案件指令', product_help: '产品咨询', reassess: '重新决策', ask_operation: '追问操作条件',
+  __start__: '开始', __end__: '结束',
+  disambiguate: '产品消歧', prepare_card: '准备产品卡', clarify: '澄清追问',
   vision: '读图', retrieve: '检索知识', reply: '生成回复', guide: '下发步骤',
   await_input: '等待用户', apply_action: '处理动作', escalate: '升级', summarize: '生成摘要',
-  prepare_receipt: '索取凭证', receipt_extract: '识别凭证', human_request: '转人工',
+  prepare_receipt: '索取凭证', receipt_extract: '识别凭证',
   out_of_scope: '范围外', close: '收尾',
-};
-
-export const STAGE_TEXT: Record<string, string> = {
-  start: '入口', intake: '理解', disambiguate: '消歧', diagnose: '诊断', guide: '排障',
-  wait: '等待', escalate: '升级', out_of_scope: '范围外', done: '完成', end: '结束',
 };
 
 export function nodeLabel(node: string): string {
@@ -132,22 +135,21 @@ export function sla(iso: string): { label: string; level: 'fresh' | 'aging' | 'l
   return { label: `${Math.round(diff / 86_400_000)} 天`, level: 'late' };
 }
 
-export const REMEDY_TEXT: Record<string, string> = {
-  parts: '寄送更换配件', repair: '申请维修', replace: '申请换货', refund: '申请退款审核', paid_repair: '申请付费维修', none: '不提供免费处置',
+/** 服务单类型（主办方 SOP：提交后一律转人工） */
+export const SERVICE_TYPE_TEXT: Record<string, string> = {
+  replace: '换货单', refund: '退款单', reship: '补发单', carrier_investigation: '承运商调查单',
 };
-export const COST_TEXT: Record<string, string> = { company: '公司承担', customer: '客户承担', shared: '双方分担' };
-export const FAULT_CLASS_TEXT: Record<string, string> = { quality: '质量故障', user_damage: '人为损坏', safety: '安全风险', unknown: '故障未核实' };
+/** 订单质保判断 */
+export const WARRANTY_TEXT: Record<string, string> = {
+  in_warranty: '保内', out_of_warranty: '已过保', unauthorized_dealer: '非授权经销商', unknown: '待核实',
+};
+export const WARRANTY_BASIS_TEXT: Record<string, string> = { order: '订单质保结束日期', dealer: '授权经销商购买日起 12 个月', none: '无依据' };
 export const EMOTION_TEXT: Record<string, string> = { calm: '平静', anxious: '焦急', dissatisfied: '不满', angry: '愤怒', complaint_risk: '投诉风险' };
 export const STRATEGY_TEXT: Record<string, string> = {
   normal: '常规处理', reassure_first: '先安抚再排查', reassure_and_shorten: '先安抚、缩短步骤', direct_resolution: '直接给方案', de_escalate_and_offer_human: '降温并提供人工',
 };
-/** 政策条件名 → 人话；未知条件原样显示 */
-export const CONDITION_TEXT: Record<string, string> = {
-  within_warranty: '在保修期内', fault_class: '故障类别', region_purchase: '购买地', channel: '购买渠道', proof_of_purchase: '购买凭证',
-  authorized_dealer: '授权经销商', receipt_status: '凭证状态', exclusions: '不保条款',
-};
-/** 授权门四项检查 */
-export const GATE_TEXT: Record<string, string> = { policy: '政策允许', evidence_and_consent: '证据与用户确认', safety: '安全限制', idempotency: '幂等键' };
+/** 服务单提交闸门四项检查 */
+export const GATE_TEXT: Record<string, string> = { eligibility: '办理资格', evidence: 'SOP 证据与客户确认', safety: '安全限制', idempotency: '幂等键' };
 
 /** L3 案件状态分组（工作台 tab） */
 export const CASE_GROUPS: { key: string; label: string; statuses: string[] }[] = [
@@ -162,15 +164,5 @@ export function showValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (typeof value === 'object') return JSON.stringify(value);
   const text = String(value);
-  return COST_TEXT[text] ?? FAULT_CLASS_TEXT[text] ?? REMEDY_TEXT[text] ?? text;
-}
-
-/** 政策引擎的 needs_human 原因码 → 人话 */
-export const NEEDS_HUMAN_TEXT: Record<string, string> = {
-  fault_unknown: '故障未核实', fault_safety: '存在安全风险', missing_inputs: '服务信息不全', no_policy_matched: '政策未覆盖',
-  unauthorized_dealer: '非授权经销商', out_of_warranty: '已过保修期', receipt_missing: '缺购买凭证', region_unknown: '购买地未知',
-};
-export function needsHumanText(reason: string): string {
-  const [code, detail] = reason.split(':');
-  return (NEEDS_HUMAN_TEXT[code ?? ''] ?? code ?? reason) + (detail ? `（${detail.trim()}）` : '');
+  return SERVICE_TYPE_TEXT[text] ?? WARRANTY_TEXT[text] ?? text;
 }

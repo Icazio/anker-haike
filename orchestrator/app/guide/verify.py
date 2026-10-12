@@ -3,7 +3,8 @@
 solved → 结束；not_solved → executed+1、advanced+1；cannot_do → skipped+1（不计 executed）。
 cannot_do 记录阻碍并返回 reassess；真实执行后按 next_on 推进。EXHAUSTED 只标记计划耗尽，
 下一动作由 diagnose.decision.decide_next 依据更新后的事实决定（design §3.2）。
-CP-verify：R1 executed ≥ 4、R1c executed+skipped ≥ 6；连续无法操作由选择器减负，不自动升级。
+CP-verify：R1 executed ≥ 10、R1c executed+skipped ≥ 12（跨指南防失控）；正常结束是指南走完 → 质保判断。
+官方 Q&A 指南最长 8 步，旧的「满 4 步转人工」会把指南拦腰截断。
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from app.plans.library import PlanLibrary
 
 Feedback = Literal["solved", "not_solved", "cannot_do"]
 SWITCH_CONFIDENCE = 0.3
-LIMITS = {"R1": 4, "R1c": 6}
+LIMITS = {"R1": 10, "R1c": 12}
 
 
 @dataclass
@@ -40,16 +41,58 @@ class VerifyOutcome:
     trace: dict[str, Any] = field(default_factory=dict)
     step_attempts: list[dict] = field(default_factory=list)
     operation_conditions: dict = field(default_factory=dict)
+    # 2026-10-09 第二批：问句的回答写成事实；材料请求「暂时没有」记为待补
+    observation: dict[str, Any] | None = None
+    missing_material: str | None = None
+
+
+def step_payload_error(step: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    """按卡片类型校验反馈载荷（2026-10-09 第二批 I4）：操作卡交 feedback，问句 / 材料卡交 answer，说明卡可空。
+    事实问题不能用「解决了 / 没解决」回答；操作步骤也不能用一个选项糊弄过去。卡片动作与文字命令共用。"""
+    kind = step.get("kind") or "action"
+    feedback, answer = payload.get("feedback"), payload.get("answer")
+    if kind == "action":
+        return "not_allowed_now" if feedback is None or answer is not None else None
+    if feedback is not None:
+        return "not_allowed_now"
+    if kind == "statement":
+        return None
+    if not answer:
+        return "invalid_selection"
+    if kind == "question":
+        option = answer.get("option")
+        if option is not None and option not in (step.get("options") or []):
+            return "invalid_selection"
+        if option is None and not (answer.get("text") or "").strip():
+            return "invalid_selection"
+    if kind == "material_request" and not (answer.get("unavailable") or (answer.get("text") or "").strip()):
+        return "invalid_selection"
+    return None
+
+
+def unanswered(step, answer: dict[str, Any] | None) -> bool:
+    """问句收到的是「还没做 / 不知道」：选了审核标的 retry 选项，或有选项的问句收到对不上任何选项的短答。
+    只对标了 retry_options 的问句生效，其余问句的短答照旧走 next_on（bp-0032「somewhere near the rim」）。"""
+    if step.kind != "question" or not step.retry_options:
+        return False
+    option = (answer or {}).get("option")
+    return option in step.retry_options or (option is None and bool(_answer_text(answer)))
+
+
+def _answer_text(answer: dict[str, Any] | None) -> str:
+    if not answer:
+        return ""
+    return (answer.get("option") or answer.get("text") or "").strip()
 
 
 def apply_feedback(
     *,
     state: dict[str, Any],
-    feedback: Feedback,
+    feedback: Feedback | None,
     note: str | None,
     card_id: str,
     library: PlanLibrary,
-    observations: list[dict[str, str]] | None = None,
+    answer: dict[str, Any] | None = None,
 ) -> VerifyOutcome:
     cursor = dict(state.get("plan_cursor") or {})
     plan = library.get(cursor["plan_id"])
@@ -72,18 +115,46 @@ def apply_feedback(
             "card_id": card_id,
             "title": step.title,
             "instruction_src": step.instruction_src,
+            "kind": step.kind,
+            **({"options": list(step.options)} if step.kind == "question" else {}),
             "feedback": feedback,
             "note": note,
-            "observations": [
-                {"observation_id": o["observation_id"], "option_id": o["option_id"]}
-                for o in (observations or [])
-                if o.get("observation_id") and o.get("option_id")
-            ],
+            "answer": answer,
             "ts": datetime.now(UTC).isoformat(),
         }
     )
     attempts.append(attempt)
     result = partial(VerifyOutcome, step_attempts=attempts, operation_conditions=conditions_for(state).model_dump())
+    if step.kind != "action":
+        # 问句 / 说明 / 材料请求不是操作：不计 executed / skipped，不走 solved / not_solved 的语义。
+        # 问句按 branches 分支，其余向后走；回答写成一条 observation 事实，材料暂缺记为待补（I4）。
+        nxt = plan.next_step_id(step_id, "not_solved", option=(answer or {}).get("option"))
+        observation = None
+        missing = None
+        text = _answer_text(answer)
+        if unanswered(step, answer) and not any(
+                a.get("retry") and a.get("instruction_src") == step.instruction_src for a in attempts[:-1]):
+            # 「还没检查 / 不知道」不是答案（B21）：记下原话，这张卡不算答完，带提示重发一次；再答不上来才按原边走
+            attempt["retry"] = True
+            observation = {"kind": "observation", "value": f"{step.title}: {text}", "quote": text,
+                           "subject": step.title.rstrip("?"), "polarity": "uncertain", "source": "user_statement"}
+            return result("next", dict(cursor), counters, executed, exhausted,
+                          trace={"rule": "question_retry"}, observation=observation)
+        if step.kind == "question" and text:
+            observation = {"kind": "observation", "value": f"{step.title}: {text}", "quote": text,
+                           "subject": step.title.rstrip("?"), "polarity": "affirmed", "source": "user_statement"}
+        elif step.kind == "material_request":
+            if answer and answer.get("unavailable"):
+                missing = step.title
+            elif text:
+                observation = {"kind": "observation", "value": f"{step.title}: {text}", "quote": text,
+                               "subject": step.title, "polarity": "affirmed", "source": "user_statement"}
+        if nxt in ("DONE", "EXHAUSTED"):
+            return exhaust_plan({**state, "step_attempts": attempts}, plan.plan_id, library=library, counters=counters,
+                                executed=executed, exhausted=exhausted, observation=observation, missing_material=missing)
+        return result("next", {**cursor, "step_id": nxt}, counters, executed, exhausted,
+                      trace={"rule": f"{step.kind}:{nxt}"}, observation=observation, missing_material=missing)
+    assert feedback is not None
     if feedback == "cannot_do":
         counters["skipped"] += 1
         conditions, _ = update_conditions(
@@ -155,6 +226,8 @@ def exhaust_plan(
     counters: dict[str, int] | None = None,
     executed: list[dict[str, Any]] | None = None,
     exhausted: list[str] | None = None,
+    observation: dict[str, Any] | None = None,
+    missing_material: str | None = None,
 ) -> VerifyOutcome:
     """当前计划耗尽（next_on 到 EXHAUSTED，或剩余步骤全部被 CP-pre-step / 去重丢弃）：
 
@@ -182,4 +255,6 @@ def exhaust_plan(
         trace={"rule": "plan_exhausted", "plan_id": plan_id},
         step_attempts=feedback_history(state),
         operation_conditions=conditions_for(state).model_dump(),
+        observation=observation,
+        missing_material=missing_material,
     )

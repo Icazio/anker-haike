@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -43,16 +44,8 @@ class Settings(BaseSettings):
     catalog_config_path: str = Field(
         default=str(CONFIG_DIR / "products.yaml"), alias="CATALOG_CONFIG_PATH"
     )
-    plans_config_path: str = Field(
-        default=str(CONFIG_DIR / "plans.yaml"), alias="PLANS_CONFIG_PATH"
-    )
-    receipt_reference_config_path: str = Field(
-        default=str(CONFIG_DIR / "receipt_reference.yaml"),
-        alias="RECEIPT_REFERENCE_CONFIG_PATH",
-    )
-    fault_cards_config_path: str = Field(
-        default=str(CONFIG_DIR / "fault_cards.yaml"), alias="FAULT_CARDS_CONFIG_PATH"
-    )
+    # 演示时钟（D1）：质保与物流逾期按这一天判断；不设则取每轮的真实时间。
+    demo_today: date | None = Field(default=None, alias="DEMO_TODAY")
     rules_config_path: str = Field(
         default=str(CONFIG_DIR / "rules" / "safety_terms.yaml"), alias="RULES_CONFIG_PATH"
     )

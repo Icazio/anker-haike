@@ -3,25 +3,27 @@
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid5
 
-from haike_contracts.common import ProposalOption
-
 from .store import CaseConflict, MemoryCaseStore
 
 TRANSITIONS = {
-    "open": {"diagnosing", "proposing", "awaiting_approval"},
+    "open": {"diagnosing", "proposing", "awaiting_approval", "escalated_summary"},
     "diagnosing": {"proposing", "awaiting_approval"},
-    "proposing": {"awaiting_confirmation", "awaiting_approval", "closed_unresolved"},
+    "proposing": {"awaiting_confirmation", "awaiting_approval", "closed_unresolved", "escalated_summary"},
     "awaiting_confirmation": {"proposing", "executing", "awaiting_approval", "closed_unresolved"},
-    "awaiting_approval": {"approved", "rejected", "awaiting_confirmation"},
-    "approved": {"executing", "awaiting_approval"},
+    # 交接原因是「没有官方指引」、人工还没处理时，客户补的信息让排障重新可行：撤回队列回到排障（T60）
+    "awaiting_approval": {"approved", "rejected", "awaiting_confirmation", "closed", "diagnosing"},
+    "approved": {"executing", "awaiting_approval", "closed"},
     "executing": {"tracking", "executing_failed", "awaiting_approval"},
     "executing_failed": {"executing", "proposing", "awaiting_approval", "closed_unresolved"},
     "tracking": {"closed", "proposing", "awaiting_approval"},
-    "rejected": {"proposing", "closed_unresolved"},
+    "rejected": {"proposing", "closed_unresolved", "closed"},
     "closed": {"reopened"},
     "closed_unresolved": {"reopened"},
     "reopened": {"tracking", "proposing"},
-    "escalated_summary": {"reopened"},
+    # 质保无法确认时先落 escalated_summary（摘要已备好），summarize 随后 hand_off 才真正入人工队列。
+    # 以前这条边不存在：R1 排障走完、没有订单号、跳过凭证的每一单都在 summarize 里撞 CaseConflict，
+    # 客户看到「案件等待处理」，案件里却没有交接摘要（2026-10-10 复测：T11/T16/T18/T23 等约 20 单）。
+    "escalated_summary": {"reopened", "awaiting_approval"},
 }
 
 
@@ -88,7 +90,7 @@ class CaseService:
                 "status": "open",
                 "complaint_risk": complaint_risk,
                 "priority": "high" if complaint_risk else "normal",
-                "policy_decision": None,
+                "warranty": None,
                 "proposal": None,
                 "chosen_option_id": None,
                 "gate_result": None,
@@ -106,7 +108,7 @@ class CaseService:
         self, case_id, status, reason, *, actor="system", expected_revision=None, **updates
     ):
         allowed = {
-            "policy_decision",
+            "warranty",
             "proposal",
             "chosen_option_id",
             "gate_result",
@@ -299,22 +301,16 @@ class CaseService:
                 raise CaseConflict("案件已由其他人处理，请刷新")
             options = (row.get("proposal") or {}).get("options", [])
             option = next((o for o in options if o["option_id"] == option_id), None)
-            if decision == "approve":
-                if (row.get("policy_decision") or {}).get("fault_class") in {"unknown", "safety"}:
-                    raise ValueError("请先核实故障并解除安全限制；人工审批不能替代故障证据，可要求补充信息")
-                if edited_option:
-                    edited = ProposalOption.model_validate(edited_option).model_dump(mode="json")
-                    if not option or edited["option_id"] != option_id or edited["remedy"] != option["remedy"]:
-                        raise ValueError("人工编辑必须对应所选方案")
-                    option = edited
-                if not option or option["remedy"] != "replace":
-                    raise ValueError("P0 仅支持批准换货动作")
-                if (
-                    edited_option
-                    or (row.get("policy_decision") or {}).get("needs_human")
-                    or not option.get("auto_allowed")
-                ) and not (override_reason or "").strip():
-                    raise ValueError("覆盖政策需填写理由")
+            if decision == "approve" and option_id and not option:
+                raise ValueError("人工批准必须对应案件中的方案")
+            if edited_option:
+                raise ValueError("服务单方案不支持人工改写，请驳回后重新提交")
+            warranty = (row.get("warranty") or {}).get("status")
+            if (
+                decision == "approve" and option and option["type"] in {"replace", "refund"}
+                and warranty not in {None, "in_warranty"} and not (override_reason or "").strip()
+            ):
+                raise ValueError("过保或非授权经销商仍要办理，需填写例外理由")
             row["decisions"].append(
                 {
                     "decision_id": decision_id,
@@ -367,6 +363,48 @@ class CaseService:
                 row["proposal"] = {**row["proposal"], "user_confirmed": False, "chosen_option_id": None}
             row["chosen_option_id"] = None
             _event(row, "request_changed", {"input_id": input_id, "quote": quote, "requested": requested}, "user")
+
+        return await self.store.mutate(case_id, apply)
+
+    async def resume_diagnosis(self, case_id, *, input_id, quote):
+        """客户补充信息后排障找到了官方步骤：人工尚未处理的交接撤回队列，回到排障（T60 方案 A）。
+        人工已作出决定的案件不撤回；同一输入重试不重复写。"""
+
+        def apply(row):
+            if any(e["type"] == "customer_supplied_info" and e["payload"]["input_id"] == input_id for e in row["events"]):
+                return
+            if row["status"] != "awaiting_approval" or row["decisions"]:
+                raise CaseConflict("人工已接手或案件状态已变化，不能撤回")
+            _transition(row, "diagnosing", "客户补充信息后找到官方排查步骤，撤回人工队列", "user")
+            _event(row, "customer_supplied_info", {"input_id": input_id, "quote": quote}, "user")
+
+        return await self.store.mutate(case_id, apply)
+
+    async def hand_off(self, case_id, *, requested, quote, input_id, reason, summary_of):
+        """本系统办不了的诉求交人工：进队列、记诉求、写摘要，一次写入。
+
+        诉求的身份是「类型 + 客户原话」：同一诉求重试不重复写；同类型但原话变了（暂停 → 取消整单）
+        记 request_changed 并重写摘要，人工看到的是最新要求；人工驳回后客户再提，先回 proposing 再入队。
+        summary_of(row) 在写入时生成摘要，摘要里的案件状态因此是入队后的状态。
+        """
+
+        def apply(row):
+            last = next(
+                (e["payload"] for e in reversed(row["events"]) if e["type"] in {"review_requested", "request_changed"}),
+                None,
+            )
+            queued = row["status"] == "awaiting_approval" and last and last["requested"] == requested
+            if queued and last.get("quote", quote) == quote and any(e["type"] == "handoff_summary" for e in row["events"]):
+                return
+            if row["status"] == "rejected":
+                _transition(row, "proposing", "客户再次提出诉求")
+            if row["status"] != "awaiting_approval":
+                _transition(row, "awaiting_approval", reason)
+            if last is None or last["requested"] != requested:
+                _event(row, "review_requested", {"requested": requested, "quote": quote}, "system")
+            elif last.get("quote") != quote:
+                _event(row, "request_changed", {"input_id": input_id, "quote": quote, "requested": requested}, "user")
+            _event(row, "handoff_summary", summary_of(row), "system")
 
         return await self.store.mutate(case_id, apply)
 

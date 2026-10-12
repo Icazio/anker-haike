@@ -5,12 +5,12 @@ help: ## 列出命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 ## ---- 容器 ----
-up: ## 构建并拉起全部容器
-	$(COMPOSE) up -d --build
+up: ## 构建并拉起全部容器（含 WeKnora 网页 8081）
+	$(COMPOSE) --profile ui up -d --build
 down: ## 停止容器，保留数据
-	$(COMPOSE) down
+	$(COMPOSE) --profile ui down
 reset: ## 停止容器并删除全部数据卷（需二次确认）
-	@read -p "将删除 postgres / redis / weknora 全部数据，继续? [y/N] " a && [ "$$a" = "y" ] && $(COMPOSE) down -v
+	@read -p "将删除 postgres / redis / weknora 全部数据，继续? [y/N] " a && [ "$$a" = "y" ] && $(COMPOSE) --profile ui down -v
 logs: ## 跟随日志
 	$(COMPOSE) logs -f --tail=100
 ps: ## 容器状态
@@ -41,42 +41,30 @@ bakeoff: ## bake-off 评测（票 42）：make bakeoff [TASK=intake] [ALIAS=deep
 
 .PHONY: contracts contracts-check contracts-test
 ## ---- 参考数据（票 19 / 31）----
-seed: ## 写入 products / plans 参考数据到 PostgreSQL（幂等）：make seed [WHAT=products|plans]
+seed: ## 写入 products 参考数据到 PostgreSQL（幂等）：make seed [WHAT=products|all]
 	cd orchestrator && uv run --env-file ../.env haike-seed $(or $(WHAT),all)
-plans-schema: ## 输出排障计划 JSON Schema（--enum 收窄 plan_id）
+plans-schema: ## 输出排障计划 JSON Schema（计划由官方 Q&A 生成；--enum 收窄 plan_id）
 	cd orchestrator && uv run haike-plans-schema --enum
 
 ## ---- 知识库（票 26）----
 kb-bootstrap: ## 在本机 WeKnora 自助注册项目独立 tenant，并把 API key 写入 .env
 	cd orchestrator && uv run --env-file ../.env haike-kb bootstrap
-kb-official-fetch: ## 定向采集官方支持文章到 tmp/official-knowledge，正文变更需复核摘要及哈希
-	cd orchestrator && uv run --env-file ../.env python -m app.knowledge.official fetch
-kb-official-build: ## 校验来源哈希、型号与语义单元长度，生成可入库的官方资料摘要
-	cd orchestrator && uv run --env-file ../.env python -m app.knowledge.official build
-kb-official-verify: ## 实测官方批次的来源元数据、完整切块、型号隔离与逐条 Top-5 召回
-	cd orchestrator && uv run --env-file ../.env python -m app.knowledge.official_verify
-kb-ingest: ## 幂等导入 kb_manual / faq / kb_tickets 并写 manifest（PRUNE=1 清理多余条目；RECREATE_KB=1 换 embedding 时删库重建）
-	cd orchestrator && uv run --env-file ../.env haike-kb ingest $(if $(PRUNE),--prune,) $(if $(RECREATE_KB),--recreate-kb,)
+kb-ingest: ## 官方 Q&A 幂等导入 haike_kb_qa（一条 Q&A 一个知识），删除旧中文手册 / FAQ / 合成工单库，写 manifest；结束后重建 BM25 索引
+	cd orchestrator && uv run --env-file ../.env haike-kb ingest $(if $(KEEP_LEGACY),--keep-legacy,)
+	@# WeKnora v0.8.0 + ParadeDB：批量删除知识后 bm25 索引会残留失效行指针（item_pointer_is_valid 断言），关键词检索 500；重建即恢复
+	$(COMPOSE) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$${POSTGRES_DB:-WeKnora}" -c "REINDEX INDEX embeddings_search_idx;"'
 
-kb-eval: ## 检索评测（ARM=A|B|C，默认 A）：data/eval/retrieval/cases.yaml → reports/retrieval/
+kb-eval: ## 检索评测：63 单工单首封打 kb_qa，按语言统计 recall@5 → reports/retrieval/（ARM= 报告标签）
 	cd orchestrator && uv run --env-file ../.env haike-kb eval --arm $(or $(ARM),A)
-
-eval-worksheet: ## 生成标注工作单（金标 vs 实际召回并排）：reports/retrieval/worksheet.md
-	cd orchestrator && uv run python ../scripts/eval_worksheet.py
 kb-verify: ## 打印各知识库解析状态与 custom_metadata
 	cd orchestrator && uv run --env-file ../.env haike-kb verify
-kb-anchors: ## 证据可达性基线：锚点标记与正文同块、锚点检索可达、元数据完整（非零退出即有红）
-	cd orchestrator && uv run --env-file ../.env haike-kb anchors
-
-kb-snapshot: ## 导出知识库快照（DIR= 指定则导入该快照实现回滚）
-	cd orchestrator && uv run --env-file ../.env haike-kb snapshot $(if $(DIR),import $(DIR),export)
 
 ## ---- 回放（票 43）----
-replay-record: ## 真实模型 + WeKnora 跑内置脚本并录制：make replay-record CASE=a1_hair_wrap [SCENARIO=a1_hair_wrap]
+replay-record: ## 真实模型 + WeKnora 跑内置脚本并录制：make replay-record CASE=t55_main [SCENARIO=t55_main]
 	cd orchestrator && uv run --env-file ../.env haike-replay record $(CASE) $(if $(SCENARIO),--scenario $(SCENARIO),)
-replay-verify: ## 断网重放录制包并核对（未命中 / 缺事件非零退出）：make replay-verify CASE=a1_hair_wrap
+replay-verify: ## 断网重放录制包并核对（未命中 / 缺事件非零退出）：make replay-verify CASE=t55_main
 	cd orchestrator && uv run --env-file ../.env haike-replay verify $(CASE)
-replay-check: ## 录制包清单与当前 prompt / models / kb / rules 版本比对：make replay-check CASE=a1_hair_wrap
+replay-check: ## 录制包清单与当前 prompt / models / kb / rules 版本比对：make replay-check CASE=t55_main
 	cd orchestrator && uv run --env-file ../.env haike-replay check $(CASE)
 replay-list: ## 列出录制包
 	cd orchestrator && uv run --env-file ../.env haike-replay list
@@ -130,11 +118,6 @@ db-restore: ## 恢复：make db-restore FILE=haike_20260912T120000Z.dump（停�
 	$(COMPOSE) stop orchestrator
 	$(COMPOSE) exec pg-backup /opt/backup/restore.sh $(FILE)
 	$(COMPOSE) start orchestrator
-
-## 知识库变更前自动导出快照（票 47；04 §4 回滚前提）
-kb-snapshot-export: ## 导出 WeKnora 知识库快照
-	cd orchestrator && uv run --env-file ../.env haike-kb snapshot export
-kb-ingest: kb-snapshot-export
 
 ## ---- 发布 / 回滚 / CI（票 49）----
 release: ## 生成 RELEASE.md 并快照 config/ 到 releases/<id>/：make release [REL=20260912-abc1234]

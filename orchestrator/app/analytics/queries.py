@@ -199,6 +199,7 @@ class Queries:
             )
             select count(*) as sessions,
                    count(*) filter (where outcome = 'resolved') as resolved,
+                   count(*) filter (where outcome = 'closed_unresolved') as closed_unresolved,
                    count(*) filter (where outcome = 'escalated') as escalated,
                    count(*) filter (where outcome = 'escalated'
                                       and outcome_reason = any(%(system)s)) as escalated_system,
@@ -322,7 +323,10 @@ class Queries:
         category: str | None = None,
         outcome: str | None = None,
     ) -> dict[str, Any]:
-        """边计数与节点耗时：边宽 = 经过次数，节点色 = 中位耗时 / 错误率。"""
+        """边计数与节点耗时：边宽 = 经过次数，节点色 = 中位耗时 / 错误率。
+
+        avg_step 是节点在一轮里的平均步序（node_runs.idx），前端据此按实际先后排列。
+        """
         start, end = _window(frm, to)
         params = {"start": start, "end": end, "category": category, "outcome": outcome}
         scope = f"""
@@ -340,6 +344,7 @@ class Queries:
         )
         nodes = await self._rows(
             f"""select n.node, count(*) as n,
+                       round(avg(n.idx)::numeric, 2)::float as avg_step,
                        count(*) filter (where n.status = 'error') as errors,
                        count(*) filter (where n.status = 'interrupt') as interrupts,
                        percentile_disc(0.5) within group (order by n.duration_ms)
@@ -399,8 +404,9 @@ def _rates(totals: dict[str, Any]) -> dict[str, float | None]:
     system = int(totals.get("escalated_system") or 0)
     abandoned = int(totals.get("abandoned") or 0)
     escalated = int(totals.get("escalated") or 0)
-    self_denom = resolved + system + abandoned
-    closed_denom = resolved + escalated
+    unresolved = int(totals.get("closed_unresolved") or 0)
+    self_denom = resolved + system + abandoned + unresolved
+    closed_denom = resolved + escalated + unresolved
     return {
         # 系统该负责的部分里，自己解决掉的比例
         "self_service": round(resolved / self_denom, 4) if self_denom else None,

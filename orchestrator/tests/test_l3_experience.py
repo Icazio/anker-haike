@@ -7,7 +7,7 @@ from app.analytics.l3 import episode, metrics
 from app.cases.service import CaseService
 from app.cases.store import CaseConflict
 from app.conversation.reply import OFFER_HUMAN, acknowledge_current_turn, offer_human_after_stream
-from app.conversation.tasks import enqueue, next_task, ordered_intents
+from app.conversation.tasks import CONSULT_ONLY, enqueue, next_task, ordered_intents, settle
 from app.diagnose.localization import (
     normalize,
     part_categories,
@@ -80,7 +80,7 @@ def test_metric_denominator_ratings_and_exclusion():
             ("resolved", 5),
             ("executed_closed", 4),
             ("consult_answered", 3),
-            ("escalated_human", 1),
+            ("escalated", 1),
             ("human_executed", 2),
             ("awaiting_human", None),
             ("in_progress", None),
@@ -168,10 +168,10 @@ def test_complaint_flag_follows_strategy_action_not_only_level():
 
 
 def test_skip_optional_clarify_skips_the_model_card():
-    state = {"text": "充电宝充不进电", "category": "power_bank"}
-    assert differentiated_candidates(get_catalog(), "power_bank", state)
+    state = {"text": "扫地机报错了", "category": "robot_vacuum"}
+    assert differentiated_candidates(get_catalog(), "robot_vacuum", state)
     skipped = {**state, "emotion_actions": ["skip_optional_clarify", "prefer_proposal_over_more_steps"]}
-    assert differentiated_candidates(get_catalog(), "power_bank", skipped) == []
+    assert differentiated_candidates(get_catalog(), "robot_vacuum", skipped) == []
 
 
 def test_tasks_order_dedupe_and_inline_completion():
@@ -183,14 +183,14 @@ def test_tasks_order_dedupe_and_inline_completion():
     assert order == ["refund_request", "replacement_request", "report_problem", "logistics_query"]
     queue, notice = enqueue([], "report_problem", ["logistics_query"], "设备不吸，物流到哪了", "i")
     again, _ = enqueue(queue, "report_problem", ["logistics_query"], "同一个问题", "i2")
-    assert len(again) == 2 and "设备排障 → 物流查询" in notice
+    assert len(again) == 2 and "device troubleshooting → delivery status" in notice
     # An inline read must not finish the active diagnostic task.
     unchanged, task = next_task(queue, "logistics_query")
     assert task is None and unchanged[0]["status"] == "active"
     finished, task = next_task(queue, "report_problem")
     assert finished[0]["status"] == "done" and task["intent"] == "logistics_query"
-    a = BusinessContext().accept("DEMO-X10-001", "a")
-    b = a.accept("DEMO-CN-003", "b")
+    a = BusinessContext().accept("Anker016", "a")
+    b = a.accept("Anker013", "b")
     queue, _ = enqueue([], "report_problem", ["logistics_query"], "设备不吸，查物流", "a", business=a)
     queue, _ = enqueue(queue, "order_query", ["logistics_query"], "型号和物流", "b", business=b)
     assert len([t for t in queue if t["intent"] == "logistics_query"]) == 2
@@ -199,9 +199,9 @@ def test_tasks_order_dedupe_and_inline_completion():
     assert queue[1]["status"] == "pending"
     checked, _ = next_task(queue, "logistics_query", business=b, task_id=queue[1]["task_id"])
     assert checked[1]["status"] == "pending"
-    assert task_business(queue[1], b).bind("warranty.check").params == {"order_no": "DEMO-X10-001"}
+    assert task_business(queue[1], b).bind("warranty.check").params == {"order_no": "Anker016"}
     assert task_business({"task_id": "old", "quote": "查物流"}, b).status == "missing"
-    assert task_business({"task_id": "old", "quote": "查 DEMO-X10-001 物流"}, b).bind("warranty.check").params == {"order_no": "DEMO-X10-001"}
+    assert task_business({"task_id": "old", "quote": "查 Anker016 物流"}, b).bind("warranty.check").params == {"order_no": "Anker016"}
 
 
 def test_vision_vocabulary_quality_and_prior():
@@ -213,7 +213,7 @@ def test_vision_vocabulary_quality_and_prior():
             ]
         )
     )
-    assert signature_plans(result) == ["rv_suction_hair_wrap"]
+    assert signature_plans(result) == ["qa_rv_0272", "qa_rv_0189", "qa_rv_0408"]
     assert (
         result["findings"][1]["part"] == "其他"
         and result["findings"][1]["raw"]["part"] == "未知零件"
@@ -221,7 +221,7 @@ def test_vision_vocabulary_quality_and_prior():
     result["image_quality"]["usable"] = False
     assert signature_plans(result) == []
     blurry = normalize(FaultLocalization(image_quality={"usable": False, "reasons": ["blurry"]}))
-    assert "对焦" in blurry["image_quality"]["guidance"][0]
+    assert "focus" in blurry["image_quality"]["guidance"][0]  # 客户可见，英文（D2）
 
 
 def test_vision_unknown_and_evidence_gate_plan_prior():
@@ -273,10 +273,10 @@ def test_category_parts_are_confirmable_hints_from_known_parts():
     )
     # 按 finding 归因：没命中签名的观察也保留，plan_ids 为空
     assert [(f["part"], ids) for f, ids in signature_matches(wrapped)] == [
-        ("滚刷", ["rv_suction_hair_wrap"]),
+        ("滚刷", ["qa_rv_0272", "qa_rv_0189", "qa_rv_0408"]),
         ("轮组", []),
     ]
-    assert signature_plans(wrapped) == ["rv_suction_hair_wrap"]
+    assert signature_plans(wrapped) == ["qa_rv_0272", "qa_rv_0189", "qa_rv_0408"]
 
 
 def test_model_hint_readable_is_derived_not_self_reported():
@@ -294,7 +294,7 @@ async def test_manual_close_commitment_and_reopen():
     with pytest.raises(CaseConflict):
         await service.close(cid, user_confirmed=True, external_status="created")
     for _ in range(2):
-        row = await service.record_commitment(cid, "申请换货", "clause")
+        row = await service.record_commitment(cid, "服务单已提交，人工处理中", "receipt")
     assert len([e for e in row["events"] if e["type"] == "commitment"]) == 1
     with pytest.raises(ValueError):
         await service.record_commitment(cid, "赔偿100元", "model")
@@ -319,4 +319,96 @@ async def test_retake_limit_and_skip_path(monkeypatch):
     third = await l3.prepare_retake(state | second)
     assert third["l3_route"] == "summarize" and third["escalate_reason"] == "R7"
     skipped = await l3.apply_l3_action(state, {"kind": "skip_retake"}, first["pending_card"])
-    assert skipped["l3_route"] == "retrieve" and skipped["retake_skipped"]
+    # 跳过补拍回到消歧：首封带图时读图早于产品确认（T55 实测），直接检索会因无查询中断
+    assert skipped["l3_route"] == "disambiguate" and skipped["retake_skipped"]
+
+
+def test_a_task_waiting_for_a_colleague_releases_the_queue_but_is_not_done():
+    """办不了的诉求转人工后：任务记 waiting_human（不是 done），队列继续推进其他任务，重复入队不生效。
+
+    2026-10-09 T9：order_change 一直 active，排在后面的 logistics_query 永远 pending。
+    """
+    queue, _ = enqueue([], "order_change", ["logistics_query"], "If you have not shipped, don't", "i")
+    assert [(t["intent"], t["status"]) for t in queue] == [("order_change", "active"), ("logistics_query", "pending")]
+    queue, task = next_task(queue, "order_change", outcome="waiting_human")
+    assert task["intent"] == "logistics_query"
+    assert [(t["intent"], t["status"]) for t in queue] == [("order_change", "waiting_human"), ("logistics_query", "active")]
+    queue, task = next_task(queue, "logistics_query")
+    assert task is None and [t["status"] for t in queue] == ["waiting_human", "done"]
+    # 客户把同一句话再说一遍：等人工的任务不再当成新任务加入
+    again, _ = enqueue(queue, "order_change", ["logistics_query"], "If you have not shipped, don't", "i2")
+    assert [t["status"] for t in again if t["intent"] == "order_change"] == ["waiting_human"]
+
+
+async def test_hand_off_is_deduplicated_by_request_content():
+    """交接 = 状态 + 诉求记录 + 摘要一次写入；同一诉求重试不重复，改口记为变更，驳回后可再入队。"""
+    cases = CaseService()
+    row = await cases.open("s", "i", {"sku": "T2292"})
+    summary = {"reason": {"rule_id": "R6", "text": "x"}}
+    row = await cases.hand_off(row["case_id"], requested="order_change", quote="hold it", input_id="i1",
+                               reason="需人工", summary_of=lambda r: summary)
+    assert row["status"] == "awaiting_approval"
+    assert [e["type"] for e in row["events"]] == ["status_changed", "review_requested", "handoff_summary"]
+    again = await cases.hand_off(row["case_id"], requested="order_change", quote="hold it", input_id="i2",
+                                 reason="需人工", summary_of=lambda r: summary)
+    assert again["revision"] == row["revision"]
+    changed = await cases.hand_off(row["case_id"], requested="order_change", quote="cancel it", input_id="i3",
+                                   reason="需人工", summary_of=lambda r: {**summary, "reason": {"rule_id": "R6", "text": "cancel it"}})
+    assert [e["type"] for e in changed["events"]][-2:] == ["request_changed", "handoff_summary"]
+    assert changed["events"][-2]["payload"]["quote"] == "cancel it"
+    await cases.decide(row["case_id"], decision_id="d1", decision="reject", actor="agent:a",
+                       expected_revision=changed["revision"], note="no")
+    after = await cases.hand_off(row["case_id"], requested="order_change", quote="cancel it again", input_id="i4",
+                                 reason="需人工", summary_of=lambda r: summary)
+    assert after["status"] == "awaiting_approval"
+    assert [e["payload"]["to"] for e in after["events"] if e["type"] == "status_changed"][-3:] == ["rejected", "proposing", "awaiting_approval"]
+
+
+def test_waiting_for_a_colleague_only_lets_read_only_tasks_continue():
+    """等人工时只推进查询类任务：排障、办理要等人工结论；人工决定后 settle 关联任务。"""
+    queue, _ = enqueue([], "replacement_request", ["report_problem", "logistics_query"], "换货，顺便排查，物流到哪了", "i")
+    queue, task = next_task(queue, "replacement_request", outcome="waiting_human", only=CONSULT_ONLY)
+    assert task["intent"] == "logistics_query"
+    assert {t["intent"]: t["status"] for t in queue} == {
+        "replacement_request": "waiting_human", "report_problem": "pending", "logistics_query": "active"}
+    queue, task = next_task(queue, "logistics_query", only=CONSULT_ONLY)
+    assert task is None and {t["intent"]: t["status"] for t in queue}["report_problem"] == "pending"
+    settled = settle(queue, "replacement_request", "done")
+    assert {t["intent"]: t["status"] for t in settled}["replacement_request"] == "done"
+    # 等人工的诉求改口：任务原话跟着更新，不另起一个任务
+    queue, _ = enqueue([], "order_change", ["logistics_query"], "hold it", "a")
+    queue, _ = next_task(queue, "order_change", outcome="waiting_human")
+    queue, _ = enqueue(queue, "order_change", [], "cancel it", "b")
+    held = [t for t in queue if t["intent"] == "order_change"]
+    assert [(t["status"], t["quote"]) for t in held] == [("waiting_human", "cancel it")]
+
+
+def test_remedy_closed_completes_the_active_task_even_when_it_is_troubleshooting():
+    """T29 / T38 复跑：排障走完 → R1 → 过保。队列里只有 report_problem（active）和 order_query（pending），
+    过保结论要把当前 active 任务记 done，让 order_query 得以推进，而不是留 active 把会话标 done。"""
+    from app.sessions.l3 import remedy_closed
+
+    state = {"requested_remedy": None, "task_queue": [
+        {"task_id": "a", "intent": "report_problem", "status": "active"},
+        {"task_id": "b", "intent": "order_query", "status": "pending"},
+    ]}
+    assert remedy_closed(state)["completed_task_intent"] == "report_problem"
+    state = {"requested_remedy": "replace", "task_queue": [
+        {"task_id": "a", "intent": "replacement_request", "status": "active"},
+        {"task_id": "b", "intent": "report_problem", "status": "pending"},
+    ]}
+    assert remedy_closed(state)["completed_task_intent"] == "replacement_request"
+
+
+async def test_prepared_summary_can_still_enter_the_review_queue():
+    """质保无法确认 → escalated_summary（摘要已备好）→ summarize 的 hand_off 入人工队列。
+    这条迁移以前不存在，排障走完、没有订单号、跳过凭证的每一单都在 summarize 撞 CaseConflict（2026-10-10 复测）。"""
+    cases = CaseService()
+    row = await cases.open("s", "i", {"sku": "T2080"})
+    row = await cases.transition(row["case_id"], "escalated_summary", "质保状态无法确认")
+    summary = {"reason": {"rule_id": "R6", "text": "x"}}
+    row = await cases.hand_off(row["case_id"], requested="human_support", quote="", input_id="i1",
+                               reason="需人工", summary_of=lambda r: summary)
+    assert row["status"] == "awaiting_approval"
+    assert [e["payload"]["to"] for e in row["events"] if e["type"] == "status_changed"] == ["escalated_summary", "awaiting_approval"]
+    assert any(e["type"] == "handoff_summary" for e in row["events"])

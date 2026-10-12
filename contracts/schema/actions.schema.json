@@ -71,160 +71,6 @@
       "title": "ActionResult",
       "type": "object"
     },
-    "AnswerObservationAction": {
-      "additionalProperties": false,
-      "properties": {
-        "action_id": {
-          "description": "前端生成的 uuid，重试时复用，服务端据此幂等",
-          "title": "Action Id",
-          "type": "string"
-        },
-        "card_id": {
-          "title": "Card Id",
-          "type": "string"
-        },
-        "expected_version": {
-          "minimum": 0,
-          "title": "Expected Version",
-          "type": "integer"
-        },
-        "input_token": {
-          "title": "Input Token",
-          "type": "string"
-        },
-        "kind": {
-          "const": "answer_observation",
-          "title": "Kind",
-          "type": "string"
-        },
-        "payload": {
-          "$ref": "#/$defs/AnswerObservationPayload"
-        },
-        "target_issue_id": {
-          "title": "Target Issue Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "action_id",
-        "expected_version",
-        "target_issue_id",
-        "input_token",
-        "card_id",
-        "kind",
-        "payload"
-      ],
-      "title": "AnswerObservationAction",
-      "type": "object"
-    },
-    "AnswerObservationPayload": {
-      "additionalProperties": false,
-      "description": "observation_card 的作答；option_id 必须是该卡声明过的选项。\nkind=unknown 的选项记为「答不上来」，不写成观察事实。",
-      "properties": {
-        "observation_id": {
-          "title": "Observation Id",
-          "type": "string"
-        },
-        "option_id": {
-          "title": "Option Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "observation_id",
-        "option_id"
-      ],
-      "title": "AnswerObservationPayload",
-      "type": "object"
-    },
-    "ConfirmContextAction": {
-      "additionalProperties": false,
-      "properties": {
-        "action_id": {
-          "description": "前端生成的 uuid，重试时复用，服务端据此幂等",
-          "title": "Action Id",
-          "type": "string"
-        },
-        "card_id": {
-          "title": "Card Id",
-          "type": "string"
-        },
-        "expected_version": {
-          "minimum": 0,
-          "title": "Expected Version",
-          "type": "integer"
-        },
-        "input_token": {
-          "title": "Input Token",
-          "type": "string"
-        },
-        "kind": {
-          "const": "confirm_context",
-          "title": "Kind",
-          "type": "string"
-        },
-        "payload": {
-          "$ref": "#/$defs/ConfirmContextPayload"
-        },
-        "target_issue_id": {
-          "title": "Target Issue Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "action_id",
-        "expected_version",
-        "target_issue_id",
-        "input_token",
-        "card_id",
-        "kind",
-        "payload"
-      ],
-      "title": "ConfirmContextAction",
-      "type": "object"
-    },
-    "ConfirmContextPayload": {
-      "additionalProperties": false,
-      "properties": {
-        "channel": {
-          "maxLength": 50,
-          "minLength": 1,
-          "title": "Channel",
-          "type": "string"
-        },
-        "platform": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Platform"
-        },
-        "region_purchase": {
-          "maxLength": 50,
-          "minLength": 1,
-          "title": "Region Purchase",
-          "type": "string"
-        },
-        "region_use": {
-          "maxLength": 50,
-          "minLength": 1,
-          "title": "Region Use",
-          "type": "string"
-        }
-      },
-      "required": [
-        "region_purchase",
-        "region_use",
-        "channel"
-      ],
-      "title": "ConfirmContextPayload",
-      "type": "object"
-    },
     "ConfirmProposalAction": {
       "additionalProperties": false,
       "properties": {
@@ -338,7 +184,8 @@
           "items": {
             "enum": [
               "order_no",
-              "channel",
+              "seller",
+              "country",
               "purchase_date",
               "amount"
             ],
@@ -457,26 +304,6 @@
       "title": "NewIssueAction",
       "type": "object"
     },
-    "ObservationAnswer": {
-      "additionalProperties": false,
-      "description": "用户对某个步骤观察的选择；option_id 必须是该步骤声明过的选项。",
-      "properties": {
-        "observation_id": {
-          "title": "Observation Id",
-          "type": "string"
-        },
-        "option_id": {
-          "title": "Option Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "observation_id",
-        "option_id"
-      ],
-      "title": "ObservationAnswer",
-      "type": "object"
-    },
     "RateSatisfactionAction": {
       "additionalProperties": false,
       "properties": {
@@ -567,7 +394,7 @@
           "default": null,
           "title": "Amount"
         },
-        "channel": {
+        "country": {
           "anyOf": [
             {
               "type": "string"
@@ -577,7 +404,7 @@
             }
           ],
           "default": null,
-          "title": "Channel"
+          "title": "Country"
         },
         "order_no": {
           "anyOf": [
@@ -602,6 +429,18 @@
           ],
           "default": null,
           "title": "Purchase Date"
+        },
+        "seller": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seller"
         }
       },
       "title": "ReceiptFields",
@@ -905,6 +744,43 @@
       "title": "SkipRetakePayload",
       "type": "object"
     },
+    "StepAnswer": {
+      "additionalProperties": false,
+      "description": "问句卡 / 材料卡的回答：选项原文或短答；material_request 可声明暂时没有。",
+      "properties": {
+        "option": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Option"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "unavailable": {
+          "default": false,
+          "title": "Unavailable",
+          "type": "boolean"
+        }
+      },
+      "title": "StepAnswer",
+      "type": "object"
+    },
     "StepFeedbackAction": {
       "additionalProperties": false,
       "properties": {
@@ -953,15 +829,35 @@
     },
     "StepFeedbackPayload": {
       "additionalProperties": false,
+      "description": "action 卡交 feedback；question / material_request 卡交 answer；statement 卡两者都可省（确认已读）。\n服务端按卡片 kind 校验组合（sessions/router.py）。",
       "properties": {
-        "feedback": {
-          "enum": [
-            "solved",
-            "not_solved",
-            "cannot_do"
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepAnswer"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Feedback",
-          "type": "string"
+          "default": null
+        },
+        "feedback": {
+          "anyOf": [
+            {
+              "enum": [
+                "solved",
+                "not_solved",
+                "cannot_do"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feedback"
         },
         "note": {
           "anyOf": [
@@ -974,18 +870,8 @@
           ],
           "default": null,
           "title": "Note"
-        },
-        "observations": {
-          "items": {
-            "$ref": "#/$defs/ObservationAnswer"
-          },
-          "title": "Observations",
-          "type": "array"
         }
       },
-      "required": [
-        "feedback"
-      ],
       "title": "StepFeedbackPayload",
       "type": "object"
     }
@@ -993,8 +879,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "discriminator": {
     "mapping": {
-      "answer_observation": "#/$defs/AnswerObservationAction",
-      "confirm_context": "#/$defs/ConfirmContextAction",
       "confirm_proposal": "#/$defs/ConfirmProposalAction",
       "confirm_receipt": "#/$defs/ConfirmReceiptAction",
       "decline_proposal": "#/$defs/DeclineProposalAction",
@@ -1017,9 +901,6 @@
       "$ref": "#/$defs/StepFeedbackAction"
     },
     {
-      "$ref": "#/$defs/AnswerObservationAction"
-    },
-    {
       "$ref": "#/$defs/ConfirmReceiptAction"
     },
     {
@@ -1033,9 +914,6 @@
     },
     {
       "$ref": "#/$defs/ResumeIssueAction"
-    },
-    {
-      "$ref": "#/$defs/ConfirmContextAction"
     },
     {
       "$ref": "#/$defs/ConfirmProposalAction"

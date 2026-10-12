@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 
 class Strict(BaseModel):
@@ -37,10 +37,8 @@ EscalateSubstage = Literal["collect_receipt", "extract", "confirm_fields", "look
 PendingKind = Literal[
     "select_product",
     "step_feedback",
-    "answer_observation",
     "upload_receipt",
     "confirm_receipt",
-    "confirm_context",
     "confirm_proposal",
     "upload_retake",
     "rate_satisfaction",
@@ -56,8 +54,8 @@ ReceiptStatus = Literal[
     "order_verified",
     "order_product_mismatch",
     "needs_manual_check",
-    "channel_in_directory",
-    "channel_unknown",
+    "dealer_authorized",
+    "dealer_unauthorized",
 ]
 
 EmotionLevel = Literal["calm", "anxious", "dissatisfied", "angry", "complaint_risk"]
@@ -95,25 +93,23 @@ class ProductCandidate(Strict):
     in_scope: bool
 
 
-class ObservationOption(Strict):
-    option_id: str
-    label: str
-    kind: Literal["finding", "unknown"] = "finding"
+class StepMedia(Strict):
+    """官方 Q&A 步骤里附带的图片 / 视频 / 文章链接（原样引用，不进模型上下文）。"""
+
+    url: str
+    kind: Literal["image", "video", "link"]
 
 
-class StepObservation(Strict):
-    """步骤要收集的检查结果：一个问题与有限选项。功能是否恢复仍由 feedback 三态表达。"""
-
-    observation_id: str
-    question: str
-    options: list[ObservationOption] = Field(min_length=2)
+# 官方 Q&A 的一个段落对用户意味着什么（2026-10-09 第二批 I4）：要回答、要操作、只需知道、要提供材料、还是要交人工。
+StepKind = Literal["action", "question", "statement", "material_request", "handoff"]
 
 
-class ObservationAnswer(Strict):
-    """用户对某个步骤观察的选择；option_id 必须是该步骤声明过的选项。"""
+class StepAnswer(Strict):
+    """问句卡 / 材料卡的回答：选项原文或短答；material_request 可声明暂时没有。"""
 
-    observation_id: str
-    option_id: str
+    option: str | None = None
+    text: str | None = None
+    unavailable: bool = False
 
 
 class TroubleshootStep(Strict):
@@ -131,8 +127,11 @@ class TroubleshootStep(Strict):
     # 这一步真正的出处。evidence_ids 是同 doc 的宽集合（一步清理滚刷会带上滤网、尘盒的命中），
     # 主引用按 instruction_src 的锚点认出，前端默认只展开它，其余折叠。
     primary_evidence_id: str | None = None
-    # 可选：需要判别结果的步骤声明其观察问题；旧客户端忽略该字段仍可只反馈三态
-    observations: list[StepObservation] = Field(default_factory=list)
+    media: list[StepMedia] = Field(default_factory=list)
+    kind: StepKind = "action"
+    options: list[str] = Field(default_factory=list)
+    # 这一步之前的说明段落（标题、机制说明、条件说明）：只展示，不要求反馈，不计已操作
+    context: str | None = None
 
 
 class EvidenceItem(Strict):
@@ -148,7 +147,8 @@ class EvidenceItem(Strict):
 
 class ReceiptFields(Strict):
     order_no: str | None = None
-    channel: str | None = None
+    seller: str | None = None
+    country: str | None = None
     purchase_date: str | None = None
     amount: str | None = None
 
@@ -163,10 +163,19 @@ class ReceiptOutcome(Strict):
 
 
 class ExecutedStep(Strict):
+    """排查记录的一条：操作步骤带 feedback；问句卡（2026-10-10 段落拆分后的诊断问句、确认问句）带 answer，
+    是客户选的选项或短答原文。两者恰有一个。"""
+
     step_id: str
     title: str
-    feedback: Feedback
-    observed: list[str] = Field(default_factory=list, description="该步骤记录到的观察结果（选项文字）")
+    feedback: Feedback | None = None
+    answer: str | None = None
+
+    @model_validator(mode="after")
+    def _feedback_or_answer(self) -> ExecutedStep:
+        if (self.feedback is None) == (self.answer is None):
+            raise ValueError("ExecutedStep needs exactly one of feedback / answer")
+        return self
 
 
 class EscalationReason(Strict):
@@ -183,70 +192,34 @@ class ModelTraceItem(Strict):
     attempts: int = Field(ge=1)
 
 
-class Clause(Strict):
-    clause_id: str
-    text: str
-    source_doc: str
-    doc_version: str
-    policy_version: str
-    # 条款出处的可点链接。真实政策必须有，演示条款留空；用户可见文本只允许引用有出处的条款。
-    source_url: str | None = None
+WarrantyStatus = Literal["in_warranty", "out_of_warranty", "unauthorized_dealer", "unknown"]
 
 
-class PolicyCondition(Strict):
-    name: str
-    expected: Any
-    actual: Any
-    met: bool
+class WarrantyDecision(Strict):
+    """主办方 SOP「订单质保判断」：有订单看订单质保结束日期；查不到订单看经销商名录（授权 = 购买日起 12 个月）。"""
 
-
-# 官方处置阶梯（anker.com / us.eufy.com 售后政策）：先寄配件，再维修，再换翻新/新机，
-# 最后才是按使用时长部分退款；过保另有付费维修。顺序即优先级，propose 按此排序。
-Remedy = Literal["parts", "repair", "replace", "refund", "paid_repair", "none"]
-
-REMEDY_LADDER: tuple[str, ...] = ("parts", "repair", "replace", "refund", "paid_repair")
-
-
-class RemedyDecision(Strict):
-    remedy: Remedy
-    eligible: bool
-    auto_allowed: bool
-    cost_bearer: Literal["company", "customer", "shared"] | None = None
-    conditions: list[PolicyCondition] = Field(default_factory=list)
-    clauses: list[Clause] = Field(default_factory=list)
-
-
-class PolicyDecision(Strict):
-    policy_id: str | None = None
-    policy_version: str
-    matched: bool = False
-    within_warranty: bool | None = None
+    status: WarrantyStatus
+    basis: Literal["order", "dealer", "none"]
     warranty_end: date | None = None
-    fault_class: Literal["quality", "user_damage", "safety", "unknown"]
-    remedies: list[RemedyDecision] = Field(default_factory=list)
-    exclusions_hit: list[dict] = Field(default_factory=list)
-    needs_human: bool = False
-    needs_human_reasons: list[str] = Field(default_factory=list)
-    missing_inputs: list[str] = Field(default_factory=list)
-    trace_id: str
+    as_of: date
+    order_no: str | None = None
+    sku: str | None = None
+    dealer: str | None = None
+    country: str | None = None
+    reason: str
 
 
-class DispatchEstimate(Strict):
-    working_days: int = Field(gt=0)
-    action: Literal["replacement.create"] = "replacement.create"
-    actions_version: str
+# 服务单类型：主办方只要求「把换货 / 退款 / 补发信息提交到工具，再转人工」；承运商调查对应 D3。
+ServiceOrderType = Literal["replace", "refund", "reship", "carrier_investigation"]
+SERVICE_ORDER_TYPES: tuple[str, ...] = ("replace", "refund", "reship", "carrier_investigation")
 
 
 class ProposalOption(Strict):
     option_id: str
-    remedy: Remedy
+    type: ServiceOrderType
     title: str
-    cost_bearer: Literal["company", "customer", "shared"] | None = None
-    conditions: list[PolicyCondition] = Field(default_factory=list)
-    clauses: list[Clause] = Field(default_factory=list)
-    auto_allowed: bool = False
-    source: Literal["policy", "human"] = "policy"
-    dispatch_estimate: DispatchEstimate | None = None
+    detail: str = ""
+    source: Literal["sop", "human"] = "sop"
 
 
 class GateCheck(Strict):
@@ -266,10 +239,9 @@ class Receipt(Strict):
     service_order_no: str | None = None
     tracking_no: str | None = None
     order_no: str | None = None
-    eta_days: int | None = None
     next_step: str = ""
     updated_at: str | None = None
-    source: str = "业务系统（模拟）"
+    source: str = "after-sales tool"
     data: dict = Field(default_factory=dict)
 
 
@@ -315,9 +287,18 @@ class ImageQuality(Strict):
     guidance: list[str] = Field(default_factory=list)
 
 
+# 这张图实际是什么。**不是** ImageRefItem.purpose —— 那个字段记的是「上传时系统在等什么」
+# （前端按 pendingKind 填），不是图片内容。两者混用过一次：订单截图在普通首问里以 purpose=fault
+# 上传，于是既被当故障照片做曝光门控，又被 evidence 记成「故障图片/视频」凑齐了换货证据四件套。
+# document = 订单 / 发票 / 收据 / 配送详情等以文字为主的凭证类图片。
+ImageContentKind = Literal["fault_photo", "document", "other"]
+
+
 class FaultLocalization(Strict):
     findings: list[Finding] = Field(default_factory=list)
     image_quality: ImageQuality = Field(default_factory=lambda: ImageQuality(usable=True))
+    # 逐图定性（与读图送进去的图同序）。空列表 = 没读图或读图失败，调用方按「未知」处理。
+    content_kinds: list[ImageContentKind] = Field(default_factory=list)
     model_hint: str | None = None
     # 铭牌所在的九宫格，用于「读不清就裁这一格放大再看一次」；定位一个小方块远比读清 14px 小字容易
     model_hint_cell: CellField = None
@@ -347,6 +328,26 @@ CaseStatus = Literal[
 ]
 
 
+class PendingRequest(Strict):
+    """交接时队列里尚未办结的一项客户诉求。"""
+
+    intent: str
+    quote: str
+    status: str
+
+
+class HandoffBusiness(Strict):
+    """交接摘要的业务块（2026-10-09 I7 / I8）：按业务类型带具体字段，已知、缺失、待办分别标明。
+
+    kind 决定人工先看什么：订单暂停看订单 / 包裹 / 条件；设备故障看产品 / 症状 / 已做操作；配件采购看型号与部件。
+    """
+
+    kind: Literal["device_fault", "order_change", "parts_purchase", "warranty_review", "safety", "unknown"]
+    known: dict[str, str] = Field(default_factory=dict)
+    missing: list[str] = Field(default_factory=list)
+    pending_requests: list[PendingRequest] = Field(default_factory=list)
+
+
 class EscalationSummary(Strict):
     """escalation_summary 的唯一层级：summary 对象（08 §5）。"""
 
@@ -360,9 +361,10 @@ class EscalationSummary(Strict):
     receipt: ReceiptOutcome
     model_trace: list[ModelTraceItem] = Field(default_factory=list)
     case_id: str | None = None
-    policy_decision_brief: dict | None = None
+    warranty: WarrantyDecision | None = None
     recommended_options: list[ProposalOption] = Field(default_factory=list)
     gate_result: GateResult | None = None
     task_queue: list[dict] = Field(default_factory=list)
     emotion_track: list[dict] = Field(default_factory=list)
     draft_reply: str | None = None
+    business: HandoffBusiness | None = None

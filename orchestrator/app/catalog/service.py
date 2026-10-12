@@ -32,6 +32,7 @@ class _Strict(BaseModel):
 
 class CategorySpec(_Strict):
     name: str
+    name_en: str | None = None  # 客户可见文字用（D2：客户可见输出英文）
     line: str  # 官网产品线：Anker Charging / Anker SOLIX / Anker eufy / Anker soundcore / Anker eufyMake
     in_scope: bool
     keywords: list[str] = Field(default_factory=list)
@@ -72,6 +73,9 @@ def load_catalog_config(path: str | Path) -> CatalogConfig:
     return cfg
 
 
+# 订单 SKU = PN + 颜色 / 区域后缀：T8D04121、T2351V11-F、T81701W1
+_FULL_SKU = re.compile(r"\b(T8D\d{2}|T\d{4})[0-9A-Z]{2,5}(?:-[A-Z])?\b")
+
 _SEP = re.compile(r"[\s\-_/·.，,。！!？?：:；;（）()\[\]【】「」]+")
 
 
@@ -82,7 +86,12 @@ def normalize(text: str) -> str:
 
 def _alias_regex(alias: str) -> re.Pattern[str]:
     """别名作为句中片段：各 token 间允许任意分隔符，两端不能紧贴 ASCII 字母数字（x 不匹配 x10）。"""
-    tokens = [re.escape(tok) for tok in _SEP.split(alias.casefold()) if tok]
+    # 字母与数字交界也允许分隔：客户会写「omni c 20」「x 10」「t 2351」
+    tokens = [
+        re.escape(part)
+        for tok in _SEP.split(alias.casefold()) if tok
+        for part in re.findall(r"[a-z]+|\d+|[^a-z\d]+", tok)
+    ]
     body = r"[\s\-_/·.]*".join(tokens)
     return re.compile(rf"(?<![a-z0-9]){body}(?![a-z0-9])")
 
@@ -221,6 +230,9 @@ class ProductCatalog:
         q_full = normalize(text)
         if not q_full:
             return []
+        # 0) 完整订单 SKU（T8D04121、T2351V11-F）按 PN 前缀归一
+        for match in _FULL_SKU.finditer(text.upper()):
+            add(self._alias_index.get(normalize(match.group(1)), []))
         # 1) 整句就是一个型号 / 别名
         add(self._alias_index.get(q_full, []))
         # 2) 别名作为完整片段出现在句中；长别名先占位，被占用区间内的短别名不再计

@@ -21,61 +21,7 @@ class NextOn(_Strict):
     cannot_do: str
 
 
-class ObservationOption(_Strict):
-    """一个有限的检查结果选项。kind=unknown 表示「还没观察完 / 无法判断」，只记录不写成事实。"""
-
-    option_id: str = Field(pattern=r"^[a-z0-9_]+$")
-    label: str = Field(min_length=1)
-    kind: Literal["finding", "unknown"] = "finding"
-    # 用户自由文本回答时用于匹配的说法；label 本身总是可匹配
-    phrases: list[str] = Field(default_factory=list)
-
-
-class InterviewLink(_Strict):
-    """已有问诊问题（symptom_taxonomy.discriminators）的 yes / no 回答与观察选项的对应关系。"""
-
-    question: str = Field(min_length=1)
-    answers: dict[Literal["yes", "no"], str]
-
-
-class StepObservation(_Strict):
-    """步骤要收集的检查结果：一个问题 + 有限选项。功能是否恢复仍由 feedback 三态表达。"""
-
-    observation_id: str = Field(pattern=r"^[a-z0-9_]+$")
-    question: str = Field(min_length=1)
-    options: list[ObservationOption] = Field(min_length=2)
-    interview_links: list[InterviewLink] = Field(default_factory=list)
-    required_resources: list[str] = Field(default_factory=lambda: ["device"])
-    requires_execution: bool = True
-
-    @model_validator(mode="after")
-    def _options_consistent(self) -> StepObservation:
-        ids = [o.option_id for o in self.options]
-        dup = {i for i in ids if ids.count(i) > 1}
-        if dup:
-            raise ValueError(f"observation {self.observation_id}: duplicate option_id {sorted(dup)}")
-        if sum(1 for o in self.options if o.kind == "unknown") > 1:
-            raise ValueError(f"observation {self.observation_id}: at most one unknown option")
-        for link in self.interview_links:
-            for target in link.answers.values():
-                if target not in ids:
-                    raise ValueError(
-                        f"observation {self.observation_id}: interview link -> {target!r} is not an option"
-                    )
-        return self
-
-    def option(self, option_id: str) -> ObservationOption | None:
-        return next((o for o in self.options if o.option_id == option_id), None)
-
-    def finding_ids(self) -> list[str]:
-        return [o.option_id for o in self.options if o.kind == "finding"]
-
-
-class ObservationCondition(_Strict):
-    """计划适用条件：某个观察的结果必须落在 option_ids 之中。"""
-
-    observation_id: str = Field(pattern=r"^[a-z0-9_]+$")
-    option_ids: list[str] = Field(min_length=1)
+StepKind = Literal["action", "question", "statement", "material_request", "handoff"]
 
 
 class PlanStep(_Strict):
@@ -86,16 +32,18 @@ class PlanStep(_Strict):
     caution: str | None = None
     stop_conditions: list[str] = Field(default_factory=list)
     next_on: NextOn
-    observations: list[StepObservation] = Field(default_factory=list)
     required_resources: list[str] = Field(default_factory=lambda: ["device"])
-
-    @model_validator(mode="after")
-    def _observations_unique(self) -> PlanStep:
-        ids = [o.observation_id for o in self.observations]
-        dup = {i for i in ids if ids.count(i) > 1}
-        if dup:
-            raise ValueError(f"step {self.step_id}: duplicate observation_id {sorted(dup)}")
-        return self
+    # 2026-10-09 第二批：段落对用户意味着什么。question 带 options，按 branches（选项 → step_id）分支，
+    # 没列出的选项走 next_on.not_solved；statement / material_request 不计已操作；handoff 不出卡。
+    kind: StepKind = "action"
+    options: list[str] = Field(default_factory=list)
+    branches: dict[str, str] = Field(default_factory=dict)
+    # 问句里表示「还没做 / 不知道」的选项：选它或答非所问的短答时卡片不算答完，带提示重发（B21：「I have not checked」
+    # 不等于检查无异常）。为空则沿用原语义：短答走 next_on。
+    retry_options: list[str] = Field(default_factory=list)
+    source_gap: bool = False
+    # 2026-10-10：「If <条件>, …」开头的操作步骤只在条件成立时适用；进指南前与用户原话核对（app/guide/fact_check.py）
+    condition: str | None = None
 
     @field_validator("instruction_src")
     @classmethod
@@ -129,10 +77,6 @@ class Plan(_Strict):
     applies_to: AppliesTo
     symptom_codes: list[str] = Field(default_factory=list)
     steps: list[PlanStep] = Field(min_length=1)
-    # 观察门槛：requires 全部满足才可用；excluded 任一命中即排除。未知（未观察）时 requires 视为缺失，不视为不满足。
-    requires_observations: list[ObservationCondition] = Field(default_factory=list)
-    excluded_by_observations: list[ObservationCondition] = Field(default_factory=list)
-    diagnostic_observations: list[StepObservation] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _steps_consistent(self) -> Plan:
@@ -149,6 +93,13 @@ class Plan(_Strict):
                     )
                 if target == s.step_id:
                     raise ValueError(f"step {s.step_id}.next_on.{fb} points to itself")
+            for option, target in s.branches.items():
+                if target not in allowed or target == s.step_id:
+                    raise ValueError(f"step {s.step_id}.branches[{option!r}] -> {target!r} is not another step_id of this plan")
+                if option not in s.options:
+                    raise ValueError(f"step {s.step_id}.branches[{option!r}] is not one of its options")
+            if not set(s.retry_options) <= set(s.options):
+                raise ValueError(f"step {s.step_id}.retry_options must be among its options")
         return self
 
     def step(self, step_id: str) -> PlanStep:
@@ -158,10 +109,13 @@ class Plan(_Strict):
         return self.steps[0]
 
     def next_step_id(
-        self, step_id: str, feedback: Literal["solved", "not_solved", "cannot_do"]
+        self, step_id: str, feedback: Literal["solved", "not_solved", "cannot_do"], *, option: str | None = None,
     ) -> str:
-        """规则推进：返回下一 step_id 或 DONE / EXHAUSTED（09 §3.2）。"""
-        return getattr(self.step(step_id).next_on, feedback)
+        """按反馈和已回答选项沿图推进；重放与即时反馈使用同一条边。"""
+        step = self.step(step_id)
+        if step.kind == "question" and option in step.branches:
+            return step.branches[option]
+        return getattr(step.next_on, feedback)
 
     def applies(self, *, category: str, sku: str | None = None) -> bool:
         if self.applies_to.category != category or sku in self.applies_to.excluded_skus:
@@ -169,26 +123,6 @@ class Plan(_Strict):
         return self.applies_to.scope == "category_generic" or (
             sku is not None and sku in self.applies_to.sku_list
         )
-
-    def observations(self) -> list[StepObservation]:
-        return [*self.diagnostic_observations, *(o for s in self.steps for o in s.observations)]
-
-    def observation_gate(self, known: dict[str, str]) -> tuple[str, list[str]]:
-        """按已知观察（observation_id → option_id）判断：("ok"|"excluded"|"missing", 缺失的 observation_id)。
-
-        未观察到的结果不能当作阴性：只会让计划「缺失」，不会让它「排除」或「满足」。
-        """
-        for cond in self.excluded_by_observations:
-            if known.get(cond.observation_id) in cond.option_ids:
-                return "excluded", []
-        missing = []
-        for cond in self.requires_observations:
-            value = known.get(cond.observation_id)
-            if value is None:
-                missing.append(cond.observation_id)
-            elif value not in cond.option_ids:
-                return "excluded", []
-        return ("missing", missing) if missing else ("ok", [])
 
 
 class EvidenceEntry(_Strict):

@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, uuid5
 
 SELF_MANAGED = {"resolved", "executed_closed", "consult_answered"}
-TERMINAL = SELF_MANAGED | {"escalated_human", "abandoned", "human_executed"}
+TERMINAL = SELF_MANAGED | {"escalated", "closed_unresolved", "abandoned", "human_executed"}
 
 # The live dashboard and retention snapshot use the same final metric projection.
 METRIC_ROWS_SQL = """select e.episode_id,e.session_id,e.issue_id,e.case_id,e.source,e.updated_at,
@@ -13,37 +13,31 @@ METRIC_ROWS_SQL = """select e.episode_id,e.session_id,e.issue_id,e.case_id,e.sou
         when 'intent_correct'=any(a.reason_tags) then true end
         from analytics.cases a where a.session_id=e.session_id order by a.labeled_at desc limit 1),e.intent_correct) as intent_correct,
     h.human_involved,
-    case when c.status='closed' then case when h.human_involved then 'human_executed' else 'executed_closed' end
-        when c.status in ('closed_unresolved','escalated_summary') then 'escalated_human'
+    case when c.case_id is null or c.updated_at <= e.updated_at then e.outcome
+        when c.status='closed' then case when h.human_involved then 'human_executed' else 'executed_closed' end
+        when c.status='closed_unresolved' then 'closed_unresolved'
+        when c.status='escalated_summary' then 'escalated'
         when c.status in ('awaiting_approval','approved','rejected') then 'awaiting_human'
-        when c.case_id is not null then 'in_progress' else e.outcome end as outcome
+        else 'in_progress' end as outcome
     from service_episodes e left join satisfaction_ratings r using(session_id,issue_id)
     left join cases c on c.case_id=e.case_id
     cross join lateral (select e.human_involved
         or exists(select 1 from case_events ce where ce.case_id=c.case_id and ce.actor like 'agent:%%')
         or exists(select 1 from human_decisions hd where hd.case_id=c.case_id) as human_involved) h
 """
+# 口径：episode 的 outcome 由 analytics/outcome.derive_outcome 在 commit_issue 时按当时的案件行与任务队列算出；
+# 案件在那之后又被人工改过（c.updated_at 更新）才按案件状态重算，否则「案件结了但诉求没办完」会被案件状态覆盖（T53）。
 
 
 def episode(values, case=None):
-    from app.analytics.derive import classify
+    from app.analytics.outcome import derive_outcome
 
-    outcome, _ = classify(values, done_reason="completed", pending=bool(values.get("pending_card")))
     human = bool(case and case.get("decisions")) or values.get("human_involved", False)
     if case:
-        if case["status"] == "closed":
-            human = human or any(
-                e.get("actor", "").startswith("agent:") for e in case.get("events", [])
-            )
-            outcome = "human_executed" if human else "executed_closed"
-        elif case["status"] in {"closed_unresolved", "escalated_summary"}:
-            outcome = "escalated_human"
-        elif case["status"] in {"awaiting_approval", "approved", "rejected"}:
-            outcome = "awaiting_human"
-        else:
-            outcome = "in_progress"
-    if outcome == "escalated":
-        outcome = "escalated_human"
+        human = human or any(e.get("actor", "").startswith("agent:") for e in case.get("events", []))
+    outcome, _ = derive_outcome(
+        {**values, "human_involved": human}, done_reason="completed", pending=bool(values.get("pending_card")), case=case,
+    )
     sid, iid = values["session_id"], values["active_issue_id"]
     return {
         "episode_id": str(uuid5(NAMESPACE_URL, f"{sid}:{iid}:episode")),

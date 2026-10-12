@@ -14,14 +14,13 @@ from haike_contracts.common import (
     EvidenceItem,
     Feedback,
     ModelTier,
-    ObservationAnswer,
     PendingInput,
     ProductCandidate,
     ProposalOption,
     Receipt,
     ReceiptFields,
     Stage,
-    StepObservation,
+    StepAnswer,
     Strict,
     TroubleshootStep,
 )
@@ -48,7 +47,11 @@ class CancelledRun(Strict):
 
 
 class ImageRefItem(Strict):
-    """会话期图片引用（票 29）：只有引用与摘要，字节在 session_images，1 小时后清理。"""
+    """会话期图片引用（票 29）：只有引用与摘要，字节在 session_images，1 小时后清理。
+
+    purpose 记的是**上传时机**（前端按 pendingKind 填：等凭证时 receipt，其余 fault），
+    不是图片内容。「这张图实际是什么」由读图定性回答，见 common.ImageContentKind。
+    """
 
     image_id: str
     purpose: Literal["fault", "receipt"]
@@ -119,17 +122,7 @@ class StepCardItem(TimelineRecord):
     seen: str | None = None  # 读图结果的隐式确认，见 events.StepCard.seen
     feedback: Feedback | None = None
     note: str | None = None
-    observation_answers: list[ObservationAnswer] = Field(default_factory=list)
-
-
-class ObservationCardItem(TimelineRecord):
-    kind: Literal["observation_card"]
-    card_id: str
-    version: int = Field(ge=0)
-    observation: StepObservation
-    plan_id: str
-    attempt: int = Field(ge=1)
-    chosen_option_id: str | None = None
+    answer: StepAnswer | None = None
 
 
 class ReceiptCardItem(TimelineRecord):
@@ -160,24 +153,12 @@ class SummaryItem(TimelineRecord):
     handoff_status: Literal["prepared", "requested", "accepted", "failed", "cancelled"] = "prepared"
 
 
-class ContextCardItem(TimelineRecord):
-    kind: Literal["context_card"]
-    card_id: str
-    version: int = Field(ge=0)
-    fields: list[str]
-    prefilled: dict[str, str] = Field(default_factory=dict)
-    sources: dict[str, str] = Field(default_factory=dict)
-    choices: dict[str, list[str]] = Field(default_factory=dict)
-    confirmed_fields: dict[str, str] | None = None
-
-
 class ProposalCardItem(TimelineRecord):
     kind: Literal["proposal_card"]
     card_id: str
     version: int = Field(ge=0)
     options: list[ProposalOption]
     decision_summary: str
-    policy_version: str
     retry: bool = False
     chosen_option_id: str | None = None
     declined_reason: str | None = None
@@ -232,11 +213,9 @@ TimelineItem = Annotated[
     | ToolItem
     | ProductCardItem
     | StepCardItem
-    | ObservationCardItem
     | ReceiptCardItem
     | EvidenceItemGroup
     | SummaryItem
-    | ContextCardItem
     | ProposalCardItem
     | ExecutionCardItem
     | RetakeCardItem

@@ -4,12 +4,18 @@ from copy import deepcopy
 
 from app.conversation.business import BusinessContext
 from app.conversation.reduce import stable_id
+from app.conversation.request_constraints import QUERY_FIELDS
 
 PRIORITY = {
     "request_human": 0,
     "replacement_request": 1,
     "refund_request": 1,
     "address_update": 1,
+    # 暂缓发货 / 取消订单 / 改买：本系统不能改订单，但诉求有时效性（东西可能正要发出），
+    # 所以和其他办理类诉求同级，排在查询之前。
+    "order_change": 1,
+    # 买不到配件（T63 刷罩）：没有配件目录接口，只能登记给人工；和其他办理类同级
+    "parts_purchase": 1,
     "report_problem": 2,
     "logistics_query": 3,
     "warranty_query": 3,
@@ -18,18 +24,33 @@ PRIORITY = {
 }
 TASK_INTENTS = set(PRIORITY) - {"social", "request_human"}
 LABELS = {
-    "replacement_request": "换货申请",
-    "refund_request": "退款审核",
-    "address_update": "地址变更",
-    "report_problem": "设备排障",
-    "logistics_query": "物流查询",
-    "warranty_query": "保修查询",
-    "order_query": "订单查询",
+    "replacement_request": "replacement request",
+    "refund_request": "refund request",
+    "address_update": "address change",
+    "order_change": "order change",
+    "parts_purchase": "spare part purchase",
+    "report_problem": "device troubleshooting",
+    "logistics_query": "delivery status",
+    "warranty_query": "warranty check",
+    "order_query": "order details",
 }
 
 
+# 投诉 / 情绪不是要办的事：和业务诉求同时出现时排在最后，由情绪策略处理语气，不抢走查询或办理。
+TRAILING = {"complaint", "social"}
+
+# 要走办理流程（而不是查询）的业务诉求。本系统只能提交预定义服务单，
+# 改地址与改订单（暂缓发货 / 取消 / 改买）都超出它能执行的范围，由人工办理。
+REMEDY_INTENTS = frozenset({"replacement_request", "refund_request", "address_update", "order_change", "parts_purchase"})
+# 其中本系统完全不能执行、只能如实说明并转人工的那些
+NOT_EXECUTABLE = frozenset({"address_update", "order_change", "parts_purchase"})
+
+
 def ordered_intents(primary, secondary):
-    return sorted(dict.fromkeys([primary, *secondary]), key=lambda intent: PRIORITY.get(intent, 2))
+    return sorted(
+        dict.fromkeys([primary, *secondary]),
+        key=lambda intent: (intent in TRAILING, PRIORITY.get(intent, 2)),
+    )
 
 
 def task_business(task, business):
@@ -44,9 +65,10 @@ def task_business(task, business):
     )
 
 
-def enqueue(tasks, primary, secondary, text, input_id, *, business=None):
+def enqueue(tasks, primary, secondary, text, input_id, *, business=None, request_quotes=None, answer_request=None, answer_scope="focus"):
     result = deepcopy(tasks)
     business = business or BusinessContext()
+    request_quotes = request_quotes or {}
     # Once the user resolves an active task's missing/ambiguous target, keep
     # that selection for subsequent suspension and completion.
     for task in result:
@@ -58,8 +80,6 @@ def enqueue(tasks, primary, secondary, text, input_id, *, business=None):
         ):
             task["business_reference"] = business.reference()
     incoming = [i for i in ordered_intents(primary, secondary) if i in TASK_INTENTS]
-    if not secondary:
-        return result, None
     reference = business.reference()
 
     def identity(intent, ref):
@@ -70,19 +90,33 @@ def enqueue(tasks, primary, secondary, text, input_id, *, business=None):
             tuple(sorted(ref.get("candidate_ids", []))),
         )
 
+    # 等人工的诉求改口（暂停 → 取消整单）：原话跟着更新，不另起任务；单独一句改口也要更新
+    for task in result:
+        if task["status"] == "waiting_human" and identity(task["intent"], task_business(task, business).reference()) in {
+            identity(i, reference) for i in incoming
+        }:
+            task["quote"] = text
+    if not secondary:
+        return result, None
+
+    # 等人工的诉求（waiting_human）已经在队列里：客户再说一遍不算新任务，否则会重复入队。
     existing = {
         identity(t["intent"], task_business(t, business).reference())
         for t in result
-        if t["status"] in {"pending", "active"}
+        if t["status"] in {"pending", "active", "waiting_human"}
     }
     for intent in incoming:
         key = identity(intent, reference)
         if key not in existing:
+            fields = [f for f in answer_request.fields if f in QUERY_FIELDS.get(intent, ())] if answer_request else []
             result.append(
                 {
                     "task_id": stable_id(input_id, intent),
                     "intent": intent,
                     "quote": text,
+                    "request_quote": request_quotes.get(intent),
+                    "answer_request": {"fields": fields, "quote": answer_request.quote} if fields else None,
+                    "answer_scope": answer_scope,
                     "status": "active" if intent == primary else "pending",
                     "created_input_id": input_id,
                     "business_reference": reference,
@@ -99,11 +133,31 @@ def enqueue(tasks, primary, secondary, text, input_id, *, business=None):
                 else "pending"
             )
     labels = [LABELS[i] for i in incoming]
-    notice = "您提到的需求将按顺序处理：" + " → ".join(labels) + "。" if len(labels) > 1 else None
+    notice = "I'll handle your requests in this order: " + " → ".join(labels) + "." if announces_order(incoming) else None
     return result, notice
 
 
-def next_task(tasks, completed_intent, *, business=None, task_id=None):
+# 查询类诉求都是从同一张订单上读字段，consult 一轮就一起答完，不会排队逐项处理。
+# 「按顺序处理」只在真的要分轮处理时才说（T7 实测：问物流 + 问订单，一次答完却先播报了一句排序）。
+CONSULT_ONLY = frozenset({"logistics_query", "warranty_query", "order_query"})
+
+
+def announces_order(incoming: list[str]) -> bool:
+    """这一轮是否真的要分几步办，值得先告诉客户顺序。"""
+    return len(incoming) > 1 and not set(incoming) <= CONSULT_ONLY
+
+
+def settle(tasks, intent, outcome):
+    """人工结论回来：等人工的该类诉求按结论收尾（批准 / 驳回都算本轮办结，请补充则回 pending）。"""
+    return [{**t, "status": outcome} if t["status"] == "waiting_human" and t["intent"] == intent else t for t in tasks]
+
+
+def next_task(tasks, completed_intent, *, business=None, task_id=None, outcome="done", only=None):
+    """把刚处理完的任务记为 outcome（done = 业务已办结；waiting_human = 已交人工、本轮不再推进），再挑下一个。
+
+    waiting_human 不是 done：诉求还没解决，但机器人已无事可做，不该让后面的任务一直 pending（T9）。
+    only 限定本轮可推进的意图：等人工时只继续查询类任务，排障 / 办理要等人工结论。
+    """
     result = deepcopy(tasks)
     for task in result:
         matches = (
@@ -117,10 +171,10 @@ def next_task(tasks, completed_intent, *, business=None, task_id=None):
             and matches
             and (not task_id or task["task_id"] == task_id)
         ):
-            task["status"] = "done"
+            task["status"] = outcome
     if any(t["status"] == "active" for t in result):
         return result, None
-    candidates = [t for t in result if t["status"] == "pending"]
+    candidates = [t for t in result if t["status"] == "pending" and (only is None or t["intent"] in only)]
     if not candidates:
         return result, None
     chosen = min(candidates, key=lambda t: PRIORITY[t["intent"]])

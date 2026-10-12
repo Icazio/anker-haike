@@ -4,7 +4,8 @@ import type { SessionSnapshot } from '../types/snapshot';
 
 export type Outcome =
   | 'resolved' | 'escalated' | 'abandoned' | 'awaiting_user'
-  | 'clarifying' | 'in_progress' | 'errored' | 'interrupted' | 'unknown';
+  | 'clarifying' | 'in_progress' | 'errored' | 'interrupted' | 'unknown'
+  | 'closed_unresolved' | 'executed_closed' | 'human_executed' | 'consult_answered' | 'awaiting_human';
 
 export type SessionRow = {
   session_id: string;
@@ -96,12 +97,11 @@ export type Overview = {
 
 export type Flow = {
   edges: { source: string; target: string; n: number }[];
-  nodes: { node: string; n: number; errors: number; interrupts: number; p50_ms: number | null }[];
+  nodes: { node: string; n: number; avg_step: number; errors: number; interrupts: number; p50_ms: number | null }[];
   entries: { node: string; n: number }[];
 };
 
 export type Topology = {
-  nodes: { id: string; stage: string }[];
+  nodes: { id: string }[];
   edges: { source: string; target: string; conditional: boolean }[];
-  stage_order: string[];
 };
