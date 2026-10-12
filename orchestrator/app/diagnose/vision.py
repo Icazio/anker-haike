@@ -36,7 +36,7 @@ log = logging.getLogger("diagnose.vision")
 TASK = "diagnose.vision"
 VISION_BUDGET_MS = 12_000  # 含图轮 run deadline 40 s（08 §8），读图给 12 s
 DEFAULT_MAX_IMAGES = 4
-VISION_PROMPT_VERSION = "2026-10-09.1"  # content_kinds 逐图定性
+VISION_PROMPT_VERSION = "2026-10-12.1"  # 第一条观察写画面主体（本体 / 基站 / 配件），词表加主机
 NO_VISION_TEXT = (
     "I can't read images right now. Could you describe what the photo shows (which part, what's wrong)? I'll continue from there."
 )
@@ -120,7 +120,9 @@ def _instruction() -> str:
     return (
         "你正在查看用户上传的图片。只写图片里直接可见的内容。\n"
         "第一步 observations：先写出你在图片里看见的事实，每条不超过 20 字，最多 5 条。"
-        "设备整体可辨认时写出设备品类；只有局部部件时保留部件描述，不猜整机品类。"
+        "第一条写画面主体是什么：能认出品类时写品类加本体、基站或配件（如「扫地机器人本体」「扫地机器人基站」「吸奶器主机」），"
+        "画面里同时有几样东西时写最靠前、占画面最大的那一样；认不出品类时只写外形和颜色。"
+        "只有局部部件时保留部件描述，不猜整机品类。"
         "出现冒烟 / 烧焦 / 电池鼓包 / 漏液 / 火花时，在这一步里中文与英文关键词各写一次"
         "（如「烧焦 burnt」「鼓包 swollen battery」）。\n"
         "第二步 content_kinds：逐图说明每张图是什么，每张图一条，image_index 写它是第几张（Image N 的 N）。"

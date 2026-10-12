@@ -19,6 +19,7 @@ from app.conversation.operation_conditions import (
 )
 from app.conversation.quotes import normalize, quoted
 from app.conversation.request_constraints import constrain_requests
+from app.diagnose.decision import WISH
 from app.models.queue import CapacityExceeded
 from app.models.router import ModelInvokeError, ModelRouter
 from app.official.message import parse_message
@@ -242,10 +243,15 @@ def negation_polarity(facts: list[FactCandidate]) -> list[FactCandidate]:
     """原话是客户「没做过」的事实改为 negated（2026-10-12 T41 016757a0：「we have not run mop cycles」抽成
     action_taken affirmed「not run mop cycles」，前提核对把它当成做过，结论与原意相反）。
     只改 action_taken / observation，且以原话为准：症状的否定通常就是异常本身（will not empty），
-    「no lights appear」这类观察到的现象也不是否认做过。value 开头的否定词随之去掉。"""
+    「no lights appear」这类观察到的现象也不是否认做过。value 开头的否定词随之去掉。
+    value 原样出现在否认句之前时，说的是同一句里的另一件事，不翻（T41 主轮「water injection is still malfunctioning」
+    的 quote 是整句，含后面的「we have not run」，被记成了没有故障）。"""
     out = []
     for f in facts:
-        if f.kind in {"action_taken", "observation"} and f.polarity == "affirmed" and DENIED_ACTION.search(f.quote.replace("’", "'")):
+        quote = f.quote.replace("’", "'")
+        denial = DENIED_ACTION.search(quote) if f.kind in {"action_taken", "observation"} and f.polarity == "affirmed" else None
+        own = quote.casefold().find(f.value.casefold())
+        if denial and not (own >= 0 and own + len(f.value) <= denial.start()):
             leading = LEADING_NEGATION.match(f.value)
             value = f.value[leading.end():].strip() if leading else f.value
             out.append(f.model_copy(update={"polarity": "negated", "value": value or f.value}))
@@ -254,10 +260,29 @@ def negation_polarity(facts: list[FactCandidate]) -> list[FactCandidate]:
     return out
 
 
+def wish_sentence_quotes(facts: list[FactCandidate], text: str) -> list[FactCandidate]:
+    """症状原话被截短、截掉了愿望句式时，quote 扩成原文里包含它的整句（仍是逐字原文）。
+    T60「I just want my hoover to clean with out all this bullshit」主轮被截成「my hoover to clean…」，
+    concrete() 认不出愿望，直接套了清洁效果差方案；全句 quote 的那次会先问现象。"""
+    out = []
+    for f in facts:
+        start = text.find(f.quote) if f.kind == "symptom" and f.quote and not WISH.search(f.quote) else -1
+        if start < 0:
+            out.append(f)
+            continue
+        left = max(text.rfind(c, 0, start) for c in ".!?\n") + 1
+        rights = [i for c in ".!?\n" if (i := text.find(c, start + len(f.quote))) >= 0]
+        sentence = text[left:min(rights, default=len(text))].strip()
+        out.append(f.model_copy(update={"quote": sentence}) if WISH.search(sentence) else f)
+    return out
+
+
 def uncovered_denials(description: str, facts: list[FactCandidate]) -> list[str]:
-    """问题描述里「没做过」的句子，没有被任何已抽事实的原话覆盖时返回这些句子（T41 2/3 次整句漏抽）。
-    覆盖以否定动作本身为准：同一分句里别的事实（「water injection is still malfunctioning」）不算覆盖了「we have not run」。"""
-    covered = [normalize(f.quote) for f in facts if f.quote]
+    """问题描述里「没做过」的句子，没有被已抽的否定事实覆盖时返回这些句子（T41 2/3 次整句漏抽）。
+    覆盖只认 negated 的 action_taken / observation：症状事实的整句 quote（T41 repeat-2「As the water injection is still
+    malfunctioning we have not run mop cycles」）也含否认句，但它说的是注水故障，不是「没跑过拖地」。"""
+    covered = [normalize(f.quote) for f in facts
+               if f.quote and f.kind in {"action_taken", "observation"} and f.polarity == "negated"]
     out = []
     for clause in re.split(r"(?<=[.!?;\n])\s*|\s+(?:and thus|and so|so|but|because|as)\s+", description.replace("’", "'")):
         denial = DENIED_ACTION.search(clause.strip())
@@ -287,7 +312,8 @@ def logistics_correction(meaning: TurnInterpretation, text: str) -> TurnInterpre
     """
     meaning = constrain_requests(meaning, text)
     meaning = device_code_report(meaning, text)
-    meaning = meaning.model_copy(update={"facts": negation_polarity(normal_operation_is_uncertain(meaning.facts))})
+    meaning = meaning.model_copy(update={
+        "facts": wish_sentence_quotes(negation_polarity(normal_operation_is_uncertain(meaning.facts)), text)})
     purchase = PARTS_PURCHASE_WORDS.search(text.replace("’", "'"))
     if purchase and "parts_purchase" not in (meaning.primary_intent, *meaning.secondary_intents):
         # 保留模型读到的故障诉求，把配件采购作为并列诉求补进队列（优先级由 tasks 决定）

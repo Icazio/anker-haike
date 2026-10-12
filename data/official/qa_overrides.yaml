@@ -4,9 +4,11 @@
 # title（卡片标题；原文段落不是问句而改成 question 时必须给，question 卡只显示标题与选项）、
 # branches（选项 → 目标：数字是段落位置，字符串是本条的 step_id 或 EXHAUSTED）、default（回答不在选项里时的目标）、
 # retry_options（表示「还没做 / 不知道」的选项：选它或答非所问的短答时卡片不算答完，带提示重发一次）、
+# caution（注意事项，与条目 Tips 一起显示；原文这一段没写、同型号另一条写了的后果）、
 # disabled + reason（已核实不适用的段落，不生成步骤但保留原文）、
 # parts（一段拆成多步：段内夹问句、段内诊断树。每部分可写上面的字段；第一部分从段首开始，之后每部分写 at = 段内唯一的
-# 原文锚点，从锚点处切开，依次生成 s{pos}、s{pos}b、s{pos}c…；切出的文字拼起来就是原段落）。
+# 原文锚点，从锚点处切开，依次生成 s{pos}、s{pos}b、s{pos}c…；切出的文字拼起来就是原段落；media: true 指定由哪一部分挂原段图示 / 链接，
+# 不写时挂第一张出卡的部分）。
 bp-0123:
   1: {kind: statement}                                   # 「Identify the Problem」是标题
   3: {kind: question, options: ["Upon startup", "During breast pumping", "Only at high speed"]}
@@ -73,3 +75,25 @@ bp-0114:
          options: ["Yes, it was damaged on arrival", "No"], branches: {"Yes, it was damaged on arrival": s6d, "No": s6e}, default: s6e}
       - {at: "Please provide your shipping address", kind: handoff}
       - {at: "Breast pump battery depleted", kind: action, title: "Charge the pump with a different charger and cable"}
+rv-0473:
+  # 第 4 段长按红键恢复出厂，原文没写后果；同型号 rv-0312 第 3 段写明长按红色功能键超过 5 秒会删除地图、需重新建图（T31）。
+  # 「Wi-Fi 指示灯旁的红键」与 rv-0312「red function button」是否同一键原文未写明，提示用 may，待官方核实
+  4: {caution: "Restoring factory settings may remove your saved map: map data is removed when the red function button is held for over 5 seconds, and you will then need to re-map the entire house."}
+rv-0363:
+  # 与 rv-0473 正文相同，同一处补同一条提示
+  4: {caution: "Restoring factory settings may remove your saved map: map data is removed when the red function button is held for over 5 seconds, and you will then need to re-map the entire house."}
+rv-0073:
+  # 整条一段：装好清洁液瓶 + 试官方文章里的建议 + 拍照 / 视频（T40）。不拆时一个「未解决」就算官方排查走完，
+  # 文章里的检查做没做无从知道。按原文顺序拆三步，文章链接挂在「是否已按文章检查」那张
+  1:
+    parts:
+      - {kind: action, title: "Make sure the cleaning solution bottle is installed correctly"}
+      - {at: "Also, please try the suggestions in the article below", kind: question, media: true,
+         title: "Have you tried the suggestions in the official article linked on this card?",
+         options: ["Yes, I tried them and it still doesn't dispense", "I haven't tried them yet"],
+         retry_options: ["I haven't tried them yet"]}
+      - {at: "To assist you better", kind: material_request, title: "Share a photo or video of the cleaning solution bottle"}
+bp-0111:
+  # 第 5 段「Check Battery Power」是「Troubleshooting Steps」下的小标题，不是操作（T51 单独出了一张四个词的卡）。
+  # 改成说明，附到下一张「确保充满」卡上
+  5: {kind: statement}

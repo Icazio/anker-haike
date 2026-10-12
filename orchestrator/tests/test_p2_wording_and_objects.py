@@ -12,6 +12,7 @@ from app.conversation.interpret import TurnInterpretation
 from app.conversation.reply import fallback_reply
 from app.conversation.request_constraints import ground_additional_queries
 from app.diagnose.charging import check_charging_recipient
+from app.guide.steps import step_media
 from app.official.models import OfficialData
 from app.plans.qa import ACTION_WITH_MATERIAL_EXPECTED, EXPECTED, qa_plan_library
 from app.sessions.l3 import HARDWARE_BASIS
@@ -77,9 +78,21 @@ def test_robot_not_charging_is_unaffected():
 
 
 def test_t40_action_with_material_request_says_they_are_separate():
-    """T40：rv-0073 操作卡里顺带要照片 / 视频，卡上说明两件事分开，点「未解决」不等于交了材料。"""
-    assert LIB.get("qa_rv_0073").steps[0].expected_result == ACTION_WITH_MATERIAL_EXPECTED
+    """操作卡里顺带要照片 / 视频（rv-0272「若松动请拍照」），卡上说明两件事分开，点「未解决」不等于交了材料。"""
+    assert LIB.get("qa_rv_0272").steps[0].expected_result == ACTION_WITH_MATERIAL_EXPECTED
     assert LIB.get("qa_rv_0147").steps[0].expected_result == EXPECTED
+
+
+def test_t40_article_check_is_its_own_card_with_the_link():
+    """官方 63 单 T40（2026-10-12 复测）：rv-0073 只出一张带外链的卡，一个「未解决」就算官方排查走完，
+    文章里的检查做没做无从知道。审核拆成装瓶 → 是否已按文章检查（还没看可重发）→ 照片 / 视频，链接挂在文章那张。"""
+    steps = LIB.get("qa_rv_0073").steps
+    assert [(s.step_id, s.kind) for s in steps] == [("s1", "action"), ("s1b", "question"), ("s1c", "material_request")]
+    assert steps[0].expected_result == EXPECTED
+    assert steps[1].retry_options == ["I haven't tried them yet"]
+    assert step_media("qa_rv_0073", "s1") == [] and step_media("qa_rv_0073", "s1c") == []
+    assert step_media("qa_rv_0073", "s1b") == [
+        {"url": "https://support.eufy.com/s/article/How-do-I-use-eufy-cleaning-solution-with-my-S1-Pro", "kind": "link"}]
 
 
 @pytest.mark.parametrize("quote,kept", [

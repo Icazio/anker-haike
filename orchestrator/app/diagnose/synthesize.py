@@ -194,9 +194,12 @@ def _stems(text: str | None) -> set[str]:
     for w in re.findall(r"[a-z][a-z\-]+", _norm(text)):
         if w in _GENERIC_WORDS or w in _DEVICE_WORDS or w in _FILLER_WORDS or len(w) < 3:
             continue
-        for suffix in ("ies", "ing", "ed", "es", "s"):
-            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
-                w = w[: -len(suffix)] + ("y" if suffix == "ies" else "")
+        for suffix in ("ies", "ied", "ing", "ed", "es", "s"):
+            # ies / ied 还原成 y 后再算长度：carries → carry、dried → dry
+            #（不然 dried 截成 dri，与 drying → dry 对不上，T41 rv-0146）
+            keep = len(w) - len(suffix) + (suffix in {"ies", "ied"})
+            if w.endswith(suffix) and keep >= 3:
+                w = w[: -len(suffix)] + ("y" if suffix in {"ies", "ied"} else "")
                 break
         out.add(w)
     return out
@@ -209,10 +212,14 @@ def _same(need: str, have: str) -> bool:
 
 def _covers(missing_fact: str, fact: dict[str, Any]) -> bool:
     """事实说的是不是这个前提：前提的每个内容词都要在事实里出现。只共享一个词不算（T37「Slang in tank is in orde」
-    与「水箱显示的水量不准」只共享 tank，被当成前提已知，把讲 App 估算的 rv-0163 升级成可执行）。"""
-    need = _stems(missing_fact)
+    与「水箱显示的水量不准」只共享 tank，被当成前提已知，把讲 App 估算的 rv-0163 升级成可执行）。
+    前提原话用「/」列备选（rv-0146「roller not dried /Mop not dried」）时任一备选被覆盖即可。"""
     have = _stems(" ".join(str(fact.get(k) or "") for k in ("value", "subject", "quote")))
-    return bool(need) and all(any(_same(a, b) for b in have) for a in need)
+    for option in missing_fact.split("/"):
+        need = _stems(option)
+        if need and all(any(_same(a, b) for b in have) for a in need):
+            return True
+    return False
 
 
 def precondition_status(missing_fact: str | None, facts: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:

@@ -69,14 +69,25 @@ RETRY_NOTE = ("You said you haven't checked this yet. Once you've had a chance t
               "the next step depends on what you find.")
 
 
-def reported_note(quotes: list[str]) -> str:
+# 首卡说明的最后一句按卡片类型给：问题卡没有「未解决」按钮（T36 rv-0341 首张是噪音来源的问题卡），
+# 材料卡是「提交 / 暂时没有」（frontend StepCard.tsx）
+REPORTED_ANSWER = {
+    "action": "if you've already done it this way and the problem is still there, just mark it as not solved.",
+    "question": "for this card, just pick the option that matches what you see now, or describe it in a few words.",
+    "material_request": "for this card, upload it if you have it, or tell me you don't have it right now.",
+}
+
+
+def reported_note(quotes: list[str], kind: str, symptoms: list[str] = ()) -> str:
     """客户自述做过 / 查过的事（T21「nettoyé et repartit aspirateur a plusieurs reprise」、T27「no blockage seen」）：
-    引原话，说明下面的卡可能重叠、仍逐张确认。自述没有卡片反馈精确（没说清洁了哪个部件、是否在平地重启），
-    不据此跳过任何步骤；照卡上的做法做过、仍未解决的，直接反馈未解决即可。引客户原话（可能不是英文），不替客户改写。"""
+    引原话，说明这些检查可能与已做的重叠、仍逐张确认。自述没有卡片反馈精确（没说清洁了哪个部件、是否在平地重启），
+    不据此跳过任何步骤。引客户原话（可能不是英文），不替客户改写。
+    症状原话一并引（T37「水箱是满的」在症状里，只引「软管、胶圈正常」时客户看不出这张卡针对的是自己的情况）。"""
     said = "; ".join(f'"{q.strip()}"' for q in quotes)
-    return (f"You mentioned: {said}. Some of the steps below may overlap with what you've already done or checked. "
-            "Please still check each one exactly as described; if you've already done it this way and the problem "
-            "is still there, just mark it as not solved.")
+    described = "; ".join(f'"{s.strip()}"' for s in symptoms if s not in quotes)
+    return ((f"You described: {described}. " if described else "")
+            + f"You mentioned: {said}. Some of these checks may overlap with what you've already done or checked. "
+            "Please still check each one exactly as described; " + REPORTED_ANSWER.get(kind, REPORTED_ANSWER["action"]))
 
 
 def _advance_in_plan(plan: Plan, step_id: str, *, option: str | None = None) -> str | None:
@@ -201,7 +212,7 @@ async def prepare_step(
         # 客户自述做过的事每个问题只说一次，附在本问题第一张卡上（同 statement 的 displayed_nodes 去重）
         reported_key = f"reported:{state.get('active_issue_id')}"
         if reported_key not in displayed_nodes and (quotes := reported_quotes(state)):
-            context.append(reported_note(quotes))
+            context.append(reported_note(quotes, step.kind, reported_quotes(state, kinds={"symptom"})))
             displayed_nodes.append(reported_key)
         last = next((a for a in reversed(state.get("step_attempts") or []) if a.get("instruction_src") == step.instruction_src), None)
         if last and last.get("retry"):
@@ -286,11 +297,11 @@ def _primary_evidence(
     )
 
 
-def reported_quotes(state: dict[str, Any]) -> list[str]:
-    """本问题里客户自己说做过的排查与查看到的状态原话（action_taken / observation，active、affirmed、来自客户）。"""
+def reported_quotes(state: dict[str, Any], kinds: set[str] = frozenset({"action_taken", "observation"})) -> list[str]:
+    """本问题里客户自己说的原话（active、affirmed、来自客户）：默认是做过的排查与查看到的状态，kinds 可改为症状。"""
     issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
     quotes = [(fact.get("quote") or fact.get("value") or "").strip() for fact in issue.get("facts", [])
-              if fact.get("status") == "active" and fact.get("kind") in {"action_taken", "observation"}
+              if fact.get("status") == "active" and fact.get("kind") in kinds
               and fact.get("polarity", "affirmed") == "affirmed"
               and fact.get("source_kind", "user_report") == "user_report"
               and fact.get("source") in {None, "user_statement", "device_message"}]
@@ -312,8 +323,11 @@ def step_media(plan_id: str, step_id: str) -> list[dict[str, str]]:
         return []
     paragraph = guide.steps[index]
     if paragraph.parts:
-        # 后缀按部分在原段里的位置编（同 plans/qa.py PART_SUFFIX），禁用的部分不重排
-        carded = next((i for i, part in enumerate(paragraph.parts) if not part.disabled and part.kind not in {"statement", "handoff"}), 0)
+        # 后缀按部分在原段里的位置编（同 plans/qa.py PART_SUFFIX），禁用的部分不重排；
+        # 审核用 media 指定了挂图的部分时挂那一部分（T40 rv-0073：文章链接属于「是否已按文章检查」那张）
+        carded = next((i for i, part in enumerate(paragraph.parts) if part.owns_media and not part.disabled), None)
+        if carded is None:
+            carded = next((i for i, part in enumerate(paragraph.parts) if not part.disabled and part.kind not in {"statement", "handoff"}), 0)
         if match.group(2) != PART_SUFFIX[carded]:
             return []
     elif match.group(2):

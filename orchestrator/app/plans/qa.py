@@ -145,7 +145,7 @@ def plan_of(guide: Guide, version: str) -> tuple[dict, dict[str, dict]]:
             "instruction_src": f"evidence:{key}",
             "expected_result": ACTION_WITH_MATERIAL_EXPECTED if kind == "action" and MATERIAL.search(step.text)
             else EXPECTED_BY_KIND[kind],
-            "caution": TIPS_LEAD.sub("", guide.tips).strip() or None,
+            "caution": " ".join(filter(None, [TIPS_LEAD.sub("", guide.tips).strip(), step.caution])) or None,
             "next_on": next_on,
             "kind": kind,
             "source_gap": step.source_gap,

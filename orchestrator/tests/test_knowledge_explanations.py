@@ -96,10 +96,10 @@ async def test_explanation_context_is_not_repeated_on_subsequent_actions():
     assert first.step["context"] and first.displayed_nodes
     second = await prepare_step(
         state={**state, "displayed_knowledge_nodes": first.displayed_nodes,
-               "steps_executed": [{"instruction_src": "evidence:bp-0111#s5", "feedback": "not_solved"}]},
+               "steps_executed": [{"instruction_src": "evidence:bp-0111#s6", "feedback": "not_solved"}]},
         library=library, rules=rules, router=None, lane="domestic", session_id="one",
     )
-    assert second.step["step_id"] == "s6" and not second.step.get("context")
+    assert second.step["step_id"] == "s7" and not second.step.get("context")
     # A new issue has no presentation history and receives its own explanation.
     fresh = await prepare_step(state=state, library=library, rules=rules, router=None, lane="domestic", session_id="two")
     assert fresh.step["context"] == first.step["context"]
@@ -137,7 +137,7 @@ async def test_displayed_context_survives_http_feedback_without_counting_as_oper
         "facts": [{"value": "motor shuts off during use", "quote": "motor shuts off during use"}],
     })
     first = next(e["step"] for e in events if e["type"] == "step_card")
-    assert first["step_id"] == "s5" and first["context"]
+    assert first["step_id"] == "s6" and first["context"]
     snapshot = await conversation.snapshot()
     pending = snapshot["pending_input"]
     response = await conversation.client.post(f"/sessions/{conversation.sid}/actions", json={
@@ -146,7 +146,7 @@ async def test_displayed_context_survives_http_feedback_without_counting_as_oper
         "input_token": pending["input_token"], "kind": "step_feedback", "payload": {"feedback": "not_solved"},
     })
     second = next(e["step"] for e in conversation.check(response) if e["type"] == "step_card")
-    assert second["step_id"] == "s6" and not second.get("context")
+    assert second["step_id"] == "s7" and not second.get("context")
     state = await conversation.state()
     assert state["counters"]["executed"] == 1
     assert state["issues"][state["active_issue_id"]]["displayed_knowledge_nodes"]

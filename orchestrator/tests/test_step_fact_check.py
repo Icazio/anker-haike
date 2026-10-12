@@ -418,7 +418,8 @@ async def test_t21_cleaned_and_restarted_is_quoted_and_all_radar_cards_are_sent(
 
 
 async def test_t51_charged_pump_still_gets_the_fully_charged_card(conversation, l3_runtime):
-    """官方 63 单 T51：「I've charged my pump」不等于已充满，bp-0111「Ensure the device is fully charged」照发。"""
+    """官方 63 单 T51：「I've charged my pump」不等于已充满，bp-0111「Ensure the device is fully charged」照发。
+    第 5 段「Check Battery Power」是小标题（qa_overrides 改说明），附在充满卡上，不单独出一张四个词的卡（2026-10-12 复测）。"""
     set_knowledge_adapter(QAHitAdapter("bp-0111"))
     conversation.models["diagnose.synthesize"].script = [{"hypotheses": [{
         "plan_id": "qa_bp_0111", "confidence": 0.8, "evidence_ids": ["chunk-bp-0111"],
@@ -432,8 +433,8 @@ async def test_t51_charged_pump_still_gets_the_fully_charged_card(conversation, 
     cards = [next(e for e in events if e["type"] == "step_card")["step"]]
     events = conversation.check(await act(conversation.client, conversation.sid, "step_feedback", {"feedback": "not_solved"}))
     cards.append(next(e for e in events if e["type"] == "step_card")["step"])
-    assert [c["step_id"] for c in cards] == ["s5", "s6"]
-    assert "fully charged" in cards[1]["instruction"]
+    assert [c["step_id"] for c in cards] == ["s6", "s7"]
+    assert "fully charged" in cards[0]["instruction"] and "Check Battery Power" in cards[0]["context"]
 
 
 @pytest.mark.parametrize(("extra", "kept"), [
