@@ -418,7 +418,7 @@ INSTRUCTION = (
     "- 文档有错误码而用户没有提供错误码，不是拒绝依据；用户现象和文档适用条件一致仍可 supported。\n"
     "- supported_symptoms 只能逐字选择给定的有效症状；不能把共同主题当作覆盖，不能声称一个方案解决所有并列问题。\n"
     "- matched_subject / matched_timing 摘自候选标题或正文：该方案针对哪个部件、哪种时机；structured_facts 里用户的 subject / timing 与之不同层级或方向相反时不是 supported。\n"
-    "- action_taken 是用户已经做过的操作；候选只是重复这些动作则 not_applicable，否则在 rationale 里说明新增的检查点。\n"
+    "- action_taken 是用户已经做过的操作，只是背景：自述没有卡片反馈精确，候选与这些动作重叠不是拒绝依据，仍按现象判断。\n"
     "- 候选标注了「小节」时，用户现象明确属于其中一个小节就把该小节标题逐字填进 matched_section；不确定留空，不要猜。\n"
     "- needs_confirmation 时同时填 missing_fact：要确认的那个前提在候选原文里的原话（如 perform a new mopping task）。\n"
     "- 没有任何计划能解释时输出空列表。只输出 JSON。"

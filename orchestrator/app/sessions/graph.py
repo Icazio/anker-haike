@@ -210,7 +210,7 @@ class SessionState(TypedDict, total=False):
     # _verify 为 apply_action(step_feedback) 的本 run 判定（瞬态：done / next / escalate）
     steps_executed: list[dict[str, Any]]
     step_attempts: list[dict]
-    # 计划步骤与用户原话的核对结果 {plan_id: {issue_revision, steps: {step_id: {status, quote, skip?}}}}（app/guide/fact_check.py）
+    # 条件步骤与用户原话的核对结果 {plan_id: {issue_revision, steps: {step_id: {status, quote, skip?}}}}（app/guide/fact_check.py）
     step_checks: dict[str, Any]
     precondition_answers: list[dict]  # 客户答过的候选前提追问（synthesize 不再重复问）
     fallback_clarification: dict | None  # 选中可执行方案时旁边待确认的候选追问：方案走不下去时先问它

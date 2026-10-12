@@ -17,12 +17,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.conversation.operation_conditions import answered_history, step_check, step_unavailable
+from app.conversation.operation_conditions import answered_history, step_unavailable
 from app.models.router import ModelRouter
-from app.official.qa_index import ACTION_VERB, MATERIAL
 from app.plans.library import PlanLibrary
 from app.plans.models import Plan, PlanStep
-from app.plans.qa import PART_SUFFIX, customer_text, customer_voice, guide_of, step_title
+from app.plans.qa import PART_SUFFIX, customer_text, customer_voice, guide_of
 from app.rules.service import RulesService
 
 NS = uuid.UUID("2b0f5a9e-64c2-4c7d-9c0a-7f3d1e6a8b21")
@@ -70,25 +69,14 @@ RETRY_NOTE = ("You said you haven't checked this yet. Once you've had a chance t
               "the next step depends on what you find.")
 
 
-def skipped_note(step: PlanStep, instruction: str, quote: str | None) -> str:
-    """因客户已做过 / 已说明状态而跳过的步骤，在下一张卡上说一声（T36：已换滤网，滤网堵塞检查不再发）。
-    用审核写的卡片标题；没有时取正文首句（标题会截断成「…」）。去掉 Markdown 星号，问候语不算步骤（T32 曾引用
-    「I hope this message finds you well」）。引客户原话（可能不是英文），不替客户改写。"""
-    first = step_title(customer_text(instruction).replace("*", ""), 160)
-    title = step.title.replace("*", "").strip()
-    name = (title if title and not title.endswith("…") else first).rstrip(" .…")
-    said = f' ("{quote.strip()}")' if quote and quote.strip() else ""
-    return f'You\'ve already covered "{name}"{said}, so I won\'t ask you to repeat it.'
-
-
-def partial_note(quote: str, remaining: str) -> str:
-    """客户已做了这一步的一部分（T29：已洗清洁盘，第二卡仍是「查格栅并清洗清洁盘」）：照发整张卡，说明这次要看的是没做的那部分。"""
-    return f'You mentioned you\'ve already done part of this ("{quote.strip()}"). This time, please focus on: {customer_text(remaining).strip().rstrip(",;")}.'
-
-
-# 计划的操作步骤全被客户已做事项跳过时补一句（T27 / T37）：否则跳过说明后紧接着进质保或下一条指南，客户看不出原因。
-# 下一步由 decide_next 决定（质保 / 人工 / 其他指南），这里不预告。
-ALL_COVERED_NOTE = "That covers every step in the official guide for this issue, so there's nothing left in it for you to try."
+def reported_note(quotes: list[str]) -> str:
+    """客户自述做过 / 查过的事（T21「nettoyé et repartit aspirateur a plusieurs reprise」、T27「no blockage seen」）：
+    引原话，说明下面的卡可能重叠、仍逐张确认。自述没有卡片反馈精确（没说清洁了哪个部件、是否在平地重启），
+    不据此跳过任何步骤；照卡上的做法做过、仍未解决的，直接反馈未解决即可。引客户原话（可能不是英文），不替客户改写。"""
+    said = "; ".join(f'"{q.strip()}"' for q in quotes)
+    return (f"You mentioned: {said}. Some of the steps below may overlap with what you've already done or checked. "
+            "Please still check each one exactly as described; if you've already done it this way and the problem "
+            "is still there, just mark it as not solved.")
 
 
 def _advance_in_plan(plan: Plan, step_id: str, *, option: str | None = None) -> str | None:
@@ -126,28 +114,10 @@ async def prepare_step(
         [],
     )
     answered = {s.get("instruction_src"): s for s in answered_history(state)}
-    reported = user_reported_actions(state)
     dropped: list[dict[str, Any]] = []
     context: list[str] = []  # 说明段落不单独出卡，附在下一张卡上（I4：标题 / 结论不是操作，不要求反馈）
     explanation_evidence: dict[str, dict] = {}
     displayed_nodes = list(state.get("displayed_knowledge_nodes") or [])
-
-    def announce_skip(step: PlanStep, quote: str | None) -> None:
-        # 每个跳过的步骤只说一次（同 statement 的 displayed_nodes 去重）
-        key = f"skipped:{step.instruction_src}"
-        if key not in displayed_nodes:
-            context.append(skipped_note(step, library.evidence_snippet(step.instruction_src), quote))
-            displayed_nodes.append(key)
-
-    def announce_done_before(until: str | None) -> None:
-        # 客户已做过的步骤（fact_check 判 done）常在选步时就被跳过（decide_next._first_open_step），走不到下面的循环；
-        # 发布到它后面的步骤（或计划走完）时说明一次（T36「已换滤网」的滤网堵塞检查）
-        order = [s.step_id for s in plan.steps]
-        stop = order.index(until) if until in order else len(order)
-        for skipped in plan.steps[:stop]:
-            check = step_check(state, plan.plan_id, skipped.step_id)
-            if check.get("status") == "done" and check.get("skip"):
-                announce_skip(skipped, check.get("quote"))
 
     while step_id is not None:
         step = plan.step(step_id)
@@ -176,7 +146,7 @@ async def prepare_step(
             break
         unavailable = step_unavailable(state, plan.plan_id, step)
         if unavailable == "condition_not_met":
-            # 适用条件已被用户原话否定，或兄弟条件成立，或用户已经做过（fact_check）：这一步不适用，沿计划往后走
+            # 适用条件已被用户原话否定，或兄弟条件成立（fact_check）：这一步不适用，沿计划往后走
             dropped.append({"plan_id": plan.plan_id, "step_id": step_id, "reason": unavailable})
             step_id = _advance_in_plan(plan, step_id)
             continue
@@ -192,12 +162,6 @@ async def prepare_step(
             step_id = _advance_in_plan(plan, step_id, option=(answered[step.instruction_src].get("answer") or {}).get("option"))
             continue
         source_text = library.evidence_snippet(step.instruction_src)
-        # 用户自述已做过的排查（已换滤网、已清洁触点）：同部件同动作的步骤不再让他做一遍（I5：T27 / T36 / T37）
-        if step.kind == "action" and (done := matches_reported(source_text, reported)):
-            dropped.append({"plan_id": plan.plan_id, "step_id": step_id, "reason": "user_reported", "reported": done})
-            announce_skip(step, done)
-            step_id = _advance_in_plan(plan, step_id)
-            continue
         evidence_ids = _evidence_for(step, plan, allowed_evidence, ranked_evidence)
         bad = [e for e in evidence_ids if e not in allowed_evidence]
         if bad:
@@ -234,14 +198,15 @@ async def prepare_step(
         if published_evidence:
             evidence_ids = sorted({*evidence_ids, *published_evidence})
         card_id = step_card_id(session_id, plan.plan_id, step_id)
-        announce_done_before(step_id)
+        # 客户自述做过的事每个问题只说一次，附在本问题第一张卡上（同 statement 的 displayed_nodes 去重）
+        reported_key = f"reported:{state.get('active_issue_id')}"
+        if reported_key not in displayed_nodes and (quotes := reported_quotes(state)):
+            context.append(reported_note(quotes))
+            displayed_nodes.append(reported_key)
         last = next((a for a in reversed(state.get("step_attempts") or []) if a.get("instruction_src") == step.instruction_src), None)
         if last and last.get("retry"):
             # 上次答的是「还没检查 / 不知道」（B21）：重发这张卡，说明为什么还要回答
             context.append(RETRY_NOTE)
-        check = step_check(state, plan.plan_id, step_id)
-        if check.get("status") == "partial":
-            context.append(partial_note(check.get("quote") or "", check.get("remaining") or ""))
         return StepPrep(
             "ready",
             step={
@@ -277,11 +242,7 @@ async def prepare_step(
                 "retrieved": not published_evidence,
             },
         )
-    announce_done_before(None)
     only_explanation = all(s.kind == "statement" for s in plan.steps)
-    actionable = [s for s in plan.steps if s.kind not in {"statement", "handoff"}]
-    if actionable and all(f"skipped:{s.instruction_src}" in displayed_nodes for s in actionable):
-        context.append(ALL_COVERED_NOTE)
     return StepPrep("explained" if only_explanation else "exhausted", dropped=dropped,
                     explanation="\n\n".join(context), evidence=explanation_evidence, displayed_nodes=displayed_nodes)
 
@@ -325,61 +286,15 @@ def _primary_evidence(
     )
 
 
-# 未知对象不是通配符；未确认完整覆盖的复合卡保留，由客户反馈后再推进。
-PART_WORDS = (
-    "filter", "brush", "roller", "side brush", "tank", "contact", "valve", "shield", "mop", "sensor", "base", "dock",
-    "station", "bin", "dust box", "lid", "cover", "seal", "ring", "nozzle", "pin", "port", "wheel", "tray", "hose",
-    "tube", "bottle", "diaphragm", "pad", "battery", "charger", "cable", "case", "hub", "app", "firmware",
-)
-ACTION_WORDS = {
-    "clean": ("clean", "cleaned", "wipe", "wiped", "rinse", "rinsed", "wash", "washed"),
-    "replace": ("replace", "replaced", "change", "changed", "swap", "swapped"),
-    "restart": ("restart", "restarted", "reboot", "rebooted", "reset", "power cycle", "powered off"),
-    "refill": ("refill", "refilled", "fill", "filled", "top up", "topped up"),
-    "reinstall": ("reinstall", "reinstalled", "reseat", "reseated", "reattach", "reattached", "re-install"),
-    "update": ("update", "updated", "upgrade", "upgraded"),
-}
-ACTION_PATTERNS = {name: re.compile(r"\b(?:" + "|".join(re.escape(form) for form in forms) + r")\b", re.IGNORECASE)
-                   for name, forms in ACTION_WORDS.items()}
-PART_PATTERNS = {part: re.compile(r"\b" + re.escape(part) + r"(?:s|es)?\b", re.IGNORECASE) for part in PART_WORDS}
-CONTACT_SYNONYMS = re.compile(r"\belectrical connections?\b", re.IGNORECASE)
-
-
-def _parts(text: str) -> set[str]:
-    normalized = CONTACT_SYNONYMS.sub("contact", text)
-    return {part for part, pattern in PART_PATTERNS.items() if pattern.search(normalized)}
-
-
-def _actions(text: str) -> set[str]:
-    return {name for name, pattern in ACTION_PATTERNS.items() if pattern.search(text)}
-
-
-def user_reported_actions(state: dict[str, Any]) -> list[dict[str, Any]]:
+def reported_quotes(state: dict[str, Any]) -> list[str]:
+    """本问题里客户自己说做过的排查与查看到的状态原话（action_taken / observation，active、affirmed、来自客户）。"""
     issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
-    out = []
-    for fact in issue.get("facts", []):
-        if (fact.get("status") == "active" and fact.get("kind") == "action_taken"
-                and fact.get("polarity", "affirmed") == "affirmed"
-                and fact.get("source_kind", "user_report") == "user_report"
-                and fact.get("source") in {None, "user_statement", "device_message"}):
-            text = " ".join(filter(None, [fact.get("value"), fact.get("subject")]))
-            out.append({"value": fact.get("value"), "parts": _parts(text), "actions": _actions(text)})
-    return out
-
-
-def matches_reported(instruction: str, reported: list[dict[str, Any]]) -> str | None:
-    """只有明确对象、全部动作被同一用户报告覆盖的卡才能整体跳过；疑问或材料要求不消费。"""
-    parts, actions = _parts(instruction), _actions(instruction)
-    verbs = [match.group() for match in ACTION_VERB.finditer(instruction)]
-    if not parts or not actions or not verbs or "?" in instruction or MATERIAL.search(instruction):
-        return None
-    # Unknown operations (inspect/remove/ensure…) cannot disappear because a cleaning word also occurs.
-    if any(not _actions(verb) for verb in verbs):
-        return None
-    for item in reported:
-        if actions <= item["actions"] and parts <= item["parts"]:
-            return item["value"]
-    return None
+    quotes = [(fact.get("quote") or fact.get("value") or "").strip() for fact in issue.get("facts", [])
+              if fact.get("status") == "active" and fact.get("kind") in {"action_taken", "observation"}
+              and fact.get("polarity", "affirmed") == "affirmed"
+              and fact.get("source_kind", "user_report") == "user_report"
+              and fact.get("source") in {None, "user_statement", "device_message"}]
+    return list(dict.fromkeys(q for q in quotes if q))
 
 
 def step_media(plan_id: str, step_id: str) -> list[dict[str, str]]:
