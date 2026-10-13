@@ -13,7 +13,7 @@ import pytest
 from app.conversation.interpret import FactCandidate, normal_operation_is_uncertain
 from app.conversation.product_questions import PHOTO_ANSWER_RULES
 from app.diagnose.charging import mentions_charging
-from app.diagnose.synthesize import filter_hypotheses
+from app.diagnose.synthesize import filter_hypotheses, in_plan_check
 from app.knowledge.runtime import set_knowledge_adapter
 from app.official.models import OfficialData
 from app.plans.qa import qa_plan_library
@@ -41,16 +41,21 @@ def _charging_case_hypothesis(symptom: str, confidence: float = 0.62) -> dict:
 
 # ---- T50 / T53：没说过充电问题，不被充电条目带去问充电 ----
 
-def test_t53_charged_but_will_not_turn_on_is_not_asked_which_part_is_not_charging():
+@pytest.mark.parametrize("symptoms", [
+    # 主轮：做过的操作单独抽成 action_taken
+    ["One side of the pump stoped working"],
+    # 2026-10-13 真实复测：模型把「充了很多次还是开不了机」整句抽成现象，quote 里有 charge
+    ["One side of the pump stoped working", "I tried to charge it over and over again but it stoped turning on."],
+])
+def test_t53_charged_but_will_not_turn_on_is_not_asked_which_part_is_not_charging(symptoms):
     """T53 主轮：「一侧停机，充了很多次还是开不了机」被 bp-0127 带去问「Which part is not charging」。
-    客户的现象是停机；充电是做过的操作（action_taken），不是「充不进电」。"""
-    symptom = "One side of the pump stoped working"
-    facts = [{"kind": "symptom", "status": "active", "value": symptom, "quote": symptom + "."},
-             {"kind": "action_taken", "status": "active", "value": "tried to charge it over and over again but it stoped turning on",
-              "quote": "I tried to charge it over and over again but it stoped turning on."}]
+    充电是做过的操作，不是「充不进电」。"""
+    facts = [{"kind": "symptom", "status": "active", "value": s, "quote": s} for s in symptoms]
+    facts.append({"kind": "action_taken", "status": "active", "value": "tried to charge it over and over again",
+                  "quote": "I tried to charge it over and over again"})
     kept, dropped, clarifications = filter_hypotheses(
-        [_charging_case_hypothesis(symptom)], allowed={BP_0127: LIB.get(BP_0127)}, evidence_ids={"e1"},
-        symptoms={symptom}, facts=facts, max_n=3)
+        [_charging_case_hypothesis(symptoms[0])], allowed={BP_0127: LIB.get(BP_0127)}, evidence_ids={"e1"},
+        symptoms=set(symptoms), facts=facts, max_n=3)
     assert kept == [] and clarifications == []
     assert f"charging_not_reported:{BP_0127}" in dropped
 
@@ -69,8 +74,11 @@ def test_charging_symptom_without_a_clear_recipient_still_asks_which_part():
 def test_t50_rewritten_negation_does_not_count_as_a_charging_report():
     """T50 主轮：模型把「does work」改写成 value「left side does not work」；判断有没有说过充电只看原话。"""
     assert not mentions_charging(["the left one does work"])
-    assert mentions_charging(["laadt niet op"]) and mentions_charging(["lädt nicht"]) and mentions_charging(["no carga"])
-    assert mentions_charging(["can't get past critical low battery"])
+    assert not mentions_charging(["I tried to charge it over and over again but it stoped turning on."])
+    for said in ["My charging case will not charge", "The robot won't charge when it is at the base station",
+                 "can't get past critical low battery", "De robot laadt niet op", "Er lädt nicht mehr",
+                 "il ne charge plus", "no carga", "it stopped charging"]:
+        assert mentions_charging([said]), said
 
 
 def test_t50_normal_operation_marked_negated_is_restored_to_the_quote():
@@ -87,13 +95,20 @@ def test_t50_normal_operation_marked_negated_is_restored_to_the_quote():
 
 def test_t57_app_version_is_collected_with_a_question_card():
     steps = LIB.get("qa_bp_0164").steps
-    assert [(s.step_id, s.kind) for s in steps] == [("s2", "statement"), ("s3", "question")]
-    assert "Which version of the Anker eufy app" in steps[1].title
+    assert [(s.step_id, s.kind) for s in steps] == [("s1", "question"), ("s2", "statement"), ("s3", "handoff")]
+    assert "Which version of the Anker eufy app" in steps[0].title
+    # 选方案时模型把「先确认 App 版本」当前提：它就是计划第一张卡，不另发追问（2026-10-13 复测 2/8 次问了两遍版本）
+    assert in_plan_check(LIB.get("qa_bp_0164"), "Check the version of the Anker eufy app being used") == "s1"
+    assert in_plan_check(LIB.get("qa_bp_0164"), "the version of the Anker eufy app being used") == "s1"
+    # 第二轮复测 3/6：前提写的是别的原话，追问句问的就是版本，问题卡已经在问
+    assert in_plan_check(LIB.get("qa_bp_0164"), "not functioning after the update, with no live view",
+                         "Which version of the Anker eufy app are you currently using?") == "s1"
+    assert in_plan_check(LIB.get("qa_bp_0164"), "the camera has power", "Do the cameras show any LED light?") is None
 
 
 async def test_t57_unanswered_version_does_not_finish_the_guide(conversation, l3_runtime):
     """T57 主轮：两张「是否解决」卡点两次未解决就说官方排查已完成、收订单，版本号从没拿到。
-    现在第一张就是问版本的问题卡（附 5.0 以上已知问题说明），不接受「解决 / 未解决」。"""
+    现在第一张就是问版本的问题卡，不接受「解决 / 未解决」；答了版本才给 5.0 以上已知问题说明。"""
     set_knowledge_adapter(QAHitAdapter("bp-0164"))
     conversation.models["diagnose.synthesize"].script = [{"hypotheses": [{
         "plan_id": "qa_bp_0164", "confidence": 0.8, "evidence_ids": ["chunk-bp-0164"],
@@ -104,12 +119,12 @@ async def test_t57_unanswered_version_does_not_finish_the_guide(conversation, l3
         "facts": [{"value": "cameras are not working", "quote": "All of the cameras are not working except one"}],
     })
     card = next(e for e in events if e["type"] == "step_card")["step"]
-    assert (card["step_id"], card["kind"]) == ("s3", "question")
-    assert "5.0 or higher" in card["context"]
+    assert (card["step_id"], card["kind"]) == ("s1", "question")
     rejected = await act(conversation.client, conversation.sid, "step_feedback", {"feedback": "not_solved"})
     assert (rejected.status_code, rejected.json()["code"]) == (409, "not_allowed_now")
-    conversation.check(await act(conversation.client, conversation.sid, "step_feedback",
-                                 {"answer": {"option": None, "text": "5.2.1", "unavailable": False}}))
+    events = conversation.check(await act(conversation.client, conversation.sid, "step_feedback",
+                                          {"answer": {"option": None, "text": "5.2.1", "unavailable": False}}))
+    assert "5.0 or higher" in "".join(e.get("delta") or "" for e in events if e["type"] == "message")
     state = await conversation.state()
     assert any(f.get("quote") == "5.2.1" for f in state["issues"][state["active_issue_id"]]["facts"])
 

@@ -25,12 +25,21 @@ SLOT = re.compile(r"^\s+(?:on\s+)?(?:(?:one|either|both|the\s+(?:left|right|othe
                   re.IGNORECASE)
 
 
-# 客户的现象里有没有充电 / 电量：只看词根，多语言（laadt niet / lädt nicht / ne charge pas / no carga / batería）。
-CHARGING_WORD = re.compile(r"charg|laad|lad(?:en|t)\b|lädt|carg|batter|bater|akku|充电|充不|电量|电池", re.IGNORECASE)
+# 客户的现象里有没有充电问题：充不进 / 停止充电、充电灯、电池电量（多语言）。「tried to charge it over and over again but it
+# stoped turning on」里的 charge 是做过的操作，不算（2026-10-13 T53 真实复测：模型把整句抽成现象，只认词根时规则不生效）
+CHARGING_PROBLEM = re.compile(
+    CHARGING_FAILURE.pattern
+    + r"|\bstop(?:s|ped)?\s+charging\b|\bcharg(?:e|ing)\s+(?:light|indicator|led|port|issue|problem|error)s?\b"
+    r"|\bbatter(?:y|ies)\b|\bbater[ií]a\b|\bakku\b"
+    r"|\blaadt?\s+(?:\w+\s+)?niet\b|\bniet\s+(?:meer\s+)?(?:op)?la(?:den|adt)\b|\blädt\s+(?:\w+\s+)?nicht\b"
+    r"|\bnicht\s+(?:mehr\s+)?(?:auf)?laden\b|\bne\s+(?:se\s+)?(?:re)?charge\s+(?:plus|pas)\b|\bno\s+(?:se\s+)?carga\b"
+    r"|充不|不充电|没电|电量|电池",
+    re.IGNORECASE,
+)
 
 
 def mentions_charging(texts: list[str]) -> bool:
-    return any(CHARGING_WORD.search(text) for text in texts)
+    return any(CHARGING_PROBLEM.search(text.replace("’", "'")) for text in texts)
 
 
 @dataclass(frozen=True)

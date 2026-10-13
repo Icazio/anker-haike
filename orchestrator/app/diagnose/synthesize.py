@@ -265,17 +265,25 @@ CHECK_LEAD = re.compile(
     r"^\W*(?:please\s+|could\s+you\s+(?:please\s+)?)?(?:check|verify|inspect|ensure|confirm|make\s+sure|test)\b", re.IGNORECASE)
 
 
-def in_plan_check(plan: Plan, missing_fact: str | None) -> str | None:
+def in_plan_check(plan: Plan, missing_fact: str | None, question: str | None = None) -> str | None:
     """模型要先确认的「前提」若正是计划里某个检查步骤要查的事，返回该步 step_id（T29：rv-0254 第 1 步就是查门扣，
     被当成入口前提先问一句，回答后再跳过这一步）。查得出的原因交给步骤卡按官方顺序查，不另起追问。
     审核给的卡片标题也算（T40 rv-0073 拆分后首段原文是「In your case, please ensure…」，标题是
-    「Make sure the cleaning solution bottle is installed correctly」）。"""
-    if not missing_fact:
+    「Make sure the cleaning solution bottle is installed correctly」）。
+    计划里的问题卡问的就是这件事时也算：模型的追问或前提覆盖卡片问句（T57 bp-0164 首卡问 App 版本，
+    2026-10-13 真实复测 3/6 次先用文字追问版本、客户答完问题卡又问一遍）。"""
+    if not (missing_fact or question):
         return None
     library = get_plan_library()
     for step in plan.steps:
         evidence = library.evidence.get(step.evidence_key)
         if step.kind not in {"action", "question"} or step.condition or evidence is None:
+            continue
+        if step.kind == "question" and step.title:
+            asked = re.split(r"(?<=[?])\s", step.title.strip(), maxsplit=1)[0]
+            if any(text and _covers(asked, {"value": text}) for text in (missing_fact, question)):
+                return step.step_id
+        if not missing_fact:
             continue
         lead = re.split(r"(?<=[.!?:;])\s|\n", evidence.snippet.strip(), maxsplit=1)[0]
         if any(CHECK_LEAD.match(text) and _covers(missing_fact, {"value": text}) for text in (lead, step.title)):
@@ -404,7 +412,8 @@ def filter_hypotheses(
             clarify(h, "subject_mismatch", CLARIFY_TEMPLATES["subject_mismatch"].format(subject=mismatched["subject"]))
             continue
         if h.get("applicability") != "supported":
-            step_id = in_plan_check(plan, h.get("missing_fact")) if h.get("applicability") == "needs_confirmation" else None
+            step_id = in_plan_check(plan, h.get("missing_fact"), h.get("clarification_question")) \
+                if h.get("applicability") == "needs_confirmation" else None
             if step_id and covered:
                 # 前提是计划自己的检查步骤：按 supported 继续，用户已说过的由 guide 的事实核对跳过该步；
                 # 没有覆盖任何现象时仍按原路追问，不因此丢掉候选

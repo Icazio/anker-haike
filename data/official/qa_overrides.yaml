@@ -127,10 +127,11 @@ rv-0312:
                    beyond_source: true}}
 bp-0164:
   # 第 1 段「查看 App 版本」与第 3 段「提供 App 版本」是同一件事：向客户要版本号。原样是两张「是否解决」的操作卡，
-  # 两次「未解决」就算指南走完、进质保，版本号从没拿到（官方 63 单 T57）。合成第 3 段一张问题卡收版本号，
-  # 第 2 段「5.0 以上可能是已知问题」作为说明附在这张卡上
-  1: {disabled: true, reason: "查看位置并入第 3 段问题卡的标题"}
-  3: {kind: question, title: "Which version of the Anker eufy app are you using? You can find it in the app under Settings, then About or App Information."}
+  # 两次「未解决」就算指南走完、进质保，版本号从没拿到（官方 63 单 T57）。第 1 段改成问题卡收版本号（原文仍以
+  # 「Check the version…」开头，选方案时把「先确认版本」认作计划内检查，不另发追问；2026-10-13 复测禁用第 1 段后
+  # 2/8 次先追问版本、再发问题卡问第二遍）；第 2 段「5.0 以上可能是已知问题」附在后面；第 3 段是交给支持团队
+  1: {kind: question, title: "Which version of the Anker eufy app are you using? You can find it in the app under Settings, then About or App Information."}
+  3: {kind: handoff}
 rv-0021:
   # 「清水不足降级为纯扫」（6536/6537）。正文后半「Please note: The alert you see is just a reminder… normal protective mechanism」
   # 讲的是机器人在没有基站的楼层、清水用完自动转纯扫；客户说水箱满着仍提示加水（T37 主轮选中这条）时，这句把异常解释成正常。

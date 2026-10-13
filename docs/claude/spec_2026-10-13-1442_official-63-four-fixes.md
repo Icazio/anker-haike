@@ -43,3 +43,12 @@
 - 新增 `orchestrator/tests/test_official_63_review_fixes.py`，9 例：T53/T50 不追问充电、说了充不进电仍追问、多语言词根、negated 还原；T57 问题卡、拒绝"未解决"、短答记为事实；T34 走完交 R5、未命中仍进质保；T48 提示词约束。
 - `make lint` 通过；相关测试文件 514 + 258 例通过（1 skipped）。
 - 未用真实模型复测。T48 依赖模型遵守提示词；T50/T53/T57/T34 是确定性约束。
+
+## 复测后补丁（2026-10-13 15:27）
+
+真实模型复测见 `docs/planning/2026-10-13-1505_four-fixes-live-retest/复测结论.md`。上面 T53、T57 的方案在复测中各有一处不足，补丁如下。上文保持原样。
+
+- **T53：** `mentions_charging` 从词根 `charg` 改为只认充电问题（`CHARGING_PROBLEM`：充不进、停止充电、充电灯、电池电量，多语言）。模型把"tried to charge it over and over again but it stoped turning on"整句抽成现象时，词根判断会误以为客户说过充电。
+- **T57：**
+  - bp-0164 改为第 1 段做问题卡，第 3 段改成 handoff，不再禁用第 1 段。
+  - `in_plan_check` 增加一种情况：计划里的问题卡问的就是模型的前提或追问时，算计划内检查，不另发文字追问。此前复测 3/6 次先用文字问版本，客户答完问题卡又问一遍。
