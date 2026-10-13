@@ -216,6 +216,21 @@ async def test_in_warranty_replacement_collects_sop_evidence_then_submits(l3_run
         assert len(l3_runtime.cases.store.ratings) == 1
 
 
+async def test_photo_reply_classified_as_supplement_goes_back_to_the_proposal(l3_runtime, monkeypatch):
+    """2026-10-13 T55 真实复测 2/5：补照片那一轮被理解成 supplement，本轮上传的图还没并进 image_refs，
+    证据检查没看到它，照片被当成新故障重走读图与选方案，最后转了人工。本轮上传的故障图要算作补齐证据。"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid, rows = await replacement_ready(client, monkeypatch)
+        assert "a photo or video of the fault" in said(rows)
+        interpret_as(monkeypatch, {"Here are photos of the problem.": TurnInterpretation(primary_intent="supplement")})
+        rows = events(await send(client, sid, "Here are photos of the problem.", images=1))
+        assert "serial number (SN)" in said(rows) and "a photo or video of the fault" not in said(rows)
+        assert not any(e["type"] in {"escalation_summary", "step_card"} for e in rows)
+        state = await state_of(sid)
+        assert state["awaiting_evidence"] == ["serial_number"]
+        assert state["turn_decision"]["evidence_supplied"] is True
+
+
 async def test_out_of_warranty_is_declined_politely(l3_runtime, monkeypatch):
     """T29：订单 Anker011 质保至 2025-11-30 → 告知过保并委婉拒绝，不提交服务单。"""
     interpret_as(monkeypatch, {"污水盘不排水，订单 Anker011，申请换货": REPLACE})

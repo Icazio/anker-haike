@@ -50,7 +50,8 @@ class Conflict(BaseModel):
     kind: Literal["object", "direction", "not_reported"] = Field(
         description="object = 候选针对的部件 / 受电方与客户说的不同（充电盒自身不进电 vs 盒给泵充电）；"
                     "direction = 时机或结果相反（提前启动 vs 无法启动）；"
-                    "not_reported = 候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电）")
+                    "not_reported = 候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电），"
+                    "或候选只是用法 / 规格说明而客户报的是故障（客户说充电盒充不进电，候选讲充满要多久）")
     customer_quote: str | None = Field(
         default=None, max_length=200,
         description="object / direction：从 customer_original 逐字摘录客户描述该问题的那一句；not_reported 留空")
@@ -196,9 +197,12 @@ def filter_hypotheses(
     codes = {c.upper() for c in error_codes}
     # 唯一的「现象」只是哪部分正常（T50「the left one does work」）：模型不把它列进 supported_symptoms 时，
     # 会转而用 needs_confirmation 自拟追问，替客户假定另一侧的故障（T50 右侧吸力、B10 反转成左侧没吸力）。
-    # 没有任何确定现象与错误码时，每个候选都只能先问哪里有问题。
-    only_uncertain = None if codes or any(f.get("polarity", "affirmed") != "uncertain" for f in by_value.values()) \
-        else next(iter(by_value.values()), None)
+    # 没有任何确定现象与错误码时，每个候选都只能先问哪里有问题。理解阶段把这句记成观察而非现象时同样算
+    #（2026-10-13 deepseek-v4-pro：observation「the left one does work」uncertain，选方案以 0.9 判可执行发了 5 张卡）
+    stated_facts = [f for f in facts if f.get("kind") in {"symptom", "observation"} and f.get("status", "active") == "active"
+                    and f.get("source_kind", "user_report") == "user_report"]
+    only_uncertain = None if codes or not stated_facts or any(f.get("polarity", "affirmed") != "uncertain" for f in stated_facts) \
+        else stated_facts[0]
 
     def clarify(h, reason, question):
         ev = [e for e in (h.get("evidence_ids") or []) if e in evidence_ids]
@@ -329,9 +333,13 @@ INSTRUCTION = (
     "- action_taken 是用户已经做过的操作，只是背景：自述没有卡片反馈精确，候选与这些动作重叠不是拒绝依据，仍按现象判断。\n"
     "- 候选讲的不是客户这件事时填 conflict，不要因为共享关键词就当成同一件事：\n"
     "  object：针对的部件或受电方不同（客户说充电盒自身充不进电，候选讲盒给泵充电）；ask_about 填客户说的那个部件，"
-    "customer_quote 从 customer_original 逐字摘录客户那句话；\n"
+    "customer_quote 从 customer_original 逐字摘录客户那句话。"
+    "客户说的问题有先后因果（A 坏了所以 B 也不行，如「充电盒充不进电，所以泵也充不了」）时，只处理后果 B 的候选也是 object："
+    "源头 A 没解决，按 B 排查无效；ask_about 填源头 A 的部件，customer_quote 摘客户说 A 的那句；\n"
     "  direction：时机或结果相反（客户说提前启动，候选讲无法启动；始终离线与偶发离线）；\n"
-    "  not_reported：候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电；客户只说左边能用）。\n"
+    "  not_reported：候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电；客户只说左边能用）；"
+    "候选只是产品用法、规格或说明（充满要多久、怎么清洁、有没有某功能），客户报的却是故障，也填 not_reported——"
+    "只有客户问的正是这条说明时才可用。\n"
     "  只是同一类部件的不同叫法（water tray 与 dirty water tank）、客户说整机而候选讲其部件，不算冲突。\n"
     "- 候选标注了「小节」时，用户现象明确属于其中一个小节就把该小节标题逐字填进 matched_section；不确定留空，不要猜。\n"
     "- needs_confirmation 时同时填 missing_fact：要确认的那个前提在候选原文里的原话（如 perform a new mopping task）。\n"

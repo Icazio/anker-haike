@@ -1273,8 +1273,11 @@ async def understand(state: SessionState) -> SessionState:
                 if context_sources.get(key) != "receipt":
                     context_values[key], context_sources[key] = value, "user"
         update.update(service_context=context_values, context_sources=context_sources)
-        if state.get("awaiting_evidence") and state.get("case_id") and (reported or _new_fault_images(state)):
-            # 补齐 SOP 证据的回复：回到质保 / 方案节点重新核对，缺什么再问什么。
+        uploaded = [ref for e in state.get("history", []) if e.get("entry_id") == state.get("input_id")
+                    for ref in ((e.get("payload") or {}).get("images") or []) if ref.get("purpose", "fault") == "fault"]
+        if state.get("awaiting_evidence") and state.get("case_id") and (reported or uploaded or _new_fault_images(state)):
+            # 补齐 SOP 证据的回复：回到质保 / 方案节点重新核对，缺什么再问什么。本轮刚上传的图此时还没并进 image_refs
+            #（本节点末尾才追加），要直接看本轮输入（2026-10-13 T55 5 次里 2 次补照片被当成新故障重走诊断、转了人工）
             update["turn_decision"]["evidence_supplied"] = True
     if context.get("source") != "validated_action":
         update["model_trace"] = [

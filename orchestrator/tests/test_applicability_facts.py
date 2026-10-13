@@ -71,6 +71,19 @@ def test_uncertain_polarity_forces_clarification():
 T52_SAID = "My charging case will not charge therefore I cannot charge my pump motors."
 
 
+def test_uncertain_observation_alone_also_forces_clarification():
+    """2026-10-13 deepseek-v4-pro：「the left one does work」被记成 observation 而非 symptom，选方案以 0.9 判可执行发了 5 张卡。
+    唯一的客户陈述只是哪部分正常，不论记成现象还是观察，都先问哪一侧、什么问题。"""
+    facts = [{"kind": "observation", "value": "the left one does work", "quote": "the left one does work",
+              "polarity": "uncertain", "status": "active"}]
+    kept, dropped, clar = filter_hypotheses(
+        [_hyp("qa_bp_0020", supported_symptoms=["I have a S1 pump, the left one does work"])], allowed=_allowed("qa_bp_0020"),
+        evidence_ids={"e1"}, symptoms={"I have a S1 pump, the left one does work"}, facts=facts, error_codes=[], max_n=3,
+    )
+    assert kept == [] and "polarity_uncertain:qa_bp_0020" in dropped
+    assert "Which side or part" in clar[0]["question"]
+
+
 def test_direction_conflict_drops_without_asking():
     """T61：「提前两小时启动」对「无法按时启动（7051）」方向相反。候选不对不是信息不足，不追问「你说的是提前吗」
     （重复客户原话，Fable D1）。是否相反由模型判断（conflict），原先是 before / early 对 failed to start 的词表。"""
