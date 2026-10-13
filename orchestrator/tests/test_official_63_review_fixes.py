@@ -68,6 +68,39 @@ def test_no_conflict_keeps_the_candidate():
     assert [k["plan_id"] for k in kept] == [BP_0127]
 
 
+T52_SAID = "My charging case will not charge therefore I cannot charge my pump motors. I am an exclusive pumper"
+
+
+@pytest.mark.parametrize("plan_id", ["qa_bp_0039", "qa_bp_0067", "qa_bp_0122", "qa_bp_0127"])
+def test_t52_pump_charging_entries_carry_the_case_power_premise(plan_id):
+    """T52 审核规则：讲泵受电的四条都默认充电盒本身能通电，这条前提交给选方案的模型；无关条目不带前提。"""
+    assert "charging case itself powers on" in LIB.get(plan_id).premise
+    # 「充满要多久」是说明：前提是客户在问时长而不是报故障（T52 复测 2/5 被当成排障指南）
+    assert "asking how long charging takes" in LIB.get("qa_bp_0066").premise
+    assert LIB.get("qa_bp_0102").premise == ""
+
+
+def test_t52_premise_is_shown_to_the_model_next_to_the_candidate():
+    from app.diagnose.synthesize import synthesis_messages
+
+    state = {"symptoms": ["charging case will not charge"], "text": T52_SAID}
+    human = synthesis_messages(state, [LIB.get("qa_bp_0039")], [], [], 3)[1][1]
+    assert "（前提：The charging case itself powers on" in human
+
+
+def test_t52_premise_conflict_asks_about_the_case_not_the_pump():
+    """客户否定了前提（盒子自身充不进电）：模型判 object 冲突、ask_about 取前提里的充电盒，追问盒子本身，不发泵受电指南。"""
+    conflict = {"kind": "object", "customer_quote": "My charging case will not charge",
+                "candidate_quote": "The charging case itself powers on and charges when plugged in", "ask_about": "charging case"}
+    kept, dropped, clar = filter_hypotheses(
+        [{"plan_id": "qa_bp_0039", "confidence": 0.9, "evidence_ids": ["e1"], "applicability": "supported",
+          "supported_symptoms": ["cannot charge my pump motors"], "conflict": conflict}],
+        allowed={"qa_bp_0039": LIB.get("qa_bp_0039")}, evidence_ids={"e1"}, symptoms={"cannot charge my pump motors"},
+        facts=[], said=[T52_SAID], max_n=3)
+    assert kept == [] and "conflict_object:qa_bp_0039" in dropped
+    assert "charging case itself" in clar[0]["question"]
+
+
 def test_t50_normal_operation_marked_negated_is_restored_to_the_quote():
     """T50 主轮：「the left one does work」抽成 negated「left side does not work」，与原话意思相反。
     改成 uncertain 并还原 value，由服务端问哪一侧、什么问题。"""

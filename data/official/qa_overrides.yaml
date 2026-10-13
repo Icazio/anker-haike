@@ -10,6 +10,8 @@
 # 原文锚点，从锚点处切开，依次生成 s{pos}、s{pos}b、s{pos}c…；切出的文字拼起来就是原段落；media: true 指定由哪一部分挂原段图示 / 链接，
 # 不写时挂第一张出卡的部分）；scope_note（{when: 客户原话正则, text: 系统说明}：客户原话命中时附在这一步的卡片上，
 # 说明这条资料能做什么、做不到什么，系统口吻、不改原文，不新增步骤或承诺）。
+# 条目级 premise（与段落位置并列）：这条指南默认成立、标题没写的前提，选方案时随候选交给模型；客户原话否定它就是对象冲突，
+# 追问前提里的部件，不发这条指南（T52 盒子自身充不进电，讲泵受电的条目都默认盒子能通电）。
 bp-0123:
   1: {kind: statement}                                   # 「Identify the Problem」是标题
   3: {kind: question, options: ["Upon startup", "During breast pumping", "Only at high speed"]}
@@ -144,3 +146,18 @@ rv-0021:
                       text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
       - {at: "Please note: The alert you see is just a reminder", disabled: true, reason: "只适用于机器人在无基站楼层用完清水；满水仍报警的客户读成「这是正常的」"}
       - {at: "If the problem continues after refilling the water", kind: handoff}
+bp-0039:
+  # 「充电盒不给泵充电」：对准泵与盒内触点、清触点、复位泵，都默认盒子本身能通电（T52 客户说盒子自身充不进电，首卡禁止项）
+  premise: "The charging case itself powers on and charges when plugged in; the problem is only with charging the pumps."
+bp-0067:
+  # 「泵在盒里充不上」：第 3 步才提「确认盒子本身有电」，前两步已默认盒子能通电（T52）
+  premise: "The charging case itself powers on and charges when plugged in; the problem is only with charging the pumps."
+bp-0122:
+  # 「泵马达不充电」：同上，盒子自身不进电时泵充不上只是下游结果（B11 / T52）
+  premise: "The charging case itself powers on and charges when plugged in; the problem is only with charging the pumps."
+bp-0127:
+  # 「盒子一侧不给泵充电」：另一侧能充说明盒子本身有电（T52 首轮主轮被读成盒子自身不进电）
+  premise: "The charging case itself powers on and charges when plugged in; only one side does not charge its pump."
+bp-0066:
+  # 「充电盒充满要多久」是规格说明：客户说盒子充不进电时它不是排障指南（2026-10-13 T52 复测 2/5 以 0.9 判可执行发了一张说明卡）
+  premise: "The customer is asking how long charging takes, not reporting that the case or pumps fail to charge."

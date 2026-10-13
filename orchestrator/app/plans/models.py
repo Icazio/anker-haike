@@ -81,6 +81,8 @@ class Plan(_Strict):
     applies_to: AppliesTo
     symptom_codes: list[str] = Field(default_factory=list)
     steps: list[PlanStep] = Field(min_length=1)
+    # 2026-10-13：人工审核写的整条前提（qa_overrides 的 premise），选方案时交给模型判断客户是否否定了它
+    premise: str = ""
 
     @model_validator(mode="after")
     def _steps_consistent(self) -> Plan:

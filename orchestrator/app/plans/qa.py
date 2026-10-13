@@ -175,6 +175,7 @@ def plan_of(guide: Guide, version: str) -> tuple[dict, dict[str, dict]]:
         "applies_to": {"scope": "sku", "category": guide.category, "sku_list": list(guide.pns)},
         "symptom_codes": list(guide.codes),
         "steps": steps,
+        "premise": guide.premise,
     }
     return plan, evidence
 

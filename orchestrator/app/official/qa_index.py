@@ -117,6 +117,9 @@ class Guide:
     visible: bool = True
     category: str = ""
     sections: tuple[FaultSection, ...] = ()
+    # 人工审核写的整条前提：这条指南默认成立、却没写在标题里的条件（bp-0039「充电盒本身能通电」）。
+    # 选方案时随候选交给模型，客户原话否定它就是对象冲突（T52 盒子自身充不进电，泵受电指南不适用）
+    premise: str = ""
 
     @property
     def plan_id(self) -> str:
@@ -307,7 +310,21 @@ def load_overrides(path: Path | None = None) -> dict[str, dict[int, dict]]:
     if not target.is_file():
         return {}
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    return {str(qa_id): {int(no): dict(spec or {}) for no, spec in (entries or {}).items()} for qa_id, entries in raw.items()}
+    return {str(qa_id): {int(no): dict(spec or {}) for no, spec in (entries or {}).items() if no != "premise"}
+            for qa_id, entries in raw.items()}
+
+
+@lru_cache(maxsize=1)
+def load_premises(path: Path | None = None) -> dict[str, str]:
+    """覆写文件里条目级的 premise（与段落位置并列的 premise 键）：{qa_id: 前提原文}。"""
+    import yaml
+
+    target = path or overrides_path()
+    if not target.is_file():
+        return {}
+    raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    return {str(qa_id): str(entries["premise"]).strip() for qa_id, entries in raw.items()
+            if isinstance(entries, dict) and entries.get("premise")}
 
 
 SPEC_KEYS = {"kind", "title", "options", "branches", "default", "retry_options", "disabled", "reason", "caution", "media", "scope_note"}
@@ -453,6 +470,7 @@ def build_guide(entry: QAEntry, overrides: dict[int, dict] | None = None) -> Gui
         visible=entry.visible,
         category=CATEGORY.get(entry.directory[1], "robot_vacuum"),
         sections=sections,
+        premise=load_premises().get(entry.id, ""),
     )
 
 

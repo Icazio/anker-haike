@@ -340,6 +340,8 @@ INSTRUCTION = (
     "  not_reported：候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电；客户只说左边能用）；"
     "候选只是产品用法、规格或说明（充满要多久、怎么清洁、有没有某功能），客户报的却是故障，也填 not_reported——"
     "只有客户问的正是这条说明时才可用。\n"
+    "  候选标了「前提」时，客户原话否定了这个前提（前提是充电盒本身能通电，客户说充电盒充不进电），填 object，"
+    "ask_about 填前提里那个部件，customer_quote 摘客户否定它的那句。\n"
     "  只是同一类部件的不同叫法（water tray 与 dirty water tank）、客户说整机而候选讲其部件，不算冲突。\n"
     "- 候选标注了「小节」时，用户现象明确属于其中一个小节就把该小节标题逐字填进 matched_section；不确定留空，不要猜。\n"
     "- needs_confirmation 时同时填 missing_fact：要确认的那个前提在候选原文里的原话（如 perform a new mopping task）。\n"
@@ -382,6 +384,7 @@ def synthesis_messages(state, allowed, evidence, observations, max_hypotheses) -
     """只构造本次可见候选；完整会话来源与预算由 prepare_messages 统一加入。"""
     plans_text = "\n".join(
         f"- {p.plan_id}：{p.fault}（步骤：{'；'.join(f'{s.step_id} {s.title}' for s in p.steps if s.kind in {'action', 'question'})}）"
+        + (f"（前提：{p.premise}）" if p.premise else "")
         + (f"（小节：{' / '.join(p.steps[0].options)}）" if p.steps[0].kind == "question" and p.steps[0].branches else "")
         for p in allowed
     )
