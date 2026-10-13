@@ -67,6 +67,7 @@ docs/【黑客松智能服务赛道】工具资料包/
 
 # 2026-10 评测与复现：真实模型跑出的会话轨迹、探针脚本与日志只留本机，Markdown 结论与复核文档入库
 docs/planning/2026-10-*/**/*.json
+docs/planning/2026-10-*/**/*.jsonl
 docs/planning/2026-10-*/**/*.py
 docs/planning/2026-10-*/**/*.log
 docs/planning/2026-10-*/**/*.diff
