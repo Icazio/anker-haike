@@ -8,6 +8,8 @@
 
 按 session_id 删除全部数据：`delete_session_data`（人工处理用户删除请求），HTTP 入口 DELETE /sessions/{id}
 （X-Admin-Token），CLI `haike-retention delete <session_id>` / `haike-retention purge`。
+analytics schema 的观测台事实（会话列表、首问、运行与调用记录、标注）比原始会话活得久：TTL 清理不碰，
+只有按会话删除才一并删掉。
 每轮清理输出结构化日志 event=retention_purge，带各表删除行数。
 """
 
@@ -25,17 +27,13 @@ from typing import Any
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from app.analytics.schema import SCHEMA as ANALYTICS_SCHEMA
 from app.settings import settings
 
 log = logging.getLogger("retention")
 
 # 会话数据所在的表 → 会话键列。checkpoint 三表由 LangGraph AsyncPostgresSaver 建，可能尚不存在（惰性建表）。
 SESSION_TABLES: tuple[tuple[str, str], ...] = (
-    ("model_calls", "session_id"),
-    ("retrieval_calls", "session_id"),
-    ("node_runs", "session_id"),
-    ("run_facts", "session_id"),
-    ("session_facts", "session_id"),
     ("conversation_summaries", "session_id"),
     ("session_inputs", "session_id"),
     ("session_images", "session_id"),
@@ -45,6 +43,9 @@ SESSION_TABLES: tuple[tuple[str, str], ...] = (
     ("checkpoints", "thread_id"),
     ("sessions", "session_id"),
 )
+
+# 观测台事实表（迁移 0004，均以 session_id 为键）。不在 search_path 上，表名必须带 schema；只在按会话删除时清理。
+ANALYTICS_TABLES: tuple[str, ...] = ("cases", "model_calls", "retrieval_calls", "node_runs", "run_facts", "session_facts")
 
 
 @dataclass
@@ -59,15 +60,17 @@ class PurgeStats:
         return asdict(self)
 
 
-async def _existing_tables(conn) -> set[str]:
+async def _existing_tables(conn, schema: str | None = None) -> set[str]:
     cur = await conn.execute(
-        "select table_name from information_schema.tables where table_schema = current_schema()"
+        "select table_name from information_schema.tables where table_schema = coalesce(%s, current_schema())",
+        (schema,),
     )
     return {r[0] if not isinstance(r, dict) else r["table_name"] for r in await cur.fetchall()}
 
 
 async def delete_session_data(pool: AsyncConnectionPool, session_id: str, *, expired_before: datetime | None = None) -> dict[str, int]:
-    """删除一个会话在所有表里的数据，返回 {table: rows}。不存在的表跳过；总行数为 0 表示本来就没有数据。"""
+    """删除一个会话在所有表里的数据，返回 {table: rows}。不存在的表跳过；总行数为 0 表示本来就没有数据。
+    expired_before 为 None 即按会话删除（用户删除请求），analytics 事实一并删除，计数键为 `analytics.<表>`。"""
     counts: dict[str, int] = {}
     async with pool.connection() as conn, conn.transaction():
         # Same row lock as acceptance/publication/snapshot; recheck expiry after acquiring it.
@@ -112,6 +115,11 @@ async def delete_session_data(pool: AsyncConnectionPool, session_id: str, *, exp
                 continue
             cur = await conn.execute(f"delete from {table} where {col} = %s", (session_id,))
             counts[table] = cur.rowcount or 0
+        if expired_before is None:
+            for table in sorted(await _existing_tables(conn, ANALYTICS_SCHEMA) & set(ANALYTICS_TABLES)):
+                name = f"{ANALYTICS_SCHEMA}.{table}"
+                cur = await conn.execute(f"delete from {name} where session_id = %s", (session_id,))
+                counts[name] = cur.rowcount or 0
     if sum(counts.values()):
         log.info(
             "session data deleted session=%s rows=%s",

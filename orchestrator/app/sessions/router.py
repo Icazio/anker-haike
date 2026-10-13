@@ -406,7 +406,7 @@ async def delete_session(
     request: Request,
     x_admin_token: Annotated[str | None, Header()] = None,
 ):
-    """票 48：按 session_id 删除全部数据（投影、事件、动作、图片、checkpoint），供人工处理删除请求。
+    """票 48：按 session_id 删除全部数据（投影、事件、动作、图片、checkpoint、观测台事实），供人工处理删除请求。
 
     需 X-Admin-Token 与 ADMIN_TOKEN 一致；未配置 ADMIN_TOKEN 时接口关闭（403）。有 active run 先取消。
     """

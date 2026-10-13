@@ -1,6 +1,6 @@
 """票 48：数据保留与脱敏（07 §12 记忆分类 TTL、§15 数据）。
 
-- 按会话删除：DELETE /sessions/{id}（X-Admin-Token）→ 快照 404、事件 / 图片 / checkpoint 无残留。
+- 按会话删除：DELETE /sessions/{id}（X-Admin-Token）→ 快照 404、事件 / 图片 / checkpoint / analytics 事实无残留。
 - TTL 清理：purge_expired 只删过期且无 active run 的会话与孤儿事件，有统计；日志轮转备份按 7 天清理。
 - 脱敏：跑一条含手机号 / 订单号 / 地址的消息后，JSONL 里用正则搜不到明文。
 """
@@ -22,7 +22,14 @@ from app.images.store import InMemoryImageStore
 from app.main import app
 from app.observability.privacy import sanitize
 from app.observability.runtime import configure_logging, record, set_exporter
-from app.retention import PurgeStats, purge_expired, purge_log_backups, ttl_config
+from app.retention import (
+    ANALYTICS_TABLES,
+    PurgeStats,
+    delete_session_data,
+    purge_expired,
+    purge_log_backups,
+    ttl_config,
+)
 from app.retention import main as retention_main
 from app.sessions import sse
 from app.sessions.store import SessionNotFound
@@ -179,6 +186,70 @@ async def test_purge_expired_sessions_real_postgres_keeps_active_and_fresh():
             await conn.execute("delete from session_events where session_id = any(%s)", (keep,))
             await conn.execute("delete from session_images where session_id = any(%s)", (keep,))
     finally:
+        await pool.close()
+
+
+# analytics 五张表曾按 public 表名查找而被静默跳过，删除后管理台列表仍显示会话与客户首问
+ANALYTICS_ROWS = (
+    "insert into analytics.session_facts(session_id, first_question) values (%(sid)s, 'X10 不吸了')",
+    "insert into analytics.run_facts(run_id, session_id) values ('r1', %(sid)s)",
+    "insert into analytics.node_runs(session_id, run_id, idx, node) values (%(sid)s, 'r1', 0, 'understand')",
+    "insert into analytics.model_calls(task, session_id, status) values ('diagnose.synthesize', %(sid)s, 'ok')",
+    "insert into analytics.retrieval_calls(status, session_id) values ('ok', %(sid)s)",
+    "insert into analytics.cases(case_id, session_id, verdict) values (%(sid)s, %(sid)s, 'review')",
+)
+
+
+async def _analytics_counts(conn, sid: str) -> dict[str, int]:
+    counts = {}
+    for table in ANALYTICS_TABLES:
+        cur = await conn.execute(f"select count(*) as n from analytics.{table} where session_id = %s", (sid,))
+        counts[table] = (await cur.fetchone())["n"]
+    return counts
+
+
+async def test_ttl_keeps_analytics_facts_but_explicit_delete_removes_them_real_postgres():
+    from tests.test_catalog import _pool
+
+    pool = await _pool()
+    sid = ""
+    try:
+        from app.sessions.store import PostgresSessionStore
+
+        async with pool.connection() as conn:
+            cur = await conn.execute("select to_regclass('analytics.session_facts') is not null as has")
+            if not (await cur.fetchone())["has"]:
+                pytest.skip("analytics schema not migrated")
+        store = PostgresSessionStore(pool)
+        await store.setup()
+        sid = (await store.create_session()).session_id
+        await store.append_event(sid, "r1", {"type": "run_started", "resumed": False, "deadline_ms": 1})
+        async with pool.connection() as conn:
+            await conn.execute("update sessions set updated_at = now() - interval '30 hours' where session_id = %s", (sid,))
+            for statement in ANALYTICS_ROWS:
+                await conn.execute(statement, {"sid": sid})
+
+        # TTL 路径（purge_expired 逐个会话调用的就是这一句）：原始会话删除，观测台事实保留
+        expired = await delete_session_data(pool, sid, expired_before=datetime.now(UTC) - timedelta(hours=24))
+        assert expired["sessions"] == 1 and not any(key.startswith("analytics.") for key in expired)
+        assert not await store.session_exists(sid)
+        async with pool.connection() as conn:
+            assert await _analytics_counts(conn, sid) == dict.fromkeys(ANALYTICS_TABLES, 1)
+
+        # 按会话删除：原始数据已无，analytics 六张表各删一行
+        deleted = await delete_session_data(pool, sid)
+        assert {key: n for key, n in deleted.items() if key.startswith("analytics.")} == {
+            f"analytics.{table}": 1 for table in ANALYTICS_TABLES
+        }
+        async with pool.connection() as conn:
+            assert await _analytics_counts(conn, sid) == dict.fromkeys(ANALYTICS_TABLES, 0)
+    finally:
+        if sid:
+            async with pool.connection() as conn:
+                for table in ANALYTICS_TABLES:
+                    await conn.execute(f"delete from analytics.{table} where session_id = %s", (sid,))
+                await conn.execute("delete from session_events where session_id = %s", (sid,))
+                await conn.execute("delete from sessions where session_id = %s", (sid,))
         await pool.close()
 
 
