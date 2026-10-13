@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from langchain_core.messages import convert_to_messages
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
@@ -35,6 +35,11 @@ def _clip(limit: int):
 
 
 Rationale = Annotated[str, _clip(80)]
+# 追问与客户症状的关系（T61 2026-10-13：两个时机冲突候选丢弃后，只覆盖「清扫不记录」的 0.3 候选拿「地图准不准」
+# 去追问）。表外的值当作没给，回到置信度门槛，不让整次选方案因一个字段作废
+QuestionRelationName = Literal["narrows", "different_problem"]
+QuestionRelation = Annotated[
+    QuestionRelationName | None, BeforeValidator(lambda v: v if v in get_args(QuestionRelationName) else None)]
 
 
 class Hypothesis(BaseModel):
@@ -57,6 +62,9 @@ class Hypothesis(BaseModel):
     matched_timing: str | None = Field(default=None, max_length=80, description="该方案针对的时机或方向，摘自候选原话；没有留空")
     matched_section: str | None = Field(default=None, max_length=120, description="候选列出多个故障小节时，用户现象对应的小节标题逐字；不能确定留空")
     missing_fact: str | None = Field(default=None, max_length=120, description="needs_confirmation 时，clarification_question 要确认的那个前提，摘自候选原文")
+    question_targets: list[str] = Field(default_factory=list, description="needs_confirmation 时，这个追问在区分哪条有效症状（逐字）")
+    question_relation: QuestionRelation = Field(
+        default=None, description="needs_confirmation 时：narrows = 前提是该症状的一种具体表现或发生条件；different_problem = 文档讲的是另一个问题")
 
 
 class PlansRanked(BaseModel):
@@ -83,6 +91,8 @@ def _schema_with_enum(plan_ids: list[str]) -> type[BaseModel]:
         matched_timing=(str | None, Field(default=None, max_length=80)),
         matched_section=(str | None, Field(default=None, max_length=120)),
         missing_fact=(str | None, Field(default=None, max_length=120)),
+        question_targets=(list[str], Field(default_factory=list)),
+        question_relation=(QuestionRelation, Field(default=None)),
     )
     return create_model(
         "PlansRankedEnum",
@@ -273,6 +283,19 @@ def in_plan_check(plan: Plan, missing_fact: str | None) -> str | None:
     return None
 
 
+def unrelated_question(h: dict[str, Any], symptoms: set[str]) -> bool:
+    """追问不是在细分客户的某条症状：模型自报 different_problem，或说 narrows 却指不出逐字的有效症状。
+    没给关系（旧回放、模型漏填）时不判，交给置信度门槛（T61 两次失败都是 0.2–0.3 的候选；T62 对同一条 rv-0542 的
+    「是否反复清扫」追问是在细分「不走直线」，0.35 也合理，只靠门槛分不开）。"""
+    relation = h.get("question_relation")
+    if relation is None:
+        return False
+    if relation == "different_problem":
+        return True
+    targets = [t for t in h.get("question_targets") or [] if t]
+    return not targets or not all(t in symptoms for t in targets)
+
+
 def answered_precondition(h: dict[str, Any], answered: list[dict[str, Any]]) -> dict[str, Any] | None:
     """这个候选要确认的前提，客户是否已经答过：同一计划、同一问句或同一前提原话。"""
     question = _norm(h.get("clarification_question"))
@@ -392,6 +415,9 @@ def filter_hypotheses(
                     # answered_preconditions 交给模型，模型看了回答仍确认不了前提成立，这条候选就不适用
                     dropped.append(f"precondition_unconfirmed:{pid}")
                     continue
+                elif unrelated_question(h, symptoms):
+                    dropped.append(f"clarify_unrelated:{pid}")
+                    continue
                 else:
                     dropped.append(f"not_supported:{pid}")
                     clarify(h, "needs_confirmation", h.get("clarification_question") or "")
@@ -447,6 +473,9 @@ INSTRUCTION = (
     "- action_taken 是用户已经做过的操作，只是背景：自述没有卡片反馈精确，候选与这些动作重叠不是拒绝依据，仍按现象判断。\n"
     "- 候选标注了「小节」时，用户现象明确属于其中一个小节就把该小节标题逐字填进 matched_section；不确定留空，不要猜。\n"
     "- needs_confirmation 时同时填 missing_fact：要确认的那个前提在候选原文里的原话（如 perform a new mopping task）。\n"
+    "- needs_confirmation 时还要填 question_targets（这个追问在区分哪条有效症状，逐字）与 question_relation："
+    "前提是该症状的一种具体表现或发生条件（「不走直线」→ 是否反复清扫同一区域）填 narrows；"
+    "文档讲的是另一个问题（「清扫不记录」→ 地图是否准确）填 different_problem，这种不要发追问。\n"
     "- 没有任何计划能解释时输出空列表。只输出 JSON。"
 )
 

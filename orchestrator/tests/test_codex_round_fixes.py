@@ -393,3 +393,64 @@ async def test_first_message_correction_without_a_target_is_not_a_correction(con
     result, trace = await complete_problem_facts(get_model_router(), meaning, source_state(TICKETS["T27"]), lane="domestic")
     assert len(model.calls) == 1 and trace["checks"] == 3
     assert any(f.kind == "observation" for f in result.facts)
+
+
+# ---- T61 2026-10-13 08:05 复测：不相关候选的追问（docs/claude/spec_2026-10-13-1041_t61-unrelated-clarify.md）----
+
+T61_FACTS = [
+    {"kind": "symptom", "value": "going off 2 hours before schedule", "quote": "it's going off 2 hours before",
+     "polarity": "affirmed", "timing": "2 hours before", "status": "active"},
+    {"kind": "symptom", "value": "cleans are not being recorded", "quote": "the cleans are not being recorded",
+     "polarity": "affirmed", "status": "active"},
+]
+
+
+def _t61_hyps(extra):
+    return [
+        {"plan_id": "qa_rv_0522", "confidence": 0.35, "evidence_ids": ["e1"], "applicability": "needs_confirmation",
+         "supported_symptoms": ["going off 2 hours before schedule"], "matched_timing": "failed to start scheduled cleaning",
+         "clarification_question": "Is another task running?", "missing_fact": "other tasks not completed"},
+        {"plan_id": "qa_rv_0565", "confidence": 0.3, "evidence_ids": ["e1"], "applicability": "needs_confirmation",
+         "supported_symptoms": ["cleans are not being recorded"], "missing_fact": "inaccurate mapping",
+         "clarification_question": "Does the app show an inaccurate or wrong map for your home?", **extra},
+    ]
+
+
+def _run(hyps, facts, symptoms):
+    allowed = {h["plan_id"]: LIB.get(h["plan_id"]) for h in hyps}
+    return filter_hypotheses(hyps, allowed=allowed, evidence_ids={"e1"}, symptoms=symptoms, facts=facts, error_codes=[], max_n=3)
+
+
+def test_t61_question_about_a_different_problem_is_not_asked():
+    """Codex repeat-1：时机冲突的两条丢弃后，只覆盖「清扫不记录」的 rv-0565（0.3）问「地图准不准」。
+    文档讲的是另一个问题，不追问；没有可执行方案就按知识缺口交人工。"""
+    symptoms = {f["value"] for f in T61_FACTS}
+    kept, dropped, clar = _run(_t61_hyps({"question_targets": ["cleans are not being recorded"],
+                                          "question_relation": "different_problem"}), T61_FACTS, symptoms)
+    assert kept == [] and clar == []
+    assert "timing_mismatch:qa_rv_0522" in dropped and "clarify_unrelated:qa_rv_0565" in dropped
+    # 自报 narrows 却指不出逐字的有效症状，同样不问
+    _, dropped, clar = _run(_t61_hyps({"question_targets": ["map is wrong"], "question_relation": "narrows"}), T61_FACTS, symptoms)
+    assert clar == [] and "clarify_unrelated:qa_rv_0565" in dropped
+
+
+def test_t62_question_that_narrows_the_symptom_is_still_asked():
+    """T62「not cleaning in a straight line」：rv-0542 问「是否反复清扫同一区域」是在细分客户的症状，Codex 判合理。"""
+    facts = [{"kind": "symptom", "value": "not cleaning in a straight line", "quote": "not cleaning in a straight line",
+              "polarity": "affirmed", "status": "active"}]
+    hyp = {"plan_id": "qa_rv_0542", "confidence": 0.35, "evidence_ids": ["e1"], "applicability": "needs_confirmation",
+           "supported_symptoms": ["not cleaning in a straight line"], "missing_fact": "Repeated cleaning/Overlapping cleaning paths",
+           "clarification_question": "Does the robot clean the same area repeatedly?",
+           "question_targets": ["not cleaning in a straight line"], "question_relation": "narrows"}
+    _, _, clar = _run([hyp], facts, {"not cleaning in a straight line"})
+    assert [c["plan_id"] for c in clar] == ["qa_rv_0542"]
+
+
+def test_without_a_relation_the_confidence_floor_still_applies():
+    """旧回放或模型漏填关系时不判相关性，回到 0.3 门槛：0.3 照问，0.25 不问。"""
+    symptoms = {f["value"] for f in T61_FACTS}
+    _, _, clar = _run(_t61_hyps({}), T61_FACTS, symptoms)
+    assert [c["plan_id"] for c in clar] == ["qa_rv_0565"]
+    low = _t61_hyps({})
+    low[1]["confidence"] = 0.25
+    assert _run(low, T61_FACTS, symptoms)[2] == []
