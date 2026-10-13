@@ -2,7 +2,7 @@
   "format": 3,
   "case_id": "t29_out_of_warranty",
   "title": "T29 过保：排障未解决 → 订单质保已过 → 委婉拒绝",
-  "recorded_at": "2026-10-13T12:07:23+00:00",
+  "recorded_at": "2026-10-13T23:35:12+00:00",
   "versions": {
     "prompt_ver": "system=2026-09-25.1;interpret=2026-10-11.1;reply=2026-10-09.1;guide=2026-09-12.1;clarify=2026-09-15.1;vision=2026-10-13.1;ocr=2026-10-08.1;summary=2026-09-12.1",
     "models_ver": "2026-10-13.2",
