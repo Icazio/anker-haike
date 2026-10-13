@@ -2114,7 +2114,9 @@ async def retrieve(state: SessionState) -> SessionState:
     requested_statuses = [
         per_kb_status[kb] for kb, count in allowed_counts.items() if count > 0
     ]
-    can_search = bool(requested_statuses) and all(s in ("ok", "no_match") for s in requested_statuses)
+    # 回放结果（replay）与 ok 同为有效检索：只认 ok 时回放跳过图片补检索，候选与录制时不同，录制包对不上
+    #（2026-10-13 t55_main 连续重录仍 replay_miss）
+    can_search = bool(requested_statuses) and all(s in ("ok", "no_match", "replay") for s in requested_statuses)
     # 图片和文本共享名额；真实服务故障/空范围不靠语义补查恢复。
     if (
         observations

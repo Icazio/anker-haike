@@ -1,0 +1,17 @@
+{
+  "format": 3,
+  "case_id": "t1_delivered",
+  "title": "T1 物流：订单显示送达、客户说只收到配件包 → 不补发，提交承运商调查单",
+  "recorded_at": "2026-10-13T12:07:11+00:00",
+  "versions": {
+    "prompt_ver": "system=2026-09-25.1;interpret=2026-10-11.1;reply=2026-10-09.1;guide=2026-09-12.1;clarify=2026-09-15.1;vision=2026-10-13.1;ocr=2026-10-08.1;summary=2026-09-12.1",
+    "models_ver": "2026-10-13.2",
+    "kb_ver": "0cc02e6531d6+text-embedding-v4",
+    "rules_ver": "2026-10-08.1",
+    "actions_version": "2026-10-08.1"
+  },
+  "counts": {
+    "model": 1,
+    "knowledge": 0
+  }
+}
