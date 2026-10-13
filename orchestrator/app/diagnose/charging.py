@@ -25,6 +25,14 @@ SLOT = re.compile(r"^\s+(?:on\s+)?(?:(?:one|either|both|the\s+(?:left|right|othe
                   re.IGNORECASE)
 
 
+# 客户的现象里有没有充电 / 电量：只看词根，多语言（laadt niet / lädt nicht / ne charge pas / no carga / batería）。
+CHARGING_WORD = re.compile(r"charg|laad|lad(?:en|t)\b|lädt|carg|batter|bater|akku|充电|充不|电量|电池", re.IGNORECASE)
+
+
+def mentions_charging(texts: list[str]) -> bool:
+    return any(CHARGING_WORD.search(text) for text in texts)
+
+
 @dataclass(frozen=True)
 class ChargingRelation:
     recipient: str

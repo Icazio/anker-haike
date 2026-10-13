@@ -120,9 +120,17 @@ rv-0112:
       - {at: "*If the error persists after refilling and restarting", kind: handoff}
 rv-0312:
   # 客户问维修后能不能找回旧地图、为什么历史记录里看得到却不能用（T34）。S1 Pro 没有维修后恢复地图、历史日志的官方资料；
-  # E28 的「删除后不可找回」不能借用。先如实说明这条资料能做什么，再照发查地图页 / 重建两步（Fable D4 2026-10-12）
+  # E28 的「删除后不可找回」不能借用。先如实说明这条资料能做什么，再照发查地图页 / 重建两步（Fable D4 2026-10-12）。
+  # beyond_source：说明里承诺「未解决由同事核查」，指南走完按资料缺口交人工，不进质保收订单（2026-10-13 官方 63 单复评）
   1: {scope_note: {when: "(?:lost|lose|missing|recover|restore|get back|retrieve|kwijt|verloren|perdu)[^.\\n]{0,40}maps?|maps?[^.\\n]{0,60}(?:history|histor|service|repair|kwijt|verloren)",
-                   text: "You'd like your old map back. I couldn't find official information on restoring a map after a repair, or on why it still shows in the cleaning history, so I can't confirm it can be recovered. The steps below check the map page and rebuilding; if you need the old map itself, mark them as not solved and a colleague will check."}}
+                   text: "You'd like your old map back. I couldn't find official information on restoring a map after a repair, or on why it still shows in the cleaning history, so I can't confirm it can be recovered. The steps below check the map page and rebuilding; if you need the old map itself, mark them as not solved and a colleague will check.",
+                   beyond_source: true}}
+bp-0164:
+  # 第 1 段「查看 App 版本」与第 3 段「提供 App 版本」是同一件事：向客户要版本号。原样是两张「是否解决」的操作卡，
+  # 两次「未解决」就算指南走完、进质保，版本号从没拿到（官方 63 单 T57）。合成第 3 段一张问题卡收版本号，
+  # 第 2 段「5.0 以上可能是已知问题」作为说明附在这张卡上
+  1: {disabled: true, reason: "查看位置并入第 3 段问题卡的标题"}
+  3: {kind: question, title: "Which version of the Anker eufy app are you using? You can find it in the app under Settings, then About or App Information."}
 rv-0021:
   # 「清水不足降级为纯扫」（6536/6537）。正文后半「Please note: The alert you see is just a reminder… normal protective mechanism」
   # 讲的是机器人在没有基站的楼层、清水用完自动转纯扫；客户说水箱满着仍提示加水（T37 主轮选中这条）时，这句把异常解释成正常。

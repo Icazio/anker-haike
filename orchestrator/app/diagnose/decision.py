@@ -210,7 +210,8 @@ COMPAT_RULE = {
     "safety_stop": "R4",
     "handoff_offer": "R2",
 }
-HANDOFF_RULE_BY_REASON = {"user_requested_human": "R3", "safety_risk": "R4", "guide_exhausted": "R1"}
+HANDOFF_RULE_BY_REASON = {"user_requested_human": "R3", "safety_risk": "R4", "guide_exhausted": "R1",
+                          "outcome_beyond_source": "R5"}
 # 主办方 SOP：排障后仍未解决 → 确认是否进入换货 / 退款。一条官方 Q&A 指南走完仍未解决就进入质保判断，
 # 不再换下一条相近的指南（实测 T55 / T29 会连走 3 条指南、7 步以上才停）。
 MAX_GUIDES = 1
@@ -341,6 +342,10 @@ def decide_next(state, *, library) -> NextAction:
     counted = [pid for pid in exhausted if ends[pid] not in {"question_exit", "source_gap"}]
     if len(counted) >= MAX_GUIDES and (any(s.get("feedback") == "not_solved" for s in executed)
                                        or "handoff" in ends.values()):
+        # 卡上已说明客户要的结果资料不覆盖、未解决由同事核查（T34 要找回旧地图，资料只有查地图页与重建）：
+        # 兑现这句话，按资料缺口交人工，不当成硬件故障进质保收订单
+        if any(f"beyond_source:{pid}" in (state.get("displayed_knowledge_nodes") or []) for pid in counted):
+            return result("handoff_offer", "outcome_beyond_source")
         return result("handoff_offer", "guide_exhausted")
     if decision.get("primary_intent") == "complaint" and not decision.get("diagnostic_request"):
         return result("pause", "complaint_reduce_burden")

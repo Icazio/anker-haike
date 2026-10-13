@@ -216,10 +216,12 @@ NEGATED_OPERATION = re.compile(r"n't|n’t|\bnot\b|\bno longer\b|\bnever\b|\bnie
 
 
 def normal_operation_is_uncertain(facts: list[FactCandidate]) -> list[FactCandidate]:
-    """只说某部分正常的「现象」改为 uncertain：由服务端问哪里有问题，不让候选方案替客户选对象。"""
+    """只说某部分正常的「现象」改为 uncertain：由服务端问哪里有问题，不让候选方案替客户选对象。
+    模型标成 negated 时 value 往往已被改写成反义（官方 63 单 T50 主轮：「the left one does work」记成
+    negated「left side does not work」），value 一并还原为原话。"""
     return [
-        f.model_copy(update={"polarity": "uncertain"})
-        if f.kind == "symptom" and f.polarity == "affirmed"
+        f.model_copy(update={"polarity": "uncertain", **({"value": f.quote} if f.polarity == "negated" else {})})
+        if f.kind == "symptom" and f.polarity in {"affirmed", "negated"}
         and NORMAL_OPERATION.search(f.quote) and not NEGATED_OPERATION.search(f.quote)
         else f
         for f in facts

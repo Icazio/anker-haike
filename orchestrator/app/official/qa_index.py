@@ -87,6 +87,8 @@ class Step:
     owns_media: bool = False  # 拆分段里由这一部分挂原段的图示 / 链接（默认第一张出卡的部分）
     # 资料覆盖边界说明：客户原话命中 when（正则）时附在这一步的卡片上，系统口吻、不改原文（T34 找回旧地图、T37 水箱已满）
     scope_note: tuple[str, str] | None = None
+    # 说明讲的是客户要的结果资料根本不覆盖（T34 要旧地图，资料只有查地图页与重建）：说明显示过、指南走完时按资料缺口交人工，不进质保
+    beyond_source: bool = False
     parts: tuple[Step, ...] = ()  # 人工审核把一段拆成多步（段内问句、诊断树）；为空即整段一步
     disabled: bool = False
     disabled_reason: str = ""
@@ -316,11 +318,11 @@ def _target(value: int | str) -> int | str:
 
 
 def _scope_note(spec: dict | None, pos: int) -> tuple[str, str] | None:
-    """{when: 客户原话正则, text: 系统说明}；正则在加载时编译一次校验，写错直接报错而不是静默不生效。"""
+    """{when: 客户原话正则, text: 系统说明, beyond_source: 可选}；正则在加载时编译一次校验，写错直接报错而不是静默不生效。"""
     if not spec:
         return None
-    if set(spec) != {"when", "text"}:
-        raise ValueError(f"scope_note in paragraph {pos} needs exactly when + text")
+    if not {"when", "text"} <= set(spec) <= {"when", "text", "beyond_source"}:
+        raise ValueError(f"scope_note in paragraph {pos} needs when + text (beyond_source optional)")
     re.compile(spec["when"])
     return str(spec["when"]), str(spec["text"])
 
@@ -339,6 +341,7 @@ def _spec_step(no: int, pos: int, text: str, spec: dict, *, warranty: bool) -> S
         caution=str(spec.get("caution") or ""),
         owns_media=bool(spec.get("media")),
         scope_note=_scope_note(spec.get("scope_note"), pos),
+        beyond_source=bool((spec.get("scope_note") or {}).get("beyond_source")),
         disabled=bool(spec.get("disabled")), disabled_reason=str(spec.get("reason") or ""),
         source_gap=bool(DANGLING_REFERENCE.search(text)),
     )

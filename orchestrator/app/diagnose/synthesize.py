@@ -16,7 +16,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationEr
 from app.context.budget import context_input_budget, measure_input
 from app.context.builder import ContextBudgetExceeded
 from app.context.runtime import prepare_messages
-from app.diagnose.charging import charging_question, check_charging_recipient
+from app.diagnose.charging import charging_question, check_charging_recipient, mentions_charging
 from app.diagnose.decision import SWITCH_CONFIDENCE, concrete
 from app.knowledge.context import render_evidence
 from app.models.queue import CapacityExceeded
@@ -335,6 +335,10 @@ def filter_hypotheses(
     # 没有任何确定现象与错误码时，每个候选都只能先问哪里有问题。
     only_uncertain = None if codes or any(f.get("polarity", "affirmed") != "uncertain" for f in by_value.values()) \
         else next(iter(by_value.values()), None)
+    # 客户说过的现象原话，不用模型改写的 value（T50 主轮把「does work」改写成「not working」）；自述做过的操作不算：
+    # 「充了很多次还是开不了机」说的是充电没用，不是充不进电（T53）。没抽到现象事实时用有效症状兜底（含消息原文）
+    reported = [f.get("quote") or f.get("value") or "" for f in by_value.values()
+                if f.get("polarity", "affirmed") != "negated"] or list(symptoms)
 
     def clarify(h, reason, question):
         ev = [e for e in (h.get("evidence_ids") or []) if e in evidence_ids]
@@ -383,6 +387,11 @@ def filter_hypotheses(
             dropped.append(f"timing_mismatch:{pid}")
             continue
         charging_status, charging_subject = check_charging_recipient(plan.fault, covered_facts, facts)
+        if charging_status == "unknown" and not mentions_charging(reported):
+            # 候选讲充电关系，客户却从没说过充电问题：问「哪个部件充不了电」是替客户加症状（官方 63 单 T53「充过电仍不开机」、
+            # T50「左边能用」都被 bp-0127 带去问充电）。候选不适用，交给其他候选
+            dropped.append(f"charging_not_reported:{pid}")
+            continue
         if charging_status in {"mismatch", "unknown"}:
             reason = f"charging_recipient_{charging_status}"
             dropped.append(f"{reason}:{pid}")

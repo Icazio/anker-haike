@@ -46,6 +46,8 @@ class PlanStep(_Strict):
     condition: str | None = None
     # 2026-10-12：资料覆盖边界说明（qa_overrides scope_note）：[客户原话正则, 系统说明]，命中时附在卡片上
     scope_note: list[str] | None = None
+    # 2026-10-13：说明讲的是资料不覆盖客户要的结果（T34 旧地图），显示过且指南走完时按资料缺口交人工（decide_next）
+    beyond_source: bool = False
 
     @field_validator("instruction_src")
     @classmethod

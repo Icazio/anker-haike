@@ -217,6 +217,8 @@ async def prepare_step(
         scoped = bool(step.scope_note and re.search(step.scope_note[0], customer_said(state), re.IGNORECASE))
         if scoped:
             context.append(step.scope_note[1])
+            if step.beyond_source and (beyond := f"beyond_source:{plan.plan_id}") not in displayed_nodes:
+                displayed_nodes.append(beyond)
         # 客户自述做过的事每个问题只说一次，附在本问题第一张卡上（同 statement 的 displayed_nodes 去重）
         reported_key = f"reported:{state.get('active_issue_id')}"
         if reported_key not in displayed_nodes and (quotes := reported_quotes(state)):

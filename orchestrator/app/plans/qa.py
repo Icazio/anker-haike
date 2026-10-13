@@ -166,6 +166,7 @@ def plan_of(guide: Guide, version: str) -> tuple[dict, dict[str, dict]]:
             "required_resources": ["device"] if kind == "action" else [],
             "condition": step_condition(step.text) if kind == "action" else None,
             "scope_note": list(step.scope_note) if step.scope_note else None,
+            "beyond_source": step.beyond_source,
         })
     plan = {
         "plan_id": guide.plan_id,
