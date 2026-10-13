@@ -5,6 +5,18 @@
 }
 
 https://{$PUBLIC_IP} {
+	# 压缩 JSON 和页面资源，聊天事件流继续直接透传。
+	encode zstd gzip {
+		match {
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type text/javascript*
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type image/svg+xml*
+		}
+	}
+
 	tls {
 		issuer acme https://acme-v02.api.letsencrypt.org/directory {
 			profile shortlived

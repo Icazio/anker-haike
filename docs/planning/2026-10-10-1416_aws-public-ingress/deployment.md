@@ -120,12 +120,21 @@ make -f deploy/tunnel/Makefile check-access
 
 check-access 使用禁网 Caddy 容器、临时凭据和无应用数据的回显服务，不调用模型或知识库。临时挂载文件放到用户缓存目录以适配 Colima，测试后删除。
 
+## 管理页面性能
+
+2026-10-13 已给 JSON、HTML、JS、CSS、SVG 响应启用 zstd/gzip 压缩；聊天事件流不匹配压缩规则，继续直接透传。管理员权限与身份转发规则保持原有配置。
+
+本次测量中，案件队列本机返回只需几十毫秒，云端经隧道获取只需 0.18 秒，公网未压缩下载需要 4.2–6.1 秒。启用 gzip 后传输体积由 176034 降至 21685 字节，公网复测为 0.39–0.74 秒；会话 limit30 / limit100 接口分别为 0.34 / 0.95 秒。会话页和工作台都读取案件队列，因此均受益。数值是当前网络下的接口样本，不能视为完整页面首次加载时长或时延保证。
+
+代理回归检查现包含压缩前后 JSON 相同、压缩体积减少和事件流不压缩，共 6 项通过。公网 viewer 仍不能进入管理页面，admin 的页面和只读 API 正常，HTTPS 证书校验通过。详细记录见 `docs/planning/2026-10-13-1117_admin-latency/`。
+
 ## 参考
 
 - [IP 地址证书正式可用](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)
 - [Caddy 2.11.7 发布说明](https://github.com/caddyserver/caddy/releases/tag/v2.11.7)
 - [Caddy ACME profile 配置](https://caddyserver.com/docs/caddyfile/directives/tls)
 - [Caddy SSE 与 WebSocket 代理](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)
+- [Caddy 响应压缩](https://caddyserver.com/docs/caddyfile/directives/encode)
 - [Caddy default_sni 与配置持久化](https://caddyserver.com/docs/caddyfile/options)
 - [AWS 公网 IPv4 费用](https://aws.amazon.com/vpc/pricing/)
 - [AWS 根盘费用](https://aws.amazon.com/ebs/pricing/)

@@ -1,6 +1,7 @@
 """通过真实 Caddy 请求验证认证边界，使用临时凭据和无数据的响应器。"""
 
 import base64
+import gzip
 import json
 import re
 import secrets
@@ -98,14 +99,26 @@ class AccessTest(unittest.TestCase):
             "protocols": ["h1"],
             "routes": [
                 {
+                    "match": [{"path": ["/stream"]}],
                     "handle": [
                         {
                             "handler": "static_response",
+                            "headers": {"Content-Type": ["text/event-stream"]},
+                            "body": "data: " + "haike" * 2500 + "\n\n",
+                        }
+                    ],
+                },
+                {
+                    "handle": [
+                        {
+                            "handler": "static_response",
+                            "headers": {"Content-Type": ["application/json"]},
                             "body": json.dumps(
                                 {
                                     "identity": "{http.request.header.X-Authenticated-User}",
                                     "authorization": "{http.request.header.Authorization}",
                                     "host": "{http.request.hostport}",
+                                    "padding": "haike" * 2500,
                                 }
                             ),
                         }
@@ -122,9 +135,11 @@ class AccessTest(unittest.TestCase):
             "IFS= read -r identity\n"
             "IFS= read -r path\n"
             "IFS= read -r method\n"
+            "IFS= read -r encoding\n"
             'if [ "$method" = POST ]; then set -- --post-data="{}"; else set --; fi\n'
             'wget -S -O - "$@" --header "Authorization: $authorization" '
-            '--header "X-Authenticated-User: $identity" "http://127.0.0.1:18444$path"\n'
+            '--header "X-Authenticated-User: $identity" --header "Accept-Encoding: $encoding" '
+            '"http://127.0.0.1:18444$path"\n'
         )
         cls.container = "haike-access-" + secrets.token_hex(4)
         subprocess.run(
@@ -179,20 +194,19 @@ class AccessTest(unittest.TestCase):
         raise RuntimeError(f"Local Caddy did not become ready; last HTTP status={last_status}")
 
     @classmethod
-    def request(cls, path, account, *, spoof=None, method="GET"):
+    def request(cls, path, account, *, spoof=None, method="GET", encoding=""):
         authorization = ""
         if account:
             encoded = base64.b64encode(f"{account}:{cls.passwords[account]}".encode()).decode()
             authorization = "Basic " + encoded
         result = subprocess.run(
             ["docker", "exec", "-i", cls.container, "sh", "/etc/caddy/request.sh"],
-            input=f"{authorization}\n{spoof or ''}\n{path}\n{method}\n",
-            text=True,
+            input=f"{authorization}\n{spoof or ''}\n{path}\n{method}\n{encoding}\n".encode(),
             capture_output=True,
             timeout=5,
             check=False,
         )
-        statuses = re.findall(r"HTTP/\S+ (\d+)", result.stderr)
+        statuses = re.findall(r"HTTP/\S+ (\d+)", result.stderr.decode(errors="replace"))
         if not statuses:
             raise OSError("No HTTP response from isolated Caddy")
         return int(statuses[-1]), result.stdout
@@ -239,6 +253,18 @@ class AccessTest(unittest.TestCase):
                 self.assertEqual(data["identity"], "admin")
                 self.assertFalse(bool(data["authorization"]))
                 self.assertEqual(data["host"], "127.0.0.1:5173")
+
+    def test_json_compression_preserves_response_and_reduces_download(self):
+        plain_status, plain = self.request("/admin/api/echo", "admin")
+        status, compressed = self.request("/admin/api/echo", "admin", encoding="gzip")
+        self.assertEqual((plain_status, status), (200, 200))
+        self.assertTrue(gzip.decompress(compressed) == plain, "Compression changed JSON data")
+        self.assertLess(len(compressed), len(plain) // 5)
+
+    def test_event_stream_is_forwarded_without_compression(self):
+        status, body = self.request("/stream", "viewer", encoding="gzip")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, ("data: " + "haike" * 2500 + "\n\n").encode())
 
 
 if __name__ == "__main__":
