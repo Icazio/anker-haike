@@ -20,8 +20,10 @@ type Props = {
   maxImages?: number;
   busy?: boolean;
   onCancel?: () => void;
-  /** 外部预置的附件（「载入真实工单」带的原图）；引用变化时加入附件区，走与手动选择相同的处理。 */
+  /** 外部预置的附件（「载入真实工单」带的原图）：替换附件区（空数组即清空），走与手动选择相同的处理。
+   *  一次性：取用后调 onPresetConsumed，调用方置空，否则输入框每次重挂载（出卡片、换问题）都会重放。 */
   presetFiles?: File[] | null;
+  onPresetConsumed?: () => void;
 };
 
 // 等待步骤时仍可正常对话，是否更新排障由本轮语义决定。
@@ -55,7 +57,7 @@ function autoGrow(el: HTMLTextAreaElement | null) {
   el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
 }
 
-export function Composer({ value, onChange, offline, inputRef, onSend, onSkipReceipt, pendingKind = null, purpose = 'fault', maxImages = 3, busy: runBusy = false, onCancel, presetFiles = null }: Props) {
+export function Composer({ value, onChange, offline, inputRef, onSend, onSkipReceipt, pendingKind = null, purpose = 'fault', maxImages = 3, busy: runBusy = false, onCancel, presetFiles = null, onPresetConsumed }: Props) {
   const inputId = useId();
   const fileRef = useRef<HTMLInputElement>(null);
   const localRef = useRef<HTMLTextAreaElement>(null);
@@ -94,11 +96,11 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onSkipRec
   }, [purpose, pendingKind]);
 
   useEffect(() => {
-    if (presetFiles?.length) {
-      release(attachmentsRef.current);
-      updateAttachments([]);
-      void addFiles(presetFiles.slice(0, maxImages));
-    }
+    if (!presetFiles) return;
+    release(attachmentsRef.current);
+    updateAttachments([]);
+    if (presetFiles.length) void addFiles(presetFiles.slice(0, maxImages));
+    onPresetConsumed?.();
     // 只在载入新工单（新数组引用）时触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetFiles]);

@@ -39,10 +39,23 @@ export function App() {
   }, [lastKey, state.ui]);
 
   const [presetFiles, setPresetFiles] = useState<File[] | null>(null);
+  // 连续换工单时，只认最后一次选择；先返回的旧附件丢弃
+  const ticketSeq = useRef(0);
   const loadTicket = useCallback(async (ticket: OfficialTicket) => {
+    const seq = ++ticketSeq.current;
     pickPrompt(ticket.body);
-    setPresetFiles(ticket.attachments.length ? await ticketFiles(ticket) : null);
+    // 无附件的工单传空数组，清掉上一单留下的图
+    const files = ticket.attachments.length ? await ticketFiles(ticket) : [];
+    if (seq === ticketSeq.current) setPresetFiles(files);
   }, []);
+  // 换会话时输入框整体重建：草稿、附件、未取用的预置图都不带进新会话
+  const [composerEpoch, setComposerEpoch] = useState(0);
+  function resetComposer() {
+    ticketSeq.current++;
+    setPresetFiles(null);
+    setDraft('');
+    setComposerEpoch((n) => n + 1);
+  }
 
   function pickPrompt(text: string) {
     setDraft(text);
@@ -60,6 +73,7 @@ export function App() {
     const interruptible = busy || state.pendingInput !== null || state.activeRun !== null;
     if (interruptible && !window.confirm('当前排查会中断，确定开始新会话？旧会话仍可从列表切回。')) return;
     setRecordOpen(false);
+    resetComposer();
     void session.startNew();
   }
 
@@ -85,7 +99,7 @@ export function App() {
           recent={session.recent}
           busy={busy}
           onNew={goHome}
-          onSwitch={(id) => void session.switchTo(id)}
+          onSwitch={(id) => { resetComposer(); void session.switchTo(id); }}
         />
       </HeaderBar>
       {hasHistory && (
@@ -108,7 +122,7 @@ export function App() {
           <div className={styles.dock}>
             {pendingCard && <PendingCard state={state} onAction={onAction} onHover={setHover} />}
             <Composer
-              key={composerContext}
+              key={`${composerEpoch}:${composerContext}`}
               pendingKind={pendingKind}
               purpose={receiptUpload ? 'receipt' : 'fault'}
               onSkipReceipt={() => session.act({ kind: 'skip_receipt', payload: { reason: 'none' } })}
@@ -120,6 +134,7 @@ export function App() {
               onSend={(text, files, purpose) => session.send(text, { files, purpose })}
               onCancel={state.activeRun ? () => void session.cancel() : undefined}
               presetFiles={presetFiles}
+              onPresetConsumed={() => setPresetFiles(null)}
             />
           </div>
         </section>

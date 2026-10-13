@@ -104,6 +104,18 @@ describe('A3 receipt workflow through App and HTTP/SSE', () => {
     expect(confirm).toHaveBeenCalledTimes(2);
   });
 
+  it('drops pending attachments when starting a new session', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(snapshot({ pending_input: null }))));
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    render(<App />);
+    await screen.findByRole('button', { name: '新建会话' }).then((b) => waitFor(() => expect(b).toBeEnabled()));
+    fireEvent.change(screen.getByTestId('image-input'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } });
+    await screen.findByLabelText('待发送图片');
+    fireEvent.click(screen.getByRole('button', { name: '新建会话' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建会话' })).toBeDisabled());
+    expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument();
+  });
+
   it('skips collection with a reason and reaches the uncollected summary', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(json(snapshot())).mockResolvedValueOnce(sse(finalEvents('not_collected')))
       .mockResolvedValueOnce(json(snapshot({ version: 9, pending_input: null, timeline: [{ kind: 'escalation_summary', summary_id: 'summary-1', revision: 1, source_through_seq: 1, updated_at: '2026-09-13T00:00:00Z', card_id: 'summary',
