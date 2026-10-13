@@ -78,15 +78,18 @@ REPORTED_ANSWER = {
 }
 
 
-def reported_note(quotes: list[str], kind: str, symptoms: list[str] = ()) -> str:
+def reported_note(quotes: list[str], kind: str, symptoms: list[str] = (), *, answer: bool = True) -> str:
     """客户自述做过 / 查过的事（T21「nettoyé et repartit aspirateur a plusieurs reprise」、T27「no blockage seen」）：
     引原话，说明这些检查可能与已做的重叠、仍逐张确认。自述没有卡片反馈精确（没说清洁了哪个部件、是否在平地重启），
     不据此跳过任何步骤。引客户原话（可能不是英文），不替客户改写。
-    症状原话一并引（T37「水箱是满的」在症状里，只引「软管、胶圈正常」时客户看不出这张卡针对的是自己的情况）。"""
+    症状原话一并引（T37「水箱是满的」在症状里，只引「软管、胶圈正常」时客户看不出这张卡针对的是自己的情况）。
+    answer=False：同一张卡上的资料覆盖边界说明已经讲了怎么反馈，这里只引原话。"""
     said = "; ".join(f'"{q.strip()}"' for q in quotes)
     described = "; ".join(f'"{s.strip()}"' for s in symptoms if s not in quotes)
-    return ((f"You described: {described}. " if described else "")
-            + f"You mentioned: {said}. Some of these checks may overlap with what you've already done or checked. "
+    lead = (f"You described: {described}. " if described else "") + f"You mentioned: {said}."
+    if not answer:
+        return lead
+    return (lead + " Some of these checks may overlap with what you've already done or checked. "
             "Please still check each one exactly as described; " + REPORTED_ANSWER.get(kind, REPORTED_ANSWER["action"]))
 
 
@@ -209,10 +212,15 @@ async def prepare_step(
         if published_evidence:
             evidence_ids = sorted({*evidence_ids, *published_evidence})
         card_id = step_card_id(session_id, plan.plan_id, step_id)
+        # 资料覆盖边界：客户原话命中审核写的条件时，说明这张卡能做什么、做不到什么（T34 问能否找回旧地图，资料只有查地图页与重建）。
+        # 它已经告诉客户这张卡怎么反馈，下面的自述说明只引原话、不再重复反馈方式
+        scoped = bool(step.scope_note and re.search(step.scope_note[0], customer_said(state), re.IGNORECASE))
+        if scoped:
+            context.append(step.scope_note[1])
         # 客户自述做过的事每个问题只说一次，附在本问题第一张卡上（同 statement 的 displayed_nodes 去重）
         reported_key = f"reported:{state.get('active_issue_id')}"
         if reported_key not in displayed_nodes and (quotes := reported_quotes(state)):
-            context.append(reported_note(quotes, step.kind, reported_quotes(state, kinds={"symptom"})))
+            context.append(reported_note(quotes, step.kind, reported_quotes(state, kinds={"symptom"}), answer=not scoped))
             displayed_nodes.append(reported_key)
         last = next((a for a in reversed(state.get("step_attempts") or []) if a.get("instruction_src") == step.instruction_src), None)
         if last and last.get("retry"):
@@ -295,6 +303,15 @@ def _primary_evidence(
         },
         "none",
     )
+
+
+def customer_said(state: dict[str, Any]) -> str:
+    """本问题的客户原话（事实来源消息加本轮输入），给资料覆盖边界说明的条件匹配用。"""
+    issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
+    ids = {sid for f in issue.get("facts", []) if f.get("status") == "active" for sid in f.get("source_entry_ids", [])}
+    ids.add(state.get("input_id"))
+    return "\n".join(m["text"] for m in state.get("messages") or []
+                     if m.get("role") == "user" and m.get("input_id") in ids and (m.get("text") or "").strip())
 
 
 def reported_quotes(state: dict[str, Any], kinds: set[str] = frozenset({"action_taken", "observation"})) -> list[str]:

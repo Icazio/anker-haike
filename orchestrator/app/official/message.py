@@ -87,9 +87,27 @@ def _field(text: str, key: str) -> str | None:
     for label in LABELS[key]:
         if match := re.search(rf"(?im)^[ \t]*{label}{FIELD}([^\n]*)$", text):
             value = match.group(1).strip()
+            if key == "description":
+                value = _continued(value, text[match.end():])
             if value and value.lower() not in {"null", "[]", "-", "/"}:
                 return value
     return None
+
+
+# 表单里任何「字段名: 值」行（Problem Upload Images: []、Prodcut SN:、Order Receipt: …）：问题描述到这里为止
+NEXT_LABEL = re.compile(r"^[ \t]*[^\s:：.!?][^:：\n.!?]{1,45}[:：]")
+
+
+def _continued(first: str, rest: str) -> str:
+    """问题描述可以跨行，后续行到下一个表单字段为止都属于描述（T27「Rolling Mop Blockage. Please clean.」后一行才是
+    「tried the suggestion solution… no blockage seen. roller mop area is clear.」；63 单里 T13 T27 T30 T32 T34 T37 T41
+    共 7 单跨行，只取第一行时客户写的已做检查、第二个诉求都不在描述里）。"""
+    lines = [first]
+    for line in rest.lstrip("\n").splitlines():
+        if NEXT_LABEL.match(line):
+            break
+        lines.append(line.strip())
+    return "\n".join(line for line in lines if line).strip()
 
 
 def detect_language(text: str) -> str:

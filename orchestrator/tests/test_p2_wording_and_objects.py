@@ -56,8 +56,20 @@ CASE_DEAD = [{"kind": "symptom", "value": "charging case will not charge", "quot
 def test_b11_charging_case_fault_does_not_match_a_pump_power_guide():
     """B11：盒自身接电灯不亮，却选了 bp-0025「泵开不了机」长按泵电源键。"""
     assert check_charging_recipient(LIB.get("qa_bp_0025").fault, CASE_DEAD, CASE_DEAD) == ("mismatch", "charging case")
-    # 标题讲充电盒的条目不受影响
-    assert check_charging_recipient(LIB.get("qa_bp_0127").fault, CASE_DEAD, CASE_DEAD)[0] == "matched"
+    # 标题讲充电盒自身的条目不受影响
+    assert check_charging_recipient("Why is my S1 Pro charging case not charging?", CASE_DEAD, CASE_DEAD)[0] == "matched"
+
+
+def test_t52_case_not_charging_one_side_is_about_the_pumps():
+    """官方 63 单 T52（Codex 2026-10-12 20:25 主轮）：bp-0127「charging case not charging one side」被读成盒子自身不进电，
+    与「My charging case will not charge」判成同一件事，发了摆泵、清盒内磁吸头、复位泵。one side 是泵位，受电方是泵。"""
+    title = LIB.get("qa_bp_0127").fault
+    assert check_charging_recipient(title, CASE_DEAD, CASE_DEAD) == ("mismatch", "charging case")
+    side = [{**CASE_DEAD[0], "value": "case not charging the left pump", "quote": "my case is not charging the left side"}]
+    assert check_charging_recipient(title, side, side)[0] == "matched"
+    pump = [{**CASE_DEAD[0], "value": "pump won't charge on cable", "quote": "the pump won't charge even on the cable",
+             "subject": "pump"}]
+    assert check_charging_recipient(title, pump, pump)[0] == "matched"
 
 
 def test_b11_pump_motor_guide_is_rejected_when_the_case_itself_has_no_power():

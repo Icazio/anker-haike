@@ -208,8 +208,10 @@ def test_vision_output_schema_does_not_ask_the_model_for_derived_fields():
     """conflicts_with_text 由代码层比对得出，model_hint_readable 由字面派生 —— 都不该向模型索取。"""
     fields = list(VisionObservation.model_fields)  # 定义顺序即生成顺序
     assert "conflicts_with_text" not in fields and "model_hint_readable" not in fields
-    assert fields[0] == "observations", "observations 必须排在最前（describe-first）"
-    assert fields.index("observations") < fields.index("findings")
+    # describe-first：感知字段（按物体分的主体 / 其他物体 / 灯 / 异常 / 补充观察）全部排在定性与 findings 之前
+    perception = ["subject", "others", "lights", "anomalies", "observations"]
+    assert fields[:len(perception)] == perception
+    assert fields.index("observations") < fields.index("content_kinds") < fields.index("findings")
 
 
 # ---- 阶段 1：铭牌裁剪复看与交叉核对 ----
@@ -906,3 +908,52 @@ def test_no_agent_voice_survives_into_any_rendered_step():
         if agent_voice.search(customer_voice(ev.snippet))
     ]
     assert not offenders, offenders
+
+
+# ---- 2026-10-13：感知按物体分字段（docs/planning/2026-10-13-0824_vision-root-cause）----
+
+
+def test_scene_fields_become_ordered_observations():
+    """T48：裂纹和灯在 5 条 × 20 字里被主体与背景挤掉（三个模型自由回答都看得到）。按物体分字段后，
+    主体第一条，外观异常与灯排在背景之前；细节跟着自己的物体走（T42 手持件 / 背景基站）。"""
+    from app.diagnose.vision import SUBJECT_PREFIX, scene_observations
+
+    parsed = VisionObservation.model_validate({
+        "subject": {"what": "吸奶器主机", "layer": "手持", "details": ["左侧三针充电触点", "看不清"]},
+        "others": [{"what": "白色毛绒布", "layer": "背景", "details": []},
+                   {"what": "扫地机器人基站", "layer": "背景", "details": ["印有 UNICLEAN STATION"]}],
+        "lights": [{"color": "绿", "position": "电源键左侧一颗"}],
+        "anomalies": [{"kind": "裂纹", "where": "左侧外壳，充电触点上方"}],
+        "observations": ["机身印有 eufy"],
+    })
+    assert scene_observations(parsed) == [
+        f"{SUBJECT_PREFIX}手持吸奶器主机", "裂纹：左侧外壳，充电触点上方", "绿灯：电源键左侧一颗",
+        "主体细节：左侧三针充电触点", "背景有白色毛绒布", "背景有扫地机器人基站（印有 UNICLEAN STATION）", "机身印有 eufy",
+    ]
+    # 旧格式（只有 observations）原样使用：备用模型或旧调用方不受影响
+    assert scene_observations(VisionObservation.model_validate({"observations": ["滚刷缠绕"]})) == ["滚刷缠绕"]
+
+
+async def test_scene_fields_reach_the_vision_outcome(tmp_path):
+    router, _ = _router(tmp_path, CONFIG, [{
+        "subject": {"what": "扫地机器人本体", "layer": "前景", "details": []},
+        "anomalies": [{"kind": "划痕", "where": "正面亮面面板"}],
+        "lights": [{"color": "红", "position": "正面 eufy 标志"}],
+    }])
+    store, refs = await _store_with(1)
+    out = await observe_images(router, store, session_id="s", refs=refs, lane="domestic")
+    assert out.status == "ok"
+    assert out.observations[:3] == ["画面主体：扫地机器人本体", "划痕：正面亮面面板", "红灯：正面 eufy 标志"]
+    assert "subject" not in out.fault_localization and "anomalies" not in out.fault_localization
+
+
+async def test_document_only_images_keep_just_what_the_document_is(tmp_path):
+    """T53 2026-10-13 对照：发票上逐行抄下的订单号、商品名、金额进了观察，混进检索与选方案。
+    全是单据 / 界面截图时只留「是什么单据」那一条。"""
+    router, _ = _router(tmp_path, CONFIG, [{
+        "subject": {"what": "发票单据", "layer": "前景", "details": ["Invoice No.: Anker015", "eufy Wearable Breast Pump"]},
+        "content_kinds": [{"image_index": 1, "kind": "document"}],
+    }])
+    store, refs = await _store_with(1)
+    out = await observe_images(router, store, session_id="s", refs=refs, lane="domestic")
+    assert out.observations == ["画面主体：发票单据"] and out.document_image_ids == [refs[0]["image_id"]]

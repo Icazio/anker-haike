@@ -85,6 +85,8 @@ class Step:
     title: str = ""  # 人工审核给的卡片标题（question 卡只显示标题与选项，原文段落不是问句时必须给）
     caution: str = ""  # 人工审核补的注意事项（原文这一段没写、同型号另一条写了的后果，T31 恢复出厂会删地图）
     owns_media: bool = False  # 拆分段里由这一部分挂原段的图示 / 链接（默认第一张出卡的部分）
+    # 资料覆盖边界说明：客户原话命中 when（正则）时附在这一步的卡片上，系统口吻、不改原文（T34 找回旧地图、T37 水箱已满）
+    scope_note: tuple[str, str] | None = None
     parts: tuple[Step, ...] = ()  # 人工审核把一段拆成多步（段内问句、诊断树）；为空即整段一步
     disabled: bool = False
     disabled_reason: str = ""
@@ -306,11 +308,21 @@ def load_overrides(path: Path | None = None) -> dict[str, dict[int, dict]]:
     return {str(qa_id): {int(no): dict(spec or {}) for no, spec in (entries or {}).items()} for qa_id, entries in raw.items()}
 
 
-SPEC_KEYS = {"kind", "title", "options", "branches", "default", "retry_options", "disabled", "reason", "caution", "media"}
+SPEC_KEYS = {"kind", "title", "options", "branches", "default", "retry_options", "disabled", "reason", "caution", "media", "scope_note"}
 
 
 def _target(value: int | str) -> int | str:
     return value if isinstance(value, int) else str(value)
+
+
+def _scope_note(spec: dict | None, pos: int) -> tuple[str, str] | None:
+    """{when: 客户原话正则, text: 系统说明}；正则在加载时编译一次校验，写错直接报错而不是静默不生效。"""
+    if not spec:
+        return None
+    if set(spec) != {"when", "text"}:
+        raise ValueError(f"scope_note in paragraph {pos} needs exactly when + text")
+    re.compile(spec["when"])
+    return str(spec["when"]), str(spec["text"])
 
 
 def _spec_step(no: int, pos: int, text: str, spec: dict, *, warranty: bool) -> Step:
@@ -326,6 +338,7 @@ def _spec_step(no: int, pos: int, text: str, spec: dict, *, warranty: bool) -> S
         title=str(spec.get("title") or ""),
         caution=str(spec.get("caution") or ""),
         owns_media=bool(spec.get("media")),
+        scope_note=_scope_note(spec.get("scope_note"), pos),
         disabled=bool(spec.get("disabled")), disabled_reason=str(spec.get("reason") or ""),
         source_gap=bool(DANGLING_REFERENCE.search(text)),
     )

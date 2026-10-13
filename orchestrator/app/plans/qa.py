@@ -68,15 +68,26 @@ SERVICE_PROMISE = re.compile(
 )
 CLAUSE = re.compile(r"[^.!?;\n]+[.!?;]*[ \t]*|\n")
 PROMISE_NOTE = "Whether a replacement or part can be sent depends on a warranty check."
+# 没有依据的效果预期与换新前提（T32 rv-0061「Before arranging a replacement… The success rate for this method is relatively high」、
+# rv-0111「this should resolve the issue in most cases」）：资格没审、成功率没有数据，读起来像已承诺换新或保证有效。
+# 只去掉这几个分句 / 修饰语，操作本身一字不改；原文仍在证据里（Codex 2026-10-12 20:25 复测）。
+UNSUPPORTED_CLAIMS = (
+    (re.compile(r"\b[Bb]efore arranging (?:a|the|any) replacement,\s*(\w)"), lambda m: m.group(1).upper()),
+    (re.compile(r"[ \t]*\b[Tt]he success rate (?:for|of) this (?:method|solution)[^.!?:*]*[.!?:]"), lambda m: ""),
+    (re.compile(r"\s*-{2,3}\s*this should (?:resolve|fix) the (?:issue|problem) in most cases"), lambda m: ""),
+    (re.compile(r"[ \t]*\bIn most cases, this (?:simple )?step will (?:resolve|fix) the (?:issue|problem)\.?"), lambda m: ""),
+)
 
 
 def customer_text(text: str) -> str:
-    """客户可见的官方步骤文字：去掉售后承诺分句，再改成对客户说话的口吻。"""
+    """客户可见的官方步骤文字：去掉售后承诺分句与没有依据的效果预期，再改成对客户说话的口吻。"""
     clauses = CLAUSE.findall(text)
     kept = [c for c in clauses if not SERVICE_PROMISE.search(c)]
     if len(kept) < len(clauses):
         lines = [line.rstrip() for line in "".join(kept).splitlines()]
         text = "\n".join(line for line in lines if line.strip(" -*•")).strip() + " " + PROMISE_NOTE
+    for pattern, repl in UNSUPPORTED_CLAIMS:
+        text = pattern.sub(repl, text)
     return customer_voice(text)
 
 
@@ -154,6 +165,7 @@ def plan_of(guide: Guide, version: str) -> tuple[dict, dict[str, dict]]:
             "retry_options": list(step.retry_options),
             "required_resources": ["device"] if kind == "action" else [],
             "condition": step_condition(step.text) if kind == "action" else None,
+            "scope_note": list(step.scope_note) if step.scope_note else None,
         })
     plan = {
         "plan_id": guide.plan_id,

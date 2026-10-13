@@ -44,10 +44,10 @@ from app.diagnose.decision import missing_for_retrieval, retry_after_handoff
 from app.diagnose.grade import apply_assessment, grade_hits
 from app.diagnose.localization import part_categories, signature_matches
 from app.diagnose.query import category_label, product_term
-from app.diagnose.vision import observe_images
+from app.diagnose.vision import VISION_BUDGET_MS, VISION_RESERVE_MS, observe_images
 from app.emotion.policy import complaint_flagged, evaluate_emotion
 from app.escalation.polish import polish_summary
-from app.escalation.summary import build_summary, reassurance_text
+from app.escalation.summary import build_summary, r5_boundary, reassurance_text
 from app.guide import GUIDE_BUDGET_MS, apply_feedback, exhaust_plan, prepare_step
 from app.guide.fact_check import check_plan_facts
 from app.images.runtime import current_image_store
@@ -132,6 +132,7 @@ class SessionState(TypedDict, total=False):
     session_id: str
     run_id: str  # 当前 run，由运行器随输入写入，用户消息据此归入 timeline 对应位置
     at: str  # 本 run 收到消息的时间（ISO），用于 timeline user_message.at
+    deadline_ms: int  # 本 run 的截止（runner.run_deadline_ms：文本轮 25 s，带图回合 45 s）
     text: str
     stage: str
     substage: str | None
@@ -187,7 +188,9 @@ class SessionState(TypedDict, total=False):
     # 票 32：诊断。retrieval_trace 用 reducer 追加（读图节点与检索写不同字段，不覆盖）；
     # plans_ranked [{plan_id, version, confidence, evidence_ids, source}]；rewrite_used 为本 run 是否已用掉补检索名额
     retrieval_trace: Annotated[list[dict[str, Any]], operator.add]
-    image_observations: Annotated[list[str], operator.add]
+    # 最近一次读图的观察（随 issue 投影存取）。不用累加 reducer：每轮 reduce_turn 都把 issue 投影写回，
+    # 累加会让同一组观察一轮复制一份（2026-10-13 复测 T30 状态里 6 条观察变成 24 条，旧观察混进补检索词与 synthesize）
+    image_observations: list[str]
     # 票 30：读图结果。visible_parts 累积；vision_status 为最近一次读图状态（ok / skipped / no_vision / failed）
     visible_parts: list[str]
     vision_status: str | None
@@ -419,6 +422,8 @@ async def vision(state: SessionState) -> SessionState:
         # 用户文字只用于代码层的图文冲突比对，不进视觉调用（阶段 2）
         text=state.get("text", ""),
         symptoms=[str(s) for s in state.get("symptoms") or []],
+        # 单次读图上限与本 run 剩余时间取小，后面的理解 / 检索 / 选方案留 VISION_RESERVE_MS
+        budget_ms=max(1000, min(VISION_BUDGET_MS, _remaining_ms(state) - VISION_RESERVE_MS)),
     )
     update: SessionState = {
         "stage": "diagnose",
@@ -1674,9 +1679,14 @@ def retrieval_query(state: SessionState) -> str:
     return build_query(dict(state))
 
 
-def _remaining_ms(state: SessionState) -> int:
-    """run 剩余预算：消息到达时间 + 文本轮 deadline（08 §8）。"""
+def _deadline_ms(state: SessionState) -> int:
     from app.sessions.runner import DEFAULT_DEADLINE_MS
+
+    return int(state.get("deadline_ms") or DEFAULT_DEADLINE_MS)
+
+
+def _remaining_ms(state: SessionState) -> int:
+    """run 剩余预算：消息到达时间 + 本 run 的截止（08 §8；带图回合放宽，见 runner.run_deadline_ms）。"""
 
     at = state.get("at")
     try:
@@ -1686,7 +1696,7 @@ def _remaining_ms(state: SessionState) -> int:
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
     elapsed = (datetime.now(UTC) - started).total_seconds() * 1000
-    return int(DEFAULT_DEADLINE_MS - elapsed)
+    return int(_deadline_ms(state) - elapsed)
 
 
 async def _search_round(
@@ -1990,7 +2000,7 @@ async def retrieve(state: SessionState) -> SessionState:
             max_chars=rcfg.retrieval.context_chars, item_chars=rcfg.retrieval.item_chars,
         )
         round_evidence = {h.evidence_id: h.as_internal_item() for h in selection.hits}
-        plans = await _synthesize_step(state, round_evidence, lane, rcfg)
+        plans = await _synthesize_step({**state, "query": query}, round_evidence, lane, rcfg)
         synth_trace = plans.pop("retrieval_trace", [])
         plans.update(
             _diagnose_outcome(
@@ -2276,7 +2286,7 @@ async def retrieve(state: SessionState) -> SessionState:
     })
     for it in exact_evidence:
         evidence.setdefault(it["evidence_id"], {k: v for k, v in it.items() if k != "knowledge_title"})
-    plans = await _synthesize_step(state, round_evidence, lane, rcfg)
+    plans = await _synthesize_step({**state, "query": query}, round_evidence, lane, rcfg)
     trace += plans.pop("retrieval_trace", [])
     # 首批无法支持操作时，给被预算裁掉的候选一次机会；单次上下文预算保持不变。
     # 不重试已读片段，不重新查询知识库，也不把 needs_confirmation 当成 supported。
@@ -2294,7 +2304,7 @@ async def retrieve(state: SessionState) -> SessionState:
                           "excluded": recovery.excluded, "context_chars": recovery.chars,
                           "session_id": session_id, "run_id": run_id})
             if extra_evidence:
-                extra = await _synthesize_step({**state, "model_trace": plans.get("model_trace", [])}, extra_evidence, lane, rcfg)
+                extra = await _synthesize_step({**state, "query": query, "model_trace": plans.get("model_trace", [])}, extra_evidence, lane, rcfg)
                 trace += extra.pop("retrieval_trace", [])
                 # 恢复调用失败时不能把检索顺序降级结果升级成可执行方案。
                 extra["plans_ranked"] = [plan for plan in extra["plans_ranked"] if plan.get("source") == "synthesize"]
@@ -2623,11 +2633,14 @@ async def guide(state: SessionState) -> SessionState:
             )
             # 隐式确认（阶段 4）：本轮读图有结果且还没回显过时，在首张步骤卡上附一句「我看到了什么」。
             # 只回显一次 —— 每张步骤卡都重复一遍会变成噪音。
+            # 方案由客户报的错误码精确命中时，照片没有参与选路：回显它只有认错的风险（T30 前景机器人被写成基站，
+            # 客户看到「base station dirty」），没有让客户纠正的价值（Fable 2026-10-12）。读图结果仍进内部记录与安全检查。
             from app.diagnose.localization import echo_findings
 
+            exact_route = (work.get("plan_cursor") or {}).get("source") == "exact_code"
             seen = (
                 echo_findings(state.get("fault_localization"))
-                if state.get("vision_status") == "ok" and not state.get("vision_echoed")
+                if state.get("vision_status") == "ok" and not state.get("vision_echoed") and not exact_route
                 else None
             )
             payload = {"step": prep.step, **({"seen": seen} if seen else {})}
@@ -2685,6 +2698,21 @@ async def guide(state: SessionState) -> SessionState:
             return update
         if prep.outcome == "blocked":
             return {**update, **_apply_next_action(work)}
+        if prep.outcome == "source_gap":
+            # 原文缺后续说明的条目没有可执行内容：按耗尽处理，同型号同症状另有可执行候选时静默换过去（Fable D3 2026-10-12：
+            # T40 rv-0371 缺链接，同批 rv-0073 首步就是查清洁液瓶、文章链接完整）；缺口只记内部轨迹，交给知识维护。
+            # 没有可换的才向客户说明缺口（下面的 explanation）并走后备追问或交人工。
+            cursor = work.get("plan_cursor") or {}
+            gap = {"event": "knowledge_source_gap", "plan_id": cursor.get("plan_id")}
+            out = exhaust_plan(work, cursor.get("plan_id", ""))
+            switched = _apply_next_action({**work, "plan_cursor": None, "counters": out.counters,
+                                           "exhausted_plans": out.exhausted_plans})
+            if (switched.get("_verify") or {}).get("outcome") == "next":
+                trace += [gap, *switched.pop("guide_trace", [])]
+                work.update(switched, counters=out.counters, exhausted_plans=out.exhausted_plans)
+                update.update(counters=out.counters, exhausted_plans=out.exhausted_plans,
+                              next_action=switched.get("next_action"), plan_cursor=switched.get("plan_cursor"))
+                continue
         if prep.explanation:
             message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{state['input_id']}:knowledge-explanation").hex
             say_text(dict(state), writer, message_id, prep.explanation)
@@ -2841,9 +2869,7 @@ async def close(state: SessionState) -> SessionState:
 
 def _elapsed_ms(state: SessionState) -> int:
     """本 run 已耗时（card_ready_ms 口径，04 §2）：消息 / 动作到达时间 → 现在。"""
-    from app.sessions.runner import DEFAULT_DEADLINE_MS
-
-    return max(0, DEFAULT_DEADLINE_MS - _remaining_ms(state))
+    return max(0, _deadline_ms(state) - _remaining_ms(state))
 
 
 async def escalate(state: SessionState) -> SessionState:
@@ -3023,7 +3049,7 @@ async def summarize(state: SessionState) -> SessionState:
     elif handoff_status == "requested":
         text = (
             ("For your safety, please stop using the device and do not charge it. " if reason == "R4" else
-             "I couldn't confirm official troubleshooting guidance for this issue. " if reason == "R5" else "")
+             r5_boundary(state) if reason == "R5" else "")
             + "I've submitted the issue and supporting information for review by a colleague. You can add information here while waiting."
         )
     text = acknowledge_current_turn({**state, **case_update}, text)

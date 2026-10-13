@@ -106,7 +106,8 @@ async def test_t41_missed_denial_is_recovered(conversation):
 
 async def test_symptoms_present_and_no_denial_does_not_call_the_model(conversation):
     meaning = TurnInterpretation(primary_intent="report_problem", facts=[
-        FactCandidate(value="Water tray will not empty", quote="Water tray will not empty")])
+        FactCandidate(value="Water tray will not empty", quote="Water tray will not empty"),
+        FactCandidate(kind="action_taken", value="insured the hose is not pinched", quote="I insured the hose is not pinched")])
     text = "Product PN: T2351\nProblem Description: Water tray will not empty. I insured the hose is not pinched."
     result, trace = await complete_problem_facts(get_model_router(), meaning, source_state(text), lane="domestic")
     assert result == meaning and trace["outcome"] == "not_needed" and not conversation.models["intake"].calls

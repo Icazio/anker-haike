@@ -17,7 +17,7 @@ from app.context.budget import context_input_budget, measure_input
 from app.context.builder import ContextBudgetExceeded
 from app.context.runtime import prepare_messages
 from app.diagnose.charging import charging_question, check_charging_recipient
-from app.diagnose.decision import concrete
+from app.diagnose.decision import SWITCH_CONFIDENCE, concrete
 from app.knowledge.context import render_evidence
 from app.models.queue import CapacityExceeded
 from app.models.router import ModelInvokeError, ModelRouter
@@ -210,11 +210,23 @@ def _same(need: str, have: str) -> bool:
     return need == have or (len(need) >= 4 and (need.startswith(have) or have.startswith(need)))
 
 
+def _fact_words(fact: dict[str, Any]) -> str:
+    """事实用来比对前提的文字：value、subject，以及原话里 value 所在的那一分句。原话比 value 宽时
+    （T41 round5：观察「water injection is still malfunctioning」的 quote 是整句，带着后面的「havent needed any mop drying」），
+    整句会让这条肯定的观察「覆盖」了「Mop not dried」，前提被当成已知成立。"""
+    value, quote = str(fact.get("value") or ""), str(fact.get("quote") or "")
+    at = quote.casefold().find(value.casefold()) if value else -1
+    if at >= 0:
+        clauses = re.split(r"(?<=[.!?;,])\s+|\s+(?:and thus|and so|so|but|because|as|and)\s+", quote)
+        quote = next((c for c in clauses if value.casefold() in c.casefold()), value)
+    return " ".join([value, str(fact.get("subject") or ""), quote])
+
+
 def _covers(missing_fact: str, fact: dict[str, Any]) -> bool:
     """事实说的是不是这个前提：前提的每个内容词都要在事实里出现。只共享一个词不算（T37「Slang in tank is in orde」
     与「水箱显示的水量不准」只共享 tank，被当成前提已知，把讲 App 估算的 rv-0163 升级成可执行）。
     前提原话用「/」列备选（rv-0146「roller not dried /Mop not dried」）时任一备选被覆盖即可。"""
-    have = _stems(" ".join(str(fact.get(k) or "") for k in ("value", "subject", "quote")))
+    have = _stems(_fact_words(fact))
     for option in missing_fact.split("/"):
         need = _stems(option)
         if need and all(any(_same(a, b) for b in have) for a in need):
@@ -245,7 +257,9 @@ CHECK_LEAD = re.compile(
 
 def in_plan_check(plan: Plan, missing_fact: str | None) -> str | None:
     """模型要先确认的「前提」若正是计划里某个检查步骤要查的事，返回该步 step_id（T29：rv-0254 第 1 步就是查门扣，
-    被当成入口前提先问一句，回答后再跳过这一步）。查得出的原因交给步骤卡按官方顺序查，不另起追问。"""
+    被当成入口前提先问一句，回答后再跳过这一步）。查得出的原因交给步骤卡按官方顺序查，不另起追问。
+    审核给的卡片标题也算（T40 rv-0073 拆分后首段原文是「In your case, please ensure…」，标题是
+    「Make sure the cleaning solution bottle is installed correctly」）。"""
     if not missing_fact:
         return None
     library = get_plan_library()
@@ -254,7 +268,7 @@ def in_plan_check(plan: Plan, missing_fact: str | None) -> str | None:
         if step.kind not in {"action", "question"} or step.condition or evidence is None:
             continue
         lead = re.split(r"(?<=[.!?:;])\s|\n", evidence.snippet.strip(), maxsplit=1)[0]
-        if CHECK_LEAD.match(lead) and _covers(missing_fact, {"value": lead}):
+        if any(CHECK_LEAD.match(text) and _covers(missing_fact, {"value": text}) for text in (lead, step.title)):
             return step.step_id
     return None
 
@@ -274,7 +288,6 @@ def answered_precondition(h: dict[str, Any], answered: list[dict[str, Any]]) -> 
 
 CLARIFY_TEMPLATES = {
     "polarity_uncertain": 'You mentioned "{quote}". Which side or part has the problem, and what exactly is it doing?',
-    "timing_mismatch": "You said it happened {timing}. Is that right, and does the app show any warning at that moment?",
     "subject_mismatch": "Is the problem with the {subject} itself (for example its own charging light or power input), or with how it works together with other parts?",
 }
 
@@ -306,6 +319,10 @@ def filter_hypotheses(
             return
         if codes and any(code.casefold() in question.casefold() for code in codes):
             return  # 不问用户已经告诉我们的错误码（T18）
+        if float(h.get("confidence", 0) or 0) < SWITCH_CONFIDENCE:
+            # 低于换方案门槛的候选，即使客户答「是」也不会被选中执行：问了只是把一个不相干的条目拿来盘问客户
+            #（T61 本轮复测：两个时机冲突候选丢弃后，0.25 的「重复清扫」条目问「历史里有没有重复路径」）
+            return
         clarifications.append({"plan_id": h["plan_id"], "question": question.strip(), "evidence_ids": ev,
                                "confidence": float(h.get("confidence", 0)), "reason": reason,
                                **({"missing_fact": h["missing_fact"]} if h.get("missing_fact") else {})})
@@ -337,8 +354,10 @@ def filter_hypotheses(
             continue
         timed = next((f for f in covered_facts if f.get("timing") and _timing_conflicts(f["timing"], h.get("matched_timing"), plan.fault)), None)
         if timed:
+            # 时机相反（提前启动 vs 排程不启动）是候选不对，不是信息不足：问「你说的是提前吗」只会重复客户原话
+            #（T61「You said it happened 2 hours before. Is that right」，Fable D1 2026-10-12）。只记丢弃，不追问；
+            # 没有别的候选就按知识缺口交人工，摘要列出全部症状
             dropped.append(f"timing_mismatch:{pid}")
-            clarify(h, "timing_mismatch", CLARIFY_TEMPLATES["timing_mismatch"].format(timing=timed["timing"]))
             continue
         charging_status, charging_subject = check_charging_recipient(plan.fault, covered_facts, facts)
         if charging_status in {"mismatch", "unknown"}:
@@ -436,6 +455,20 @@ def active_facts(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [f for f in issue.get("facts", []) if f.get("status") == "active"]
 
 
+def active_symptoms(state: dict[str, Any], observations: list[str]) -> list[str]:
+    """模型可逐字选取的有效症状：现象事实 + 图片观察。一条现象事实都没抽到时（T40 本轮复测主轮：长邮件整段漏抽，
+    所有候选都因「没有覆盖任何有效症状」被丢弃，去问一个不相干条目的前提），用检索时的现象原文兜底，
+    即客户这封消息本身；它就是 described() 判定「已描述现象」、进入检索的依据。
+    抽到过现象事实（哪怕是否定或愿望，T60「I just want my hoover to clean」）就不兜底：那是模型读过后的判断，
+    原文兜底会把愿望重新当成现象。原文本身是愿望或评价时也不兜底。"""
+    symptoms = [str(s) for s in [*(state.get("symptoms") or []), *observations] if str(s).strip()]
+    query = str(state.get("query") or "").strip()
+    no_symptom_fact = not state.get("symptoms") and not any(f.get("kind") == "symptom" for f in active_facts(state))
+    if no_symptom_fact and query and concrete({"quote": query}):
+        symptoms.append(query)
+    return list(dict.fromkeys(symptoms))
+
+
 def synthesis_messages(state, allowed, evidence, observations, max_hypotheses) -> list[tuple[str, str]]:
     """只构造本次可见候选；完整会话来源与预算由 prepare_messages 统一加入。"""
     plans_text = "\n".join(
@@ -445,7 +478,7 @@ def synthesis_messages(state, allowed, evidence, observations, max_hypotheses) -
     )
     ev_text = "\n".join(render_evidence(e) for e in evidence)
     obs_text = "\n".join(observations) if observations else "（无图片观察）"
-    symptoms = list(dict.fromkeys(str(s) for s in [*(state.get("symptoms") or []), *observations] if str(s).strip()))
+    symptoms = active_symptoms(state, observations)
     facts = active_facts(state)
     error_codes = list(state.get("error_codes") or [])
     facts_text = "\n".join(
@@ -588,7 +621,7 @@ async def synthesize(
         raw,
         allowed={p.plan_id: p for p in visible_plans},
         evidence_ids={e["evidence_id"] for e in visible_evidence},
-        symptoms={str(s) for s in [*(state.get("symptoms") or []), *observations] if str(s).strip()},
+        symptoms=set(active_symptoms(state, observations)),
         facts=active_facts(state),
         error_codes=list(state.get("error_codes") or []),
         answered=list(state.get("precondition_answers") or []),

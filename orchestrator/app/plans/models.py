@@ -44,6 +44,8 @@ class PlanStep(_Strict):
     source_gap: bool = False
     # 2026-10-10：「If <条件>, …」开头的操作步骤只在条件成立时适用；进指南前与用户原话核对（app/guide/fact_check.py）
     condition: str | None = None
+    # 2026-10-12：资料覆盖边界说明（qa_overrides scope_note）：[客户原话正则, 系统说明]，命中时附在卡片上
+    scope_note: list[str] | None = None
 
     @field_validator("instruction_src")
     @classmethod

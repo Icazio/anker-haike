@@ -52,10 +52,12 @@ def load_samples(task: str, *, fixtures_dir: Path | None = None) -> list[Sample]
 
 
 def materialize_images(spec: dict[str, Any]) -> list[tuple[str, bytes]]:
-    """file → 从 BAKEOFF_IMAGES_DIR 读真实照片；synthetic → Pillow 画一张示意图。"""
-    if "file" in spec:
-        base = Path(os.environ.get("BAKEOFF_IMAGES_DIR", REPO_ROOT / "data" / "bakeoff-images"))
-        p = base / spec["file"]
+    """file → 从 BAKEOFF_IMAGES_DIR 读真实照片；official → 主办方工单附件（data/official/attachments）；
+    synthetic → Pillow 画一张示意图。"""
+    if "file" in spec or "official" in spec:
+        base = (REPO_ROOT / "data" / "official" / "attachments" if "official" in spec
+                else Path(os.environ.get("BAKEOFF_IMAGES_DIR", REPO_ROOT / "data" / "bakeoff-images")))
+        p = base / spec.get("official", spec.get("file"))
         if not p.is_file():
             return []
         mime = "image/jpeg" if p.suffix.lower() in {".jpg", ".jpeg"} else "image/png"

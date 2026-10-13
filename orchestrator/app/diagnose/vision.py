@@ -18,11 +18,11 @@ import base64
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from haike_contracts.common import CellField, Finding, ImageContentKind, ImageQuality
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from app.images.prepare import crop_cell, prepare
 from app.images.quality import QualityReport, assess_all
@@ -34,9 +34,13 @@ from app.prompts import compose_vision_system_prompt
 log = logging.getLogger("diagnose.vision")
 
 TASK = "diagnose.vision"
-VISION_BUDGET_MS = 12_000  # 含图轮 run deadline 40 s（08 §8），读图给 12 s
+# 单次读图上限。主位 qwen3.8-max 按物体分字段输出单次 10–18 s（2026-10-13 官方照片实测），带图回合截止 45 s
+#（runner.IMAGE_DEADLINE_MS）。主位超时后不再有时间试备位：备位只兜底非超时的失败（结构化失败、接口错误）
+VISION_BUDGET_MS = 25_000
+VISION_RESERVE_MS = 12_000  # 读图之后本轮还要做的事（理解、检索、选方案、发卡）留的时间
+ZOOM_RESERVE_MS = 5_000  # 铭牌复看之后留给其余流程的时间：不够就不复看，型号按未验证处理
 DEFAULT_MAX_IMAGES = 4
-VISION_PROMPT_VERSION = "2026-10-12.1"  # 第一条观察写画面主体（本体 / 基站 / 配件），词表加主机
+VISION_PROMPT_VERSION = "2026-10-13.1"  # 感知按物体分字段（主体 / 其他物体 / 灯 / 外观异常），observations 由代码拼出
 NO_VISION_TEXT = (
     "I can't read images right now. Could you describe what the photo shows (which part, what's wrong)? I'll continue from there."
 )
@@ -54,10 +58,47 @@ class ImageKind(BaseModel):
     kind: ImageContentKind = Field(description="fault_photo / document / other")
 
 
+LayerName = Literal["手持", "前景", "中景", "背景"]
+# 层次是给细节归属用的提示，不是故障结论：表外的值（2026-10-13 qwen3.8-max 在 T20 写了九宫格「右中」）记为「背景」，
+# 不让一个字段越界把整次读图判成失败（同 interpret.ContextField 的做法）
+Layer = Annotated[LayerName, BeforeValidator(lambda v: v if v in get_args(LayerName) else "背景")]
+SUBJECT_PREFIX = "画面主体："  # 主体观察的固定前缀：下游据此区分「图里是什么东西」与灯 / 异常 / 细节
+
+
+class SeenObject(BaseModel):
+    """画面里的一个物体与只属于它的细节（T42：手持件、背后的机器人底部、远处基站各有各的标签和触点，
+    平铺成一串短句时细节会被归到别的物体上）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    what: str = Field(description="这是什么：能认出品类时写品类加本体 / 基站 / 配件；认不出只写外形和颜色")
+    layer: Layer = Field(description="手持 / 前景 / 中景 / 背景")
+    details: list[str] = Field(default_factory=list, description="只属于这个物体的可见细节，看不清写「看不清」")
+
+
+class SeenLight(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    color: str = Field(description="颜色")
+    position: str = Field(description="在哪个物体的什么位置、相对哪个按键或标识、几颗")
+
+
+class SeenAnomaly(BaseModel):
+    """外观异常单独成字段：和主体、背景挤在 5 条 × 20 字里时，T48 的裂纹三个模型都会被挤掉（自由回答时 6/6 都看得到）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(description="裂纹 / 破损 / 缺件 / 变形 / 烧焦 / 漏液 / 鼓包 / 污渍 / 其他")
+    where: str = Field(description="在哪个物体的什么位置")
+
+
 class VisionObservation(BaseModel):
-    """模型输出 schema。字段顺序即生成顺序，observations 放最前是刻意的（describe-first）：
-    先只写看得见的事实，再据此填受控枚举 —— 跳过感知阶段直接填终态枚举会显著增加编造
-    （VDGD 等工作报告该两段式在视觉推理上有 2%–33% 的提升）。
+    """模型输出 schema。字段顺序即生成顺序（describe-first）：先按物体写看得见的事实，再据此填受控枚举 ——
+    跳过感知阶段直接填终态枚举会显著增加编造（VDGD 等工作报告该两段式在视觉推理上有 2%–33% 的提升）。
+
+    2026-10-13 起感知阶段按物体分字段（subject / others / lights / anomalies），observations 由代码从这些字段拼出，
+    不再让模型自己把主体、灯、异常、背景挤进 5 条 × 20 字（docs/planning/2026-10-13-0824_vision-root-cause）。
+    模型仍可直接给 observations（旧调用方与备用模型）：结构字段为空时原样使用。
 
     这里不继承 FaultLocalization，因为有两个字段**不该向模型索取**：
     - conflicts_with_text：图文冲突改由 app.diagnose.conflict 在两个独立结论之间比对（阶段 2）；
@@ -66,15 +107,19 @@ class VisionObservation(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    subject: SeenObject | None = Field(default=None, description="第一步：画面主体，手里拿着的东西优先，否则最靠前、最大的那个")
+    others: list[SeenObject] = Field(default_factory=list, description="第一步：画面里其他设备或物体，逐个写")
+    lights: list[SeenLight] = Field(default_factory=list, description="第一步：亮着的灯")
+    anomalies: list[SeenAnomaly] = Field(default_factory=list, description="第一步：外观异常")
     observations: list[str] = Field(
         default_factory=list,
-        description="第一步：照片里直接可见的客观事实，每条不超过 20 个字，最多 5 条",
+        description="第一步的补充：上面字段装不下的其他可见事实，每条不超过 20 个字，最多 3 条",
     )
     content_kinds: list[ImageKind] = Field(
         default_factory=list, description="第二步：逐图说明这是故障照片还是单据截图"
     )
     findings: list[Finding] = Field(
-        default_factory=list, description="第三步：只依据 observations 得出的结构化故障定位"
+        default_factory=list, description="第三步：只依据第一步得出的结构化故障定位"
     )
     image_quality: ImageQuality = Field(default_factory=lambda: ImageQuality(usable=True))
     model_hint: str | None = Field(default=None, description="铭牌上逐字符抄录的文字")
@@ -83,6 +128,24 @@ class VisionObservation(BaseModel):
     visible_parts: list[str] = Field(
         default_factory=list, description="图片中可辨认的部件名称（如 滚刷、尘盒、滤网、充电座）"
     )
+
+
+def scene_observations(parsed: VisionObservation) -> list[str]:
+    """按物体分字段的感知结果 → 给下游的观察句。顺序：主体（第一条，下游的品类线索读它）→ 外观异常 → 灯 →
+    主体细节 → 其他物体（带层次与细节）→ 模型补充的观察。异常与灯排在背景前面，不会再被挤掉。"""
+    out: list[str] = []
+    if parsed.subject is not None:
+        lead = "手持" if parsed.subject.layer == "手持" and "手" not in parsed.subject.what else ""
+        out.append(f"{SUBJECT_PREFIX}{lead}{parsed.subject.what}")
+    out += [f"{a.kind}：{a.where}" for a in parsed.anomalies]
+    out += [f"{light.color}灯：{light.position}" for light in parsed.lights]
+    if parsed.subject is not None:
+        out += [f"主体细节：{d}" for d in parsed.subject.details if d.strip() and d.strip() != "看不清"]
+    for item in parsed.others:
+        details = [d for d in item.details if d.strip() and d.strip() != "看不清"]
+        out.append(f"{item.layer}有{item.what}" + (f"（{'；'.join(details)}）" if details else ""))
+    out += [o for o in parsed.observations if o.strip()]
+    return [o.strip() for o in out if o.strip()]
 
 
 @dataclass
@@ -118,17 +181,23 @@ def _instruction() -> str:
 
     v = vocabulary()
     return (
-        "你正在查看用户上传的图片。只写图片里直接可见的内容。\n"
-        "第一步 observations：先写出你在图片里看见的事实，每条不超过 20 字，最多 5 条。"
-        "第一条写画面主体是什么：能认出品类时写品类加本体、基站或配件（如「扫地机器人本体」「扫地机器人基站」「吸奶器主机」），"
-        "画面里同时有几样东西时写最靠前、占画面最大的那一样；认不出品类时只写外形和颜色。"
-        "只有局部部件时保留部件描述，不猜整机品类。"
-        "出现冒烟 / 烧焦 / 电池鼓包 / 漏液 / 火花时，在这一步里中文与英文关键词各写一次"
+        "你正在查看用户上传的图片。只写图片里直接可见的内容，看不清就写「看不清」。\n"
+        "第一步，按物体写看到的东西：\n"
+        "- subject：画面主体。手里拿着的东西是主体；没有手持物时是最靠前、占画面最大的那一样。"
+        "what 能认出品类时写品类加本体、基站或配件（如「扫地机器人本体」「扫地机器人基站」「吸奶器主机」「机器人底部」），"
+        "认不出品类时只写外形和颜色，不猜。扫地机器人本体是扁平的圆形或圆角方形机身，正面有传感器窗或标志灯，底部有轮子、边刷；"
+        "基站是立在地上的座子，带水箱或尘袋仓，机器人停在它前面或里面。details 只写属于主体本身的细节。\n"
+        "- others：画面里其他设备或物体，逐个写 what、layer（手持 / 前景 / 中景 / 背景）和只属于它的 details；"
+        "一个细节（标签、触点、胶带、按键）只归到它真正所在的那个物体上，分不清归属就不写。\n"
+        "- lights：亮着的灯，写颜色和位置（在哪个物体上、相对哪个按键或标识、几颗）。\n"
+        "- anomalies：外观异常（裂纹、破损、缺件、变形、烧焦、漏液、鼓包、污渍），写类型和位置。没有就留空。\n"
+        "- observations：上面装不下的其他可见事实，最多 3 条，每条不超过 20 字。"
+        "出现冒烟 / 烧焦 / 电池鼓包 / 漏液 / 火花时，在这里中文与英文关键词各写一次"
         "（如「烧焦 burnt」「鼓包 swollen battery」）。\n"
         "第二步 content_kinds：逐图说明每张图是什么，每张图一条，image_index 写它是第几张（Image N 的 N）。"
         "拍到实物设备或其部件的照片填 fault_photo；"
         "订单截图、发票、收据、配送详情页、App 报错页这类以文字为主的单据或界面填 document；"
-        "两者都不是时填 other。\n"
+        "两者都不是时填 other。单据与界面图在第一步只写 subject（是什么单据），其余留空。\n"
         "第三步 findings：只依据第一步写下的事实填写，每条给出 part / phenomenon / evidence / cell。"
         "只为 fault_photo 的图写 findings；document 与 other 的图不写。\n"
         f"part 从 [{' '.join(v['parts'])}] 中选；phenomenon 从 [{' '.join(v['phenomena'])}] 中选。"
@@ -335,11 +404,15 @@ async def observe_images(
         for f in localization["findings"]
         if f["phenomenon"] not in NON_FAULT_PHENOMENA
     ]
-    obs = [o.strip() for o in parsed.observations if o.strip()][:10]
+    kinds = localization["content_kinds"]
+    obs = scene_observations(parsed)[:12]
+    if kinds and all(kind == "document" for kind in kinds):
+        # 全是单据 / 界面截图：只留「是什么单据」那条。单据上抄下来的订单号、商品名、金额不是现象，
+        # 进了观察会混进检索词与选方案（T53 发票上的「Wearable Breast Pump」让充电问题去追问对象，2026-10-13 对照）
+        obs = obs[:1]
     obs = list(dict.fromkeys([*obs, *derived]))
     parts = [p.strip() for p in parsed.visible_parts if p.strip()][:10]
     parts = list(dict.fromkeys([*parts, *[f["part"] for f in localization["findings"]]]))
-    kinds = localization["content_kinds"]
     document_image_ids = [
         r["image_id"] for (r, _, _), kind in zip(images, kinds, strict=True) if kind == "document"
     ]
@@ -408,7 +481,7 @@ async def _reread_nameplate(
         "no_cell" if not cell
         else "no_image" if not originals
         else "no_image_index" if target is None
-        else "budget" if budget_ms < ZOOM_MIN_BUDGET_MS
+        else "budget" if budget_ms < ZOOM_MIN_BUDGET_MS + ZOOM_RESERVE_MS
         else None
     )
     if why:
@@ -430,7 +503,7 @@ async def _reread_nameplate(
     ]
     try:
         res = await router.invoke(
-            TASK, messages, NameplateRead, budget_ms=budget_ms, session_id=session_id, lane=lane
+            TASK, messages, NameplateRead, budget_ms=budget_ms - ZOOM_RESERVE_MS, session_id=session_id, lane=lane
         )
     except (ModelInvokeError, CapacityExceeded) as exc:
         log.info("nameplate reread failed session=%s cell=%s reason=%s", session_id, cell, exc)

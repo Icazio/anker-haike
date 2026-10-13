@@ -26,7 +26,15 @@ from app.sessions.store import SessionStore
 log = logging.getLogger("sessions.runner")
 
 DEFAULT_DEADLINE_MS = 25_000  # 文本轮（08 §8）
+# 带图回合（08 §8 的含图轮）：读图主位 qwen3.8-max 单次 10–18 s（2026-10-13 官方照片实测，按物体分字段输出），
+# 文本轮的 25 s 放不下读图 + 理解 + 检索 + 选方案。只有本轮真的带图才放宽，文字轮不受影响（Fable 2026-10-13）
+IMAGE_DEADLINE_MS = 45_000
 PING_INTERVAL_S = 5.0
+
+
+def run_deadline_ms(source: dict[str, Any], default: int = DEFAULT_DEADLINE_MS) -> int:
+    """本轮 run 的截止：消息带图用带图回合的截止，其余用调用方给的（默认文本轮）。"""
+    return max(default, IMAGE_DEADLINE_MS) if source.get("kind") == "message" and source.get("image_ids") else default
 
 _GRAPH_DONE = object()
 _CANCELLED = object()
@@ -189,6 +197,7 @@ async def run_message(
         e for e in prior if e["type"] == "input_received" and e["input_id"] == receipt["input_id"]
     )
     source = input_event["payload"]
+    deadline_ms = run_deadline_ms(source, deadline_ms)
     em.input_id = receipt["input_id"]
     em.issue_id = source.get("target_issue_id")
     em.last_seq = max((e["seq"] for e in prior), default=0)
@@ -228,6 +237,7 @@ async def run_message(
                     "text": source.get("text") or "",
                     "image_ids": source.get("image_ids") or [],
                 }
+            payload["deadline_ms"] = deadline_ms
             from app.conversation.history import fold_history
 
             payload.update(

@@ -276,7 +276,8 @@ def _first_open_step(plan, executed_src: set[str], executed_steps: set[tuple[str
 
 def replay_end(library, plan_id: str, state) -> str:
     """沿已回答的边重放计划，看它停在哪儿：handoff = 走到官方交售后结论段；question_exit = 选中了审核写成
-    EXHAUSTED 的选项（诊断树里原文没覆盖的那一支）；open = 其余（有未回答的步骤，或步骤走完）。"""
+    EXHAUSTED 的选项（诊断树里原文没覆盖的那一支）；source_gap = 走到原文缺后续说明的段落（客户什么也没做，
+    不算一条走完的指南，T40 rv-0371 缺链接后换到 rv-0073，第一张卡未解决就被说成「官方排查已完成」）；open = 其余。"""
     try:
         plan = library.get(plan_id)
     except KeyError:
@@ -288,6 +289,8 @@ def replay_end(library, plan_id: str, state) -> str:
         step = plan.step(step_id)
         if step.kind == "handoff":
             return "handoff"
+        if step.source_gap:
+            return "source_gap"
         record = answered.get(step.instruction_src)
         if record is None and step.kind != "statement":
             return "open"
@@ -335,7 +338,7 @@ def decide_next(state, *, library) -> NextAction:
     # 诊断树判定原文没覆盖的指南（rv-0341「其他声音」）不算走完一条：交给下一条候选指南完整排查（T36）。
     # 诊断树的一支直接得出官方交售后结论时，没有「未解决」也进质保判断（rv-0341「拆下滚刷后噪音消失」）。
     ends = {pid: replay_end(library, pid, state) for pid in exhausted}
-    counted = [pid for pid in exhausted if ends[pid] != "question_exit"]
+    counted = [pid for pid in exhausted if ends[pid] not in {"question_exit", "source_gap"}]
     if len(counted) >= MAX_GUIDES and (any(s.get("feedback") == "not_solved" for s in executed)
                                        or "handoff" in ends.values()):
         return result("handoff_offer", "guide_exhausted")

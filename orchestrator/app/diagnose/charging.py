@@ -19,6 +19,10 @@ CHARGING_FAILURE = re.compile(
 )
 OBJECT = re.compile(rf"^\s+(?:(?:the|my|its|your|both)\s+)?({ENTITY_TEXT})\b", re.IGNORECASE)
 LOCATION = re.compile(rf"^\s+(?:in|inside|on|from|with)\s+(?:(?:the|my|its|your)\s+)?({ENTITY_TEXT})\b", re.IGNORECASE)
+# 「charging case not charging one side」：one side 是盒里的一个泵位，受电方是那一侧的泵，不是盒子自己（T52 bp-0127，
+# 正文全是摆泵、清盒内磁吸头、复位泵；被读成「盒子自己不进电」后与客户「My charging case will not charge」判成同一件事）
+SLOT = re.compile(r"^\s+(?:on\s+)?(?:(?:one|either|both|the\s+(?:left|right|other))\s+sides?|one\s+of\s+the\s+(?:pumps?|sides?))\b",
+                  re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,8 @@ def charging_relation(text: str) -> ChargingRelation | None:
         return None
     subject = endpoint(re.split(r"[.;!?\n]", text[:match.start()])[-1])
     tail = text[match.end():]
+    if subject == "charging case" and SLOT.match(tail):
+        return ChargingRelation("pump", subject)
     if obj := OBJECT.match(tail):
         recipient = endpoint(obj.group(1))
         return ChargingRelation(recipient, subject) if recipient else None

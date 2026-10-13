@@ -69,7 +69,8 @@ def test_uncertain_polarity_forces_clarification():
 
 
 def test_timing_direction_mismatch_is_not_supported():
-    """T61：「提前两小时启动」对「无法按时启动（7051）」是方向矛盾。"""
+    """T61：「提前两小时启动」对「无法按时启动（7051）」是方向矛盾。候选不对不是信息不足，不追问
+    「你说的是提前吗」（重复客户原话，Codex 2026-10-12 20:25 主轮；Fable D1）。"""
     facts = [{"kind": "symptom", "value": "starts 2 hours before schedule", "quote": "going off 2 hours before",
               "subject": "schedule", "polarity": "affirmed", "timing": "2 hours before", "status": "active"}]
     kept, dropped, clar = filter_hypotheses(
@@ -78,7 +79,7 @@ def test_timing_direction_mismatch_is_not_supported():
         facts=facts, error_codes=[], max_n=3,
     )
     assert kept == [] and "timing_mismatch:qa_rv_0522" in dropped
-    assert "2 hours before" in clar[0]["question"]
+    assert clar == []
 
 
 def test_subject_level_mismatch_asks_about_the_part_itself():

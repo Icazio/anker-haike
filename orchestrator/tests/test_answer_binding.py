@@ -157,7 +157,8 @@ def test_t52_same_clarification_answered_once_is_not_asked_again():
              "question": "When the pump itself is connected to power, what does its charging indicator show?"}]
     assert _diagnose_outcome([], knowledge_status="ok", exact_hits=[], clarifications=pump,
                              previous_outcome=first["diagnose_outcome"], state=KNOWN)["diagnose_outcome"]["mode"] != "clarify"
-    timing = [{**clar[0], "question": "You said it happened 2 hours before. Is that right?", "reason": "timing_mismatch"}]
-    third = _diagnose_outcome([], knowledge_status="ok", exact_hits=[], clarifications=[*clar, *timing],
+    other = [{**clar[0], "question": "When the case itself is connected to power, what does its indicator show?",
+              "reason": "polarity_uncertain"}]
+    third = _diagnose_outcome([], knowledge_status="ok", exact_hits=[], clarifications=[*clar, *other],
                               previous_outcome=first["diagnose_outcome"], state=KNOWN)
-    assert third["diagnose_outcome"]["question"] == timing[0]["question"]
+    assert third["diagnose_outcome"]["question"] == other[0]["question"]

@@ -51,7 +51,9 @@ def _content_kinds(raw, image_count: int | None) -> list[str]:
 def normalize(localization, image_count: int | None = None):
     config = vocabulary()
     unknown = config["unknown"]
-    result = localization.model_dump(mode="json", exclude={"observations", "visible_parts"})
+    # 感知阶段的字段（观察句、按物体分的主体 / 灯 / 异常）由 vision 拼成 observations，不进定位结果
+    result = localization.model_dump(
+        mode="json", exclude={"observations", "visible_parts", "subject", "others", "lights", "anomalies"})
     # 模型输出的 schema 里已经没有这两个字段（阶段 2 / 阶段 1），但直接传 FaultLocalization 的调用方还有
     result.setdefault("conflicts_with_text", [])
     result.setdefault("model_hint_verified", False)

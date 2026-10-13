@@ -44,9 +44,11 @@ async def test_empty_action_only_or_ungrounded_recovery_does_not_create_a_sympto
     model = conversation.models["intake"]
     model.script = [{"facts": facts}]
     meaning = TurnInterpretation(primary_intent="report_problem")
-    result, trace = await complete_problem_facts(get_model_router(), meaning,
+    result, _ = await complete_problem_facts(get_model_router(), meaning,
         source_state("Product PN: T2351\nProblem Description: I cleaned the hose."), lane="domestic")
-    assert not result.facts and trace["outcome"] == "empty" and len(model.calls) == 1
+    # 补抽也要补客户写的已做检查（「I cleaned the hose」），所以接地的已做事实会被收下；不会凭空生成症状
+    assert not [f for f in result.facts if f.kind == "symptom"] and len(model.calls) == 1
+    assert all(f.kind == "action_taken" and f.quote == "cleaned the hose" for f in result.facts)
 
 
 @pytest.mark.parametrize("polarity", ["affirmed", "negated", "uncertain"])
@@ -67,7 +69,9 @@ async def test_existing_grounded_polarity_does_not_trigger_recovery(conversation
         "corrections": [{"fact_id": "f1", "value": None, "quote": "Water tray will not empty"}]}),
 ])
 async def test_exact_codes_emails_other_intents_and_corrections_do_not_trigger_recovery(conversation, text, meaning):
-    result, trace = await complete_problem_facts(get_model_router(), TurnInterpretation(**meaning), source_state(text), lane="domestic")
+    # 更正要指向已记录的事实才算更正（首封消息里没有目标的 corrections 不拦补抽，见 test_codex_round_fixes）
+    state = {**source_state(text), "active_issue_id": "i", "issues": {"i": {"facts": [{"fact_id": "f1", "status": "active"}]}}}
+    result, trace = await complete_problem_facts(get_model_router(), TurnInterpretation(**meaning), state, lane="domestic")
     assert result == TurnInterpretation(**meaning)
     assert trace["outcome"] == "not_needed" and not conversation.models["intake"].calls
 

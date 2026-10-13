@@ -427,6 +427,22 @@ CUSTOMER_BOUNDARY = {
 }
 
 
+def r5_boundary(state: dict[str, Any]) -> str:
+    """知识缺口交人工时对客户说明没覆盖的是哪几件事（客户原话）。T61「提前两小时启动」「清扫没有记录」两个问题，
+    只说「这个问题」时客户不知道第二件有没有被记下（Fable D1 2026-10-12）。"""
+    issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
+    quotes = list(dict.fromkeys(
+        (f.get("quote") or f.get("value") or "").strip() for f in issue.get("facts", [])
+        if f.get("status") == "active" and f.get("kind") == "symptom" and f.get("polarity", "affirmed") == "affirmed"
+        and f.get("source_kind", "user_report") == "user_report"))
+    quotes = [q for q in quotes if q]
+    if len(quotes) < 2:
+        return "I couldn't confirm official troubleshooting guidance for this issue. "
+    said = "; ".join(f'"{q}"' for q in quotes)
+    return (f"I couldn't confirm official troubleshooting guidance for these issues: {said}. "
+            "Each of them is kept in the record for our colleague. ")
+
+
 def reassurance_text(reason: str, state: dict[str, Any] | None = None) -> str:
     """结束时如实说明知识覆盖与已整理记录；实际提交状态由案件记录决定。"""
     next_action = (state or {}).get("next_action") or {}

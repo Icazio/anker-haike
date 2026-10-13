@@ -109,3 +109,31 @@ cases:
     image: {kind: nameplate, font_size: 22}
     input: {text: ""}
     expect: {usable: true, model_hint_contains: [X10 Pro]}
+
+  # ---- 主办方 63 单的真实附件（2026-10-13，docs/planning/2026-10-13-0824_vision-root-cause）。
+  # 只有 5 张实物照片，只作回归门槛，不当准确率结论。subject_* 看第一条观察（画面主体），observe_all 每组同义词至少命中一个。
+  # T30：带 3D MATRIX EYE 的 S1 Pro 机器人本体正面特写，画面里没有基站（原主位 deepseek 6/6 认成基站）
+  - id: official_T30_robot_front
+    image: {official: T30.jpg}
+    input: {text: ""}
+    expect: {subject_any: [机器人, robot], subject_none: [基站, station, 底座], observe_all: [[红, red]]}
+  # T14：机器人本体停在基站前（对照：不能因为改了提示词就把本体和基站都叫主机）
+  - id: official_T14_robot_on_dock
+    image: {official: T14.jpg}
+    input: {text: ""}
+    expect: {subject_any: [机器人, robot], subject_none: [基站, station], observe_all: [[基站, station, 底座, 座]]}
+  # T20：只有基站
+  - id: official_T20_dock_only
+    image: {official: T20.jpg}
+    input: {text: ""}
+    expect: {subject_any: [基站, station, 立式, 底座], subject_none: [机器人本体]}
+  # T42：手里拿着脱落的塑料件 / 机器人底部，基站在背景
+  - id: official_T42_handheld_part
+    image: {official: T42.jpg}
+    input: {text: ""}
+    expect: {subject_any: [手持, 手里, 手拿, 底部, 部件, 配件], subject_none: [基站, station], observe_all: [[基站, station]]}
+  # T48：吸奶器主机控制面板，绿灯 + 黄灯，左侧外壳可见裂纹
+  - id: official_T48_pump_hub
+    image: {official: T48.jpg}
+    input: {text: ""}
+    expect: {subject_none: [耳机, earbud, 充电盒, charging case], observe_all: [[裂, crack], [绿, green]]}

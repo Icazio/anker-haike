@@ -275,7 +275,9 @@ async def test_t37_full_tank_still_gets_the_tank_card(conversation, l3_runtime):
     events = await conversation.send(T37, {
         "primary_intent": "report_problem", "device_relation": "current", "product_hints": ["Omni E28"],
         "facts": [{"value": "add water warning while clean water tank is full",
-                   "quote": "Terwijl de schoonwater tank nog vol is"}],
+                   "quote": "Terwijl de schoonwater tank nog vol is"},
+                  {"kind": "observation", "value": "hose ok", "quote": "Slang in tank is in orde."},
+                  {"kind": "observation", "value": "rubbers ok", "quote": "Rubbers zijn in orde."}],
     })
     card = next(e for e in events if e["type"] == "step_card")["step"]
     assert (card["plan_id"], card["step_id"]) == ("qa_rv_0021", "s1")

@@ -8,7 +8,8 @@
 # disabled + reason（已核实不适用的段落，不生成步骤但保留原文）、
 # parts（一段拆成多步：段内夹问句、段内诊断树。每部分可写上面的字段；第一部分从段首开始，之后每部分写 at = 段内唯一的
 # 原文锚点，从锚点处切开，依次生成 s{pos}、s{pos}b、s{pos}c…；切出的文字拼起来就是原段落；media: true 指定由哪一部分挂原段图示 / 链接，
-# 不写时挂第一张出卡的部分）。
+# 不写时挂第一张出卡的部分）；scope_note（{when: 客户原话正则, text: 系统说明}：客户原话命中时附在这一步的卡片上，
+# 说明这条资料能做什么、做不到什么，系统口吻、不改原文，不新增步骤或承诺）。
 bp-0123:
   1: {kind: statement}                                   # 「Identify the Problem」是标题
   3: {kind: question, options: ["Upon startup", "During breast pumping", "Only at high speed"]}
@@ -97,3 +98,40 @@ bp-0111:
   # 第 5 段「Check Battery Power」是「Troubleshooting Steps」下的小标题，不是操作（T51 单独出了一张四个词的卡）。
   # 改成说明，附到下一张「确保充满」卡上
   5: {kind: statement}
+rv-0111:
+  # 标题本身就是「Clean water tank is full but still says it's empty」，第 2 句「只是缺水提醒、方便时加水即可」对这条的读者
+  # 自相矛盾（T37：满水仍报警并停拖，卡片却说这只是普通缺水提醒），且不含任何排查动作（Fable D2 2026-10-12）。
+  # 拆成：查水箱有没有水、没有就加水重启（操作）→ 仍报错就联系我们（交人工）；中间那句不进卡片，原文仍在证据里
+  1:
+    parts:
+      - {kind: action, title: "Check the clean water tank, refill if needed, and restart the task",
+         scope_note: {when: "\\b(?:full|vol|voll|plein|lleno)\\b",
+                      text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
+      - {at: "*Please note that this is simply a notification", disabled: true, reason: "满水仍报缺水的读者不适用「只是缺水提醒」"}
+      - {at: "*If the error persists after refilling and restarting", kind: handoff}
+rv-0112:
+  # 与 rv-0111 正文相同（E25），同一处理
+  1:
+    parts:
+      - {kind: action, title: "Check the clean water tank, refill if needed, and restart the task",
+         scope_note: {when: "\\b(?:full|vol|voll|plein|lleno)\\b",
+                      text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
+      - {at: "*Please note that this is simply a notification", disabled: true, reason: "满水仍报缺水的读者不适用「只是缺水提醒」"}
+      - {at: "*If the error persists after refilling and restarting", kind: handoff}
+rv-0312:
+  # 客户问维修后能不能找回旧地图、为什么历史记录里看得到却不能用（T34）。S1 Pro 没有维修后恢复地图、历史日志的官方资料；
+  # E28 的「删除后不可找回」不能借用。先如实说明这条资料能做什么，再照发查地图页 / 重建两步（Fable D4 2026-10-12）
+  1: {scope_note: {when: "(?:lost|lose|missing|recover|restore|get back|retrieve|kwijt|verloren|perdu)[^.\\n]{0,40}maps?|maps?[^.\\n]{0,60}(?:history|histor|service|repair|kwijt|verloren)",
+                   text: "You'd like your old map back. I couldn't find official information on restoring a map after a repair, or on why it still shows in the cleaning history, so I can't confirm it can be recovered. The steps below check the map page and rebuilding; if you need the old map itself, mark them as not solved and a colleague will check."}}
+rv-0021:
+  # 「清水不足降级为纯扫」（6536/6537）。正文后半「Please note: The alert you see is just a reminder… normal protective mechanism」
+  # 讲的是机器人在没有基站的楼层、清水用完自动转纯扫；客户说水箱满着仍提示加水（T37 主轮选中这条）时，这句把异常解释成正常。
+  # 拆开：查水箱 / 补水重启（操作，含同楼层仍持续请联系）→ 无基站楼层的正常保护说明（不进卡片，原文仍在证据里）
+  # → 结尾「仍有问题请联系」交人工
+  1:
+    parts:
+      - {kind: action, title: "Check the clean water tank, refill if needed, and restart the mopping task",
+         scope_note: {when: "\\b(?:full|vol|voll|plein|lleno)\\b",
+                      text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
+      - {at: "Please note: The alert you see is just a reminder", disabled: true, reason: "只适用于机器人在无基站楼层用完清水；满水仍报警的客户读成「这是正常的」"}
+      - {at: "If the problem continues after refilling the water", kind: handoff}

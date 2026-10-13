@@ -138,7 +138,8 @@ def test_symptoms_outside_a_wish_sentence_are_unchanged(text, quote):
 def test_vision_prompt_asks_for_the_main_subject_first():
     """T30：前景机器人 4 轮都被写成「扫地机器人基站」：提示词只要求写品类，词表里能指扫地机整机的只有基站。"""
     text = _instruction()
-    assert "第一条写画面主体" in text and "扫地机器人本体" in text and "主机" in text
+    # 2026-10-13 起主体单独成字段 subject（不再是「第一条观察」），由代码放到观察的第一条
+    assert "subject：画面主体" in text and "扫地机器人本体" in text and "主机" in text
 
 
 # ---- C6 / D1–D3：资料覆写 ----
