@@ -15,7 +15,7 @@ from app.conversation.interpret import (
     uncovered_checks,
 )
 from app.conversation.product_questions import observation_terms, question_observations
-from app.diagnose.synthesize import filter_hypotheses, in_plan_check
+from app.diagnose.synthesize import filter_hypotheses
 from app.diagnose.vision import _instruction
 from app.escalation.summary import r5_boundary
 from app.knowledge.runtime import set_knowledge_adapter
@@ -23,7 +23,6 @@ from app.models.runtime import get_model_router
 from app.official.message import parse_message
 from app.official.models import OfficialData
 from app.plans.qa import customer_text, qa_plan_library
-from app.plans.runtime import get_plan_library
 from tests.conversation_runtime import conversation as base_conversation_fixture
 from tests.fake_qa import QAHitAdapter
 from tests.test_conversation_l3 import act
@@ -116,10 +115,11 @@ def test_opposite_timing_is_dropped_without_a_question():
     plan = LIB.get("qa_rv_0551")
     kept, dropped, clar = filter_hypotheses(
         [{"plan_id": "qa_rv_0551", "confidence": 0.35, "evidence_ids": ["e1"], "applicability": "supported",
-          "supported_symptoms": ["starts 2 hours early"], "matched_timing": "failed to start"}],
+          "supported_symptoms": ["starts 2 hours early"],
+          "conflict": {"kind": "direction", "customer_quote": "it's going off 2 hours before", "candidate_quote": "failed to start"}}],
         allowed={"qa_rv_0551": plan}, evidence_ids={"e1"}, symptoms={"starts 2 hours early"}, facts=facts,
-        error_codes=[], max_n=3)
-    assert kept == [] and clar == [] and dropped == ["timing_mismatch:qa_rv_0551"]
+        error_codes=[], said=["it's going off 2 hours before"], max_n=3)
+    assert kept == [] and clar == [] and dropped == ["conflict_direction:qa_rv_0551"]
 
 
 def test_r5_boundary_names_every_reported_symptom():
@@ -136,7 +136,8 @@ async def test_t61_hands_off_with_both_symptoms_instead_of_repeating_the_custome
     set_knowledge_adapter(QAHitAdapter("rv-0551", "rv-0522"))
     conversation.models["diagnose.synthesize"].script = [{"hypotheses": [
         {"plan_id": "qa_rv_0551", "confidence": 0.35, "evidence_ids": ["chunk-rv-0551"], "applicability": "supported",
-         "supported_symptoms": ["going off 2 hours before schedule"], "matched_timing": "failed to start"},
+         "supported_symptoms": ["going off 2 hours before schedule"],
+         "conflict": {"kind": "direction", "customer_quote": "it’s going off 2 hours before", "candidate_quote": "failed to start"}},
     ]}]
     events = await conversation.send(TICKETS["T61"], {
         "primary_intent": "report_problem", "device_relation": "current", "product_hints": ["omni c20"],
@@ -150,14 +151,6 @@ async def test_t61_hands_off_with_both_symptoms_instead_of_repeating_the_custome
     assert state["escalate_reason"] == "R5"
     issue = state["issues"][state["active_issue_id"]]
     assert all(f["polarity"] == "affirmed" for f in issue["facts"] if f["kind"] == "symptom")
-
-
-# ---- T40：前提即计划内检查；原文缺口静默换候选（HTTP 用例见 test_knowledge_source_gaps.py）----
-
-def test_precondition_matching_a_reviewed_card_title_is_an_in_plan_check():
-    library = get_plan_library()
-    assert in_plan_check(library.get("qa_rv_0073"), "the cleaning solution bottle is installed correctly") == "s1"
-    assert in_plan_check(library.get("qa_rv_0073"), "third-party cleaning solution was used") is None
 
 
 # ---- T37 / T34：资料覆盖边界说明 ----
@@ -348,6 +341,14 @@ def test_customer_text_is_the_symptom_when_no_symptom_fact_was_extracted():
                  "quote": "I just want my hoover to clean with out all this bullshit"}]}}}
     assert active_symptoms(wish, []) == []
     assert active_symptoms({**wish, "issues": {"i": {"facts": []}}}, []) == []  # 原文本身是愿望
+    # 2026-10-13 deepseek-v4-pro：T40 的现象被记成观察，没有现象事实时客户自己说的肯定观察也可选；否定观察与有现象事实时不算
+    seen = {"symptoms": [], "query": "", "active_issue_id": "i", "issues": {"i": {"facts": [
+        {"kind": "observation", "status": "active", "polarity": "affirmed", "value": "floor detergent level has barely moved"},
+        {"kind": "observation", "status": "active", "polarity": "negated", "value": "not dispensing"}]}}}
+    assert active_symptoms(seen, []) == ["floor detergent level has barely moved"]
+    with_symptom = {**seen, "issues": {"i": {"facts": [*seen["issues"]["i"]["facts"],
+                                                        {"kind": "symptom", "status": "active", "value": "won't dispense"}]}}}
+    assert active_symptoms(with_symptom, []) == []
 
 
 async def test_recovery_also_runs_when_troubleshooting_is_the_secondary_request(conversation):
@@ -364,21 +365,6 @@ async def test_recovery_also_runs_when_troubleshooting_is_the_secondary_request(
     only_logistics = TurnInterpretation(primary_intent="logistics_query", facts=[drying])
     _, trace = await complete_problem_facts(get_model_router(), only_logistics, source_state(TICKETS["T41"]), lane="domestic")
     assert trace["outcome"] == "not_needed"
-
-
-def test_a_broad_quote_does_not_make_an_unrelated_observation_cover_the_precondition():
-    """T41 round5 repeat-1：观察「注水仍异常」的 quote 是整句，带着「havent needed any mop drying」，被判成覆盖了
-    rv-0146 的前提「Mop not dried」且为肯定，前提当成已知成立，直接发了「升级固件跑一次拖地」。只比对 value 所在分句。"""
-    from app.diagnose.synthesize import precondition_status
-
-    sentence = ("As the water injection is still malfunctioning we have not run mop cycles and thus havent needed any mop drying "
-                "so im not sure what is triggering this.")
-    obs = {"kind": "observation", "polarity": "affirmed", "status": "active",
-           "value": "water injection is still malfunctioning", "quote": sentence}
-    neg = {"kind": "action_taken", "polarity": "negated", "status": "active",
-           "value": "needed any mop drying", "quote": "havent needed any mop drying"}
-    assert precondition_status("roller not dried /Mop not dried", [obs])[0] == "unknown"
-    assert precondition_status("roller not dried /Mop not dried", [obs, neg])[0] == "negated"
 
 
 async def test_first_message_correction_without_a_target_is_not_a_correction(conversation):
@@ -408,7 +394,8 @@ T61_FACTS = [
 def _t61_hyps(extra):
     return [
         {"plan_id": "qa_rv_0522", "confidence": 0.35, "evidence_ids": ["e1"], "applicability": "needs_confirmation",
-         "supported_symptoms": ["going off 2 hours before schedule"], "matched_timing": "failed to start scheduled cleaning",
+         "supported_symptoms": ["going off 2 hours before schedule"],
+         "conflict": {"kind": "direction", "customer_quote": "it's going off 2 hours before", "candidate_quote": "failed to start scheduled cleaning"},
          "clarification_question": "Is another task running?", "missing_fact": "other tasks not completed"},
         {"plan_id": "qa_rv_0565", "confidence": 0.3, "evidence_ids": ["e1"], "applicability": "needs_confirmation",
          "supported_symptoms": ["cleans are not being recorded"], "missing_fact": "inaccurate mapping",
@@ -428,7 +415,7 @@ def test_t61_question_about_a_different_problem_is_not_asked():
     kept, dropped, clar = _run(_t61_hyps({"question_targets": ["cleans are not being recorded"],
                                           "question_relation": "different_problem"}), T61_FACTS, symptoms)
     assert kept == [] and clar == []
-    assert "timing_mismatch:qa_rv_0522" in dropped and "clarify_unrelated:qa_rv_0565" in dropped
+    assert "conflict_direction:qa_rv_0522" in dropped and "clarify_unrelated:qa_rv_0565" in dropped
     # 自报 narrows 却指不出逐字的有效症状，同样不问
     _, dropped, clar = _run(_t61_hyps({"question_targets": ["map is wrong"], "question_relation": "narrows"}), T61_FACTS, symptoms)
     assert clar == [] and "clarify_unrelated:qa_rv_0565" in dropped

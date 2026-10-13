@@ -78,7 +78,8 @@ async def test_source_gap_switches_silently_to_the_complete_candidate(conversati
          "applicability": "supported", "supported_symptoms": ["cleaning solution stays at 660ml"]},
         {"plan_id": "qa_rv_0073", "confidence": 0.6, "evidence_ids": ["chunk-rv-0073"],
          "applicability": "needs_confirmation", "supported_symptoms": ["cleaning solution stays at 660ml"],
-         "clarification_question": question, "missing_fact": "the cleaning solution bottle is installed correctly"},
+         "clarification_question": question, "missing_fact": "the cleaning solution bottle is installed correctly",
+         "plan_step": "s1"},
     ]}]
     events = await conversation.send("Product PN: T2080\nProblem Description: cleaning solution stays at 660ml", {
         "primary_intent": "report_problem", "device_relation": "current",

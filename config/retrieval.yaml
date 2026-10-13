@@ -28,5 +28,5 @@ retrieval:
   second_round_budget_ms: 3000   # 补检索整轮上限
   min_remaining_for_second_round_ms: 3000  # 剩余不足 3 s 跳过第二轮并记录（08 §8）
 synthesize:
-  budget_ms: 8000
+  budget_ms: 12000   # 2026-10-13：主位 deepseek-v4-pro p90 7.2 s，超时 9 s 后仍要够 deepseek-flash 一次
   max_hypotheses: 3

@@ -33,7 +33,10 @@
 # 2026-09-18.1：充分性评估最多12条证据及缺口列表，输出预算调至1024，避免旧256截断JSON；模型顺序不变。
 # 2026-09-18.2：会话1ad8的intake在512 token触发LengthFinishReasonError，默认通道提高至1536，与其他通道一致。
 # 2026-10-13.1：domestic diagnose.vision 换为 qwen3.8-max → qwen3.7-plus → qwen3-vl-plus（官方真实照片实测，见链行尾注）。
-version: 2026-10-13.1
+# 2026-10-13.2：domestic intake / diagnose.synthesize 主位换 deepseek-v4-pro（关思考），超时 9 s 后落到 deepseek-flash。
+#   63 单真实链路四组对比（docs/planning/2026-10-13-1613_stronger-models-63/对比结论.md）：SOP 87%→90%、完全命中 65%→70%，
+#   整单中位耗时 9.8→8.8 s；开思考单次 50–90 s 不可用；glm-5.3（思考 low）84% 且主模型失败 9 次。
+version: 2026-10-13.2
 default_lane: domestic
 
 providers:
@@ -57,8 +60,8 @@ models:
   qwen-vl-plus: {context_window: 1000000, provider: dashscope, id: qwen3.7-plus,                vision: true,  structured: json_object, max_images: 10, timeout_s: 30, params: {enable_thinking: false}}
   # deepseek-flash（V4.1-Flash）实测：json_object 可用、能读图（max_images 按 4 张保守）、关思考后 intake ≈ 0.9 s
   deepseek:     {context_window: 1000000, provider: deepseek,  id: deepseek-flash,              vision: true,  structured: json_object, max_images: 4,  timeout_s: 20, params: {thinking: {type: disabled}}}
-  # deepseek-v4-pro：强推理档对照位（不读图，实测对图片凭空描述）；只作 synthesize / guide 的候选，默认不在链上
-  deepseek-pro: {context_window: 1000000, provider: deepseek,  id: deepseek-v4-pro,             vision: false, structured: json_object, timeout_s: 30, params: {thinking: {type: disabled}}}
+  # deepseek-v4-pro：理解与选方案主位（不读图，实测对图片凭空描述）。p90 约 7 s；超时 9 s 留出落到 deepseek-flash 的余量
+  deepseek-pro: {context_window: 1000000, provider: deepseek,  id: deepseek-v4-pro,             vision: false, structured: json_object, timeout_s: 9, params: {thinking: {type: disabled}}}
   # 智谱 2026-09-13 本机实测：json_schema 被静默忽略（返回散文 → 校验必失败），只能用 json_object；思考模式默认开，需关
   glm:          {context_window: 200000, provider: zhipu,     id: glm-4.7,                     vision: false, structured: json_object, timeout_s: 20, params: {thinking: {type: disabled}}}
   # glm-4.7-flash 不存在（调用返回 500 操作失败）；轻量档实测可用的是 glm-4.5-flash
@@ -73,10 +76,10 @@ lanes:
     # 的 schema/准确率、P50、成本，顺序同 chain。裁决口径同 runner.judge：准确率只作门槛，达标后按 延迟/上限 + 成本×100 排序；
     # 智谱位一律用 glm-4.7 不用 glm-4.5-flash（免费档排队：reply.stream P50 12.1 s、67%/65%）。
     # 注意 repeats=3 在门槛线附近抖动可达 ±5 点，边界候选的裁决以 findings §「三家全量」的多轮记录为准。
-    intake:                {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 1536}   # 100/98 1051 ms ¥0.0002 | 100/100 953 ms ¥0.0016 | 100/97 1364 ms
+    intake:                {chain: [deepseek-pro, deepseek, qwen-flash], effort: low, max_tokens: 1536}   # 2026-10-13 63 单：v4-pro p50 4.5 s p90 7.1 s；旧主位 qwen-flash p50 5.5 s p90 8.6 s
     disambiguate.clarify:  {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 256}    # 100/100 752 ms ¥0.0001 | 100/100 990 ms ¥0.0010 | 100/100 965 ms
     diagnose.vision:       {chain: [qwen-vl-max, qwen-vl-plus, qwen-vl], effort: medium, needs_vision: true} # 2026-10-13 官方 5 张实物照片（线上同款 schema）：主体 / 裂纹 / 绿灯 qwen3.8-max 全对 p50 5.2 s | qwen3.7-plus 全对 4.9 s | qwen3-vl-plus 绿灯 0/2 6.6 s；原主位 deepseek T30 主体 0/6、glm-v T20 0/2，移出（2026-09-15 的 93% 来自合成图，未测主体识别）
-    diagnose.synthesize:   {chain: [deepseek, qwen-max, glm-v],   effort: high}                       # 100/100 1162 ms ¥0.0023 | 100/100 2179 ms ¥0.0094 | 100/88 2320 ms
+    diagnose.synthesize:   {chain: [deepseek-pro, deepseek, qwen-max], effort: high}                  # 2026-10-13 63 单：v4-pro p50 5.1 s p90 7.2 s；旧主位 deepseek-flash p50 2.5 s
     guide.step:            {chain: [deepseek, qwen-max, glm],     effort: medium}                     # 100/97 929 ms ¥0.0011 | 100/94 998 ms ¥0.0047 | 100/89 1130 ms（glm 89–92% 跨门槛线，仅兜底）
     reply.stream:          {chain: [qwen-plus, deepseek, glm],    effort: low,    stream: true}       # 首字 100/98 900 ms ¥0.0003 | 100/98 1084 ms ¥0.0005 | 100/98 582 ms ¥0.0002（工具按成本判 glm 为主，人工不让智谱进主位：账号并发 4 即 429）
     escalate.summary:      {chain: [qwen-flash, deepseek, glm-v], effort: low}                        # 100/100 648 ms ¥0.0001 | 100/100 899 ms ¥0.0006 | 100/100 723 ms

@@ -1,6 +1,7 @@
 """官方 63 单 2026-10-13 全量复评的 4 处系统修改（docs/planning/2026-10-13-1058_official-63-full-review/）。
 
-T50 / T53：候选讲充电关系、客户没说过充电问题时不追问「哪个部件充不了电」；「does work」被改写成否定时还原。
+T50 / T53：候选讲的现象客户没说过（模型判 conflict=not_reported）时不追问「哪个部件充不了电」；
+「does work」被改写成否定时还原。
 T57：bp-0164 收 App 版本用问题卡，没拿到版本不算指南走完。
 T34：卡上说了「资料不覆盖旧地图、未解决由同事核查」，指南走完按资料缺口交人工，不进质保收订单。
 T48：单张照片不说灯常亮 / 闪烁。
@@ -12,8 +13,7 @@ import pytest
 
 from app.conversation.interpret import FactCandidate, normal_operation_is_uncertain
 from app.conversation.product_questions import PHOTO_ANSWER_RULES
-from app.diagnose.charging import mentions_charging
-from app.diagnose.synthesize import filter_hypotheses, in_plan_check
+from app.diagnose.synthesize import filter_hypotheses
 from app.knowledge.runtime import set_knowledge_adapter
 from app.official.models import OfficialData
 from app.plans.qa import qa_plan_library
@@ -34,51 +34,38 @@ async def conversation(l3_runtime, base_conversation):
     yield base_conversation
 
 
-def _charging_case_hypothesis(symptom: str, confidence: float = 0.62) -> dict:
-    return {"plan_id": BP_0127, "confidence": confidence, "evidence_ids": ["e1"], "applicability": "supported",
-            "supported_symptoms": [symptom]}
+# ---- T50 / T53：客户没说过的现象，不被充电条目带去问充电 ----
+# 是不是同一件事由模型判断（conflict），原先是充电句式解析加多语言词表；这里只测服务端怎样处理模型的判断。
+
+T53_SAID = ("Problem Description: One side of the pump stoped working. I tried to charge it over and over again "
+            "but it stoped turning on.")
 
 
-# ---- T50 / T53：没说过充电问题，不被充电条目带去问充电 ----
-
-@pytest.mark.parametrize("symptoms", [
-    # 主轮：做过的操作单独抽成 action_taken
-    ["One side of the pump stoped working"],
-    # 2026-10-13 真实复测：模型把「充了很多次还是开不了机」整句抽成现象，quote 里有 charge
-    ["One side of the pump stoped working", "I tried to charge it over and over again but it stoped turning on."],
-])
-def test_t53_charged_but_will_not_turn_on_is_not_asked_which_part_is_not_charging(symptoms):
-    """T53 主轮：「一侧停机，充了很多次还是开不了机」被 bp-0127 带去问「Which part is not charging」。
-    充电是做过的操作，不是「充不进电」。"""
-    facts = [{"kind": "symptom", "status": "active", "value": s, "quote": s} for s in symptoms]
-    facts.append({"kind": "action_taken", "status": "active", "value": "tried to charge it over and over again",
-                  "quote": "I tried to charge it over and over again"})
-    kept, dropped, clarifications = filter_hypotheses(
-        [_charging_case_hypothesis(symptoms[0])], allowed={BP_0127: LIB.get(BP_0127)}, evidence_ids={"e1"},
-        symptoms=set(symptoms), facts=facts, max_n=3)
-    assert kept == [] and clarifications == []
-    assert f"charging_not_reported:{BP_0127}" in dropped
+def _bp0127(conflict=None, confidence=0.62):
+    return filter_hypotheses(
+        [{"plan_id": BP_0127, "confidence": confidence, "evidence_ids": ["e1"], "applicability": "supported",
+          "supported_symptoms": ["One side of the pump stoped working"], "conflict": conflict}],
+        allowed={BP_0127: LIB.get(BP_0127)}, evidence_ids={"e1"}, symptoms={"One side of the pump stoped working"},
+        facts=[], said=[T53_SAID], max_n=3)
 
 
-def test_charging_symptom_without_a_clear_recipient_still_asks_which_part():
-    """客户说了充不进电、但没说是谁：仍按原规则问是哪个部件（不影响 B11 / T52 的充电对象核验）。"""
-    symptom = "it will not charge"
-    facts = [{"kind": "symptom", "status": "active", "value": symptom, "quote": symptom}]
-    kept, dropped, clarifications = filter_hypotheses(
-        [_charging_case_hypothesis(symptom, 0.9)], allowed={BP_0127: LIB.get(BP_0127)}, evidence_ids={"e1"},
-        symptoms={symptom}, facts=facts, max_n=3)
-    assert kept == [] and f"charging_recipient_unknown:{BP_0127}" in dropped
-    assert clarifications[0]["question"].startswith("Which part")
+def test_t53_not_reported_drops_the_charging_candidate():
+    """T53 主轮：「一侧停机，充了很多次还是开不了机」被 bp-0127 带去问「Which part is not charging」。"""
+    kept, dropped, clarifications = _bp0127({"kind": "not_reported", "candidate_quote": "charging case not charging one side"})
+    assert kept == [] and clarifications == [] and f"conflict_not_reported:{BP_0127}" in dropped
 
 
-def test_t50_rewritten_negation_does_not_count_as_a_charging_report():
-    """T50 主轮：模型把「does work」改写成 value「left side does not work」；判断有没有说过充电只看原话。"""
-    assert not mentions_charging(["the left one does work"])
-    assert not mentions_charging(["I tried to charge it over and over again but it stoped turning on."])
-    for said in ["My charging case will not charge", "The robot won't charge when it is at the base station",
-                 "can't get past critical low battery", "De robot laadt niet op", "Er lädt nicht mehr",
-                 "il ne charge plus", "no carga", "it stopped charging"]:
-        assert mentions_charging([said]), said
+def test_object_conflict_asking_about_a_part_the_customer_never_named_is_not_asked():
+    """模型说对象不同、要问 charging case，可 T53 客户从没说过充电盒：引文核对不过，只丢弃不追问。"""
+    kept, dropped, clarifications = _bp0127({"kind": "object", "customer_quote": "My charging case will not charge",
+                                             "candidate_quote": "charging case not charging one side", "ask_about": "charging case"})
+    assert kept == [] and clarifications == [] and f"conflict_object:{BP_0127}" in dropped
+
+
+def test_no_conflict_keeps_the_candidate():
+    """模型认为就是这件事（不填 conflict）：服务端不用词表二次否决。"""
+    kept, _, _ = _bp0127(None, confidence=0.9)
+    assert [k["plan_id"] for k in kept] == [BP_0127]
 
 
 def test_t50_normal_operation_marked_negated_is_restored_to_the_quote():
@@ -97,13 +84,15 @@ def test_t57_app_version_is_collected_with_a_question_card():
     steps = LIB.get("qa_bp_0164").steps
     assert [(s.step_id, s.kind) for s in steps] == [("s1", "question"), ("s2", "statement"), ("s3", "handoff")]
     assert "Which version of the Anker eufy app" in steps[0].title
-    # 选方案时模型把「先确认 App 版本」当前提：它就是计划第一张卡，不另发追问（2026-10-13 复测 2/8 次问了两遍版本）
-    assert in_plan_check(LIB.get("qa_bp_0164"), "Check the version of the Anker eufy app being used") == "s1"
-    assert in_plan_check(LIB.get("qa_bp_0164"), "the version of the Anker eufy app being used") == "s1"
-    # 第二轮复测 3/6：前提写的是别的原话，追问句问的就是版本，问题卡已经在问
-    assert in_plan_check(LIB.get("qa_bp_0164"), "not functioning after the update, with no live view",
-                         "Which version of the Anker eufy app are you currently using?") == "s1"
-    assert in_plan_check(LIB.get("qa_bp_0164"), "the camera has power", "Do the cameras show any LED light?") is None
+    # 选方案时模型把「先确认 App 版本」当前提：它指出就是计划第 s1 步（问题卡），不另发追问
+    #（2026-10-13 复测 2/8 次、3/6 次问了两遍版本）
+    hyp = {"plan_id": "qa_bp_0164", "confidence": 0.62, "evidence_ids": ["e1"], "applicability": "needs_confirmation",
+           "supported_symptoms": ["cameras are not working"], "missing_fact": "Check the version of the Anker eufy app",
+           "clarification_question": "Which version of the Anker eufy app are you currently using?", "plan_step": "s1"}
+    kept, dropped, clar = filter_hypotheses([hyp], allowed={"qa_bp_0164": LIB.get("qa_bp_0164")}, evidence_ids={"e1"},
+                                            symptoms={"cameras are not working"}, facts=[], max_n=3)
+    assert [k["plan_id"] for k in kept] == ["qa_bp_0164"] and clar == []
+    assert "precondition_in_plan:qa_bp_0164:s1" in dropped
 
 
 async def test_t57_unanswered_version_does_not_finish_the_guide(conversation, l3_runtime):

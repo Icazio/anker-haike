@@ -35,7 +35,7 @@ async def test_metrics_follow_each_node_execution_and_keep_usage_separate(monkey
     try:
         fake = FakeChatModel(script=['{"primary_intent":"order_query"}'])
         router = ModelRouter(
-            ModelRegistry(load_models_config(CONFIG_DIR / "models.yaml"), env={"DASHSCOPE_API_KEY": "test"}),
+            ModelRegistry(load_models_config(CONFIG_DIR / "models.yaml"), env={"DASHSCOPE_API_KEY": "test", "DEEPSEEK_API_KEY": "test"}),
             model_factory=lambda resolved, route: fake,
         )
         _, context = await interpret_turn(router, incident_state(), lane="domestic")
@@ -80,7 +80,7 @@ async def test_real_graph_attaches_context_metrics_to_understand_node(mem_runtim
     hooks.set_sink(sink)
     fake = FakeChatModel(script=['{"primary_intent":"unknown","clarification":"请说明本轮需要查询的信息。"}'])
     set_model_router(ModelRouter(
-        ModelRegistry(load_models_config(CONFIG_DIR / "models.yaml"), env={"DASHSCOPE_API_KEY": "test"}),
+        ModelRegistry(load_models_config(CONFIG_DIR / "models.yaml"), env={"DASHSCOPE_API_KEY": "test", "DEEPSEEK_API_KEY": "test"}),
         model_factory=lambda resolved, route: fake,
     ))
     try:

@@ -52,3 +52,11 @@
 - **T57：**
   - bp-0164 改为第 1 段做问题卡，第 3 段改成 handoff，不再禁用第 1 段。
   - `in_plan_check` 增加一种情况：计划里的问题卡问的就是模型的前提或追问时，算计划内检查，不另发文字追问。此前复测 3/6 次先用文字问版本，客户答完问题卡又问一遍。
+
+## 充电判断改为模型引文（2026-10-13 16:20）
+
+复评时发现 `CHARGING_PROBLEM` 正则会漏掉没见过的说法。改为：`diagnose.synthesize` 输出 `charging_quote`，由模型从 `customer_original` 逐字摘录；服务端用 `quoted()` 核对引文确实出自客户原话，并排除已记成 action_taken 的句子，再交给 `check_charging_recipient`。删除 `CHARGING_PROBLEM` 和 `mentions_charging`。复测结果见复测结论"补充"一节。
+
+## 被取代（2026-10-13 18:24）
+
+`charging_quote` 与 `check_charging_recipient` 已被通用的 `conflict` 字段取代，`charging.py` 已删除，见 `docs/claude/spec_2026-10-13-1824_model-judged-conflicts.md`。

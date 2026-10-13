@@ -1,4 +1,6 @@
-"""官方 63 单复测 P2：措辞不预设事实、充电盒对象不被换成泵、材料请求与操作反馈分开、缺资料不是查询。
+"""官方 63 单复测 P2：措辞不预设事实、材料请求与操作反馈分开、缺资料不是查询。
+
+充电盒对象不被换成泵（T52 / B11）改由模型判断冲突，见 test_applicability_facts.py 与 test_postfix_decision_boundaries.py。
 
 模型与知识库均为假；只检查服务端的确定性约束与客户可见文案。
 """
@@ -11,7 +13,6 @@ from app.backends import logistics
 from app.conversation.interpret import TurnInterpretation
 from app.conversation.reply import fallback_reply
 from app.conversation.request_constraints import ground_additional_queries
-from app.diagnose.charging import check_charging_recipient
 from app.guide.steps import step_media
 from app.official.models import OfficialData
 from app.plans.qa import ACTION_WITH_MATERIAL_EXPECTED, EXPECTED, qa_plan_library
@@ -47,46 +48,6 @@ def test_t58_first_message_complaint_does_not_imply_earlier_service():
 def test_complaint_after_tried_steps_keeps_the_unresolved_wording():
     attempts = [{"plan_id": "p", "step_id": "s1", "card_id": "c1", "kind": "action", "feedback": "not_solved"}]
     assert fallback_reply(_complaint_state(step_attempts=attempts)).startswith("I'm sorry we haven't solved this yet.")
-
-
-CASE_DEAD = [{"kind": "symptom", "value": "charging case will not charge", "quote": "My charging case will not charge",
-              "subject": "charging case", "status": "active"}]
-
-
-def test_b11_charging_case_fault_does_not_match_a_pump_power_guide():
-    """B11：盒自身接电灯不亮，却选了 bp-0025「泵开不了机」长按泵电源键。"""
-    assert check_charging_recipient(LIB.get("qa_bp_0025").fault, CASE_DEAD, CASE_DEAD) == ("mismatch", "charging case")
-    # 标题讲充电盒自身的条目不受影响
-    assert check_charging_recipient("Why is my S1 Pro charging case not charging?", CASE_DEAD, CASE_DEAD)[0] == "matched"
-
-
-def test_t52_case_not_charging_one_side_is_about_the_pumps():
-    """官方 63 单 T52（Codex 2026-10-12 20:25 主轮）：bp-0127「charging case not charging one side」被读成盒子自身不进电，
-    与「My charging case will not charge」判成同一件事，发了摆泵、清盒内磁吸头、复位泵。one side 是泵位，受电方是泵。"""
-    title = LIB.get("qa_bp_0127").fault
-    assert check_charging_recipient(title, CASE_DEAD, CASE_DEAD) == ("mismatch", "charging case")
-    side = [{**CASE_DEAD[0], "value": "case not charging the left pump", "quote": "my case is not charging the left side"}]
-    assert check_charging_recipient(title, side, side)[0] == "matched"
-    pump = [{**CASE_DEAD[0], "value": "pump won't charge on cable", "quote": "the pump won't charge even on the cable",
-             "subject": "pump"}]
-    assert check_charging_recipient(title, pump, pump)[0] == "matched"
-
-
-def test_b11_pump_motor_guide_is_rejected_when_the_case_itself_has_no_power():
-    """B11 复测：盒自身不进电，泵充不上只是下游；bp-0122「泵马达不充电」靠「泵充不上」这条下游事实被判 matched，
-    还因为「盒灯不亮」被当成前提已知而直接出卡。供电源头没解决，讲泵受电的条目不适用。"""
-    downstream = [{"kind": "symptom", "value": "cannot charge pump motors", "quote": "therefore I cannot charge my pump motors",
-                   "subject": "pump motors", "status": "active"}]
-    assert check_charging_recipient(LIB.get("qa_bp_0122").fault, downstream, CASE_DEAD + downstream) == ("mismatch", "charging case")
-    # 只说泵在盒里充不上（盒子本身没说有问题）时，泵受电条目照常适用
-    assert check_charging_recipient(LIB.get("qa_bp_0122").fault, downstream, downstream)[0] == "matched"
-
-
-def test_robot_not_charging_is_unaffected():
-    """T31：整机自己充不上电，标题不写 case 也不算对象不同。"""
-    robot = [{"kind": "symptom", "value": "robot won't charge", "quote": "The robot won't charge when it is at the base station",
-              "status": "active"}]
-    assert check_charging_recipient(LIB.get("qa_rv_0473").fault, robot, robot)[0] == "unrelated"
 
 
 def test_t40_action_with_material_request_says_they_are_separate():

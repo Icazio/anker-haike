@@ -13,7 +13,6 @@ from app.conversation.interpret import (
     wish_sentence_quotes,
 )
 from app.diagnose.decision import concrete
-from app.diagnose.synthesize import _stems, precondition_status
 from app.diagnose.vision import _instruction
 from app.guide.steps import REPORTED_ANSWER, reported_note
 from app.knowledge.runtime import set_knowledge_adapter
@@ -94,19 +93,6 @@ def test_observation_before_the_denial_keeps_its_polarity():
     denied = FactCandidate(kind="action_taken", value="not run mop cycles", quote=INJECTION_SENTENCE)
     out = negation_polarity([injection, denied])
     assert [(f.polarity, f.value) for f in out] == [("affirmed", injection.value), ("negated", "run mop cycles")]
-
-
-def test_dried_and_drying_share_a_stem():
-    assert _stems("Mop not dried") == _stems("mop drying") == {"mop", "dry"}
-    assert _stems("carries") == {"carry"} and _stems("emptied") == {"empty"}
-
-
-def test_alternatives_in_a_precondition_are_matched_separately():
-    """rv-0146 的前提「roller not dried /Mop not dried」：客户说没需要烘干拖布，任一备选被覆盖即前提被否定。"""
-    fact = {"kind": "observation", "polarity": "negated", "status": "active",
-            "value": "needed mop drying", "quote": "havent needed any mop drying"}
-    assert precondition_status("roller not dried /Mop not dried", [fact])[0] == "negated"
-    assert precondition_status("roller not dried", [fact])[0] == "unknown"
 
 
 # ---- C4：T60 愿望句 ----

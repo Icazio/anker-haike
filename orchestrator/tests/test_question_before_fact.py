@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.diagnose.synthesize import filter_hypotheses, precondition_status
+from app.diagnose.synthesize import filter_hypotheses
 from app.knowledge.runtime import set_knowledge_adapter
 from app.plans.qa import qa_plan_library
 from tests.conversation_runtime import conversation as base_conversation_fixture
@@ -33,9 +33,9 @@ def _hyp(pid, **extra):
             "supported_symptoms": ["stoped turning on"], **extra}
 
 
-def _run(hyps, facts=(), symptoms=("stoped turning on",)):
+def _run(hyps, facts=(), symptoms=("stoped turning on",), said=()):
     return filter_hypotheses(hyps, allowed={"qa_bp_0114": LIB.get("qa_bp_0114"), "qa_rv_0146": LIB.get("qa_rv_0146")},
-                             evidence_ids={"e1"}, symptoms=set(symptoms), facts=list(facts), max_n=3)
+                             evidence_ids={"e1"}, symptoms=set(symptoms), facts=list(facts), said=list(said), max_n=3)
 
 
 # ---- matched_section ----
@@ -52,43 +52,48 @@ def test_section_on_a_plan_without_branches_is_ignored():
     assert "matched_section" not in kept[0] and "section_unverified:qa_rv_0146" in dropped
 
 
-# ---- missing_fact vs facts ----
+# ---- 前提客户已经说过：模型判断并引原话，服务端只核对引文出处（原先按词干重叠猜，T41 / T37）----
 
-NOT_RUN_MOP = {"kind": "symptom", "value": "have not run mop cycles", "quote": "we have not run mop cycles",
-               "subject": "mop cycles", "polarity": "negated", "status": "active"}
+T41_SAID = ("This is the second time Ive received this error message related to failed drying. As the water injection "
+            "is still malfunctioning we have not run mop cycles and thus havent needed any mop drying")
 
 
-@pytest.mark.parametrize("missing, facts, expected", [
-    ("perform a new mopping task", [NOT_RUN_MOP], "negated"),
-    ("perform a new mopping task", [{"kind": "action_taken", "value": "ran a mop cycle", "quote": "ran a mop cycle", "polarity": "affirmed"}], "affirmed"),
-    # 症状词面相近不算已知：前提仍要问
-    ("perform a new mopping task", [{"kind": "symptom", "value": "mop not dried", "quote": "mop not dried", "polarity": "affirmed"}], "unknown"),
-    ("the error appears", [NOT_RUN_MOP], "unknown"),  # 只有泛词，不算覆盖
-    ("firmware updated to the latest version", [NOT_RUN_MOP], "unknown"),
-    (None, [NOT_RUN_MOP], "unknown"),
-    # 只共享一个内容词不是同一前提（T37：「水管正常」不能证明「App 显示水量不准」，讲 App 估算的 rv-0163 被当成前提已知）
-    ("water volume displayed in the app is inaccurate",
-     [{"kind": "observation", "value": "Slang in tank is in orde", "quote": "Slang in tank is in orde.", "polarity": "affirmed"}], "unknown"),
-])
-def test_precondition_status(missing, facts, expected):
-    assert precondition_status(missing, facts)[0] == expected
+def _mop_hyp(known=None, **extra):
+    return _hyp("qa_rv_0146", applicability="needs_confirmation", supported_symptoms=["failed drying"],
+                clarification_question="Does the drying error appear even when no mop cycle has been run?",
+                missing_fact="perform a new mopping task", precondition_known=known, **extra)
 
 
 def test_negated_precondition_drops_without_asking():
-    hyp = _hyp("qa_rv_0146", applicability="needs_confirmation", supported_symptoms=["failed drying"],
-               clarification_question="Does the drying error appear even when no mop cycle has been run?",
-               missing_fact="perform a new mopping task")
-    kept, dropped, clar = _run([hyp], facts=[NOT_RUN_MOP], symptoms=("failed drying",))
+    """T41 第十轮：客户已说没跑过拖地，仍被问「不跑拖地是否也报错」。"""
+    known = {"answer": "no", "customer_quote": "we have not run mop cycles"}
+    kept, dropped, clar = _run([_mop_hyp(known)], symptoms=("failed drying",), said=[T41_SAID])
     assert kept == [] and clar == [] and "precondition_negated:qa_rv_0146" in dropped
 
 
 def test_known_precondition_promotes_to_supported():
-    hyp = _hyp("qa_rv_0146", applicability="needs_confirmation", supported_symptoms=["mop still damp"],
-               clarification_question="Have you run a mopping task?", missing_fact="perform a new mopping task")
-    done = {"kind": "action_taken", "value": "ran a mop cycle", "quote": "ran a mop cycle", "polarity": "affirmed"}
-    kept, dropped, clar = _run([hyp], facts=[done], symptoms=("mop still damp",))
+    known = {"answer": "yes", "customer_quote": "I ran a mop cycle yesterday"}
+    kept, dropped, clar = _run([_mop_hyp(known)], symptoms=("failed drying",), said=["I ran a mop cycle yesterday and it still says failed drying"])
     assert [k["plan_id"] for k in kept] == ["qa_rv_0146"] and clar == []
     assert "precondition_known:qa_rv_0146" in dropped
+
+
+def test_precondition_quote_must_be_the_customers_words():
+    """模型说前提已知却编了一句客户没说过的话（T37：「水管正常」不能证明「App 显示水量不准」）：不采信，照常追问。"""
+    known = {"answer": "yes", "customer_quote": "the water level in the app is wrong"}
+    kept, dropped, clar = _run([_mop_hyp(known)], symptoms=("failed drying",), said=["Slang in tank is in orde."])
+    assert kept == [] and clar[0]["question"].startswith("Does the drying error")
+    assert not any(d.startswith("precondition_") for d in dropped)
+
+
+def test_answer_to_an_earlier_question_counts_as_customer_words():
+    """客户在追问后答了 no：引文可以取自 answered_preconditions 的回答。"""
+    known = {"answer": "no", "customer_quote": "no"}
+    answered = [{"plan_id": "qa_bp_0114", "question": "Is it the left side?", "answer": "no"}]
+    kept, dropped, clar = filter_hypotheses(
+        [_mop_hyp(known)], allowed={"qa_rv_0146": LIB.get("qa_rv_0146")}, evidence_ids={"e1"},
+        symptoms={"failed drying"}, facts=[], answered=answered, said=[], max_n=3)
+    assert kept == [] and clar == [] and "precondition_negated:qa_rv_0146" in dropped
 
 
 def test_unknown_precondition_still_asks():

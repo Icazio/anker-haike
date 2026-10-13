@@ -114,7 +114,7 @@ async def test_symptoms_present_and_no_denial_does_not_call_the_model(conversati
 
 
 async def test_t41_negated_fact_drops_the_drying_plan_without_asking(conversation):
-    """HTTP 链路：intake 漏抽，补抽给出否定事实；synthesize 把 rv-0146 判待确认「跑一次拖地」→ 前提被否定，不追问。"""
+    """HTTP 链路：intake 漏抽，补抽给出否定事实；synthesize 把 rv-0146 判待确认「跑一次拖地」并指出客户已否定 → 不追问。"""
     set_knowledge_adapter(QAHitAdapter("rv-0146"))
     conversation.models["intake"].script = [
         {"primary_intent": "report_problem", "device_relation": "current", "product_hints": ["T2352"], "facts": [
@@ -127,6 +127,8 @@ async def test_t41_negated_fact_drops_the_drying_plan_without_asking(conversatio
         "plan_id": "qa_rv_0146", "confidence": 0.6, "evidence_ids": ["chunk-rv-0146"],
         "applicability": "needs_confirmation", "supported_symptoms": [DRYING.value],
         "clarification_question": question, "missing_fact": "perform a new mopping task",
+        # 是否已被客户原话否定由模型判断并引原话（原先按词干重叠猜）；服务端核对引文出自这封工单
+        "precondition_known": {"answer": "no", "customer_quote": "we have not run mop cycles"},
     }]}]
     snapshot = await conversation.snapshot()
     response = await conversation.client.post(f"/sessions/{conversation.sid}/messages", data={
