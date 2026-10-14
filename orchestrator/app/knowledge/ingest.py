@@ -7,7 +7,8 @@ URL 会被分词成大量噪声词，链接改由本地 QAIndex 挂到步骤卡�
 
 custom_metadata 只能是标量：pn / codes 用逗号串。scope / sku_list / category / doc_id / doc_version
 沿用检索适配器的约定，范围过滤不用改。63 单工单是评测集，不入库。
-结果写 manifest（kb_ver = 源 qa.yaml 的 sha + embedding 模型名）。
+补充图表文字由 qa_supplements.yaml 独立维护并保留来源；单条版本避免无关知识重建。
+结果写 manifest（kb_ver = 工作簿版本 + 补充知识版本 + embedding 模型名）。
 """
 
 from __future__ import annotations
@@ -60,8 +61,8 @@ def qa_content(guide: Guide) -> str:
     return f"{guide.title}\n{body}{tips}".strip()
 
 
-def qa_metadata(guide: Guide, version: str) -> dict[str, Any]:
-    return {
+def qa_metadata(guide: Guide, version: str) -> dict[str, str]:
+    metadata = {
         "doc_id": guide.qa_id,
         "doc_version": version,
         "kb": "kb_qa",
@@ -71,6 +72,14 @@ def qa_metadata(guide: Guide, version: str) -> dict[str, Any]:
         "codes": ",".join(guide.codes),
         "kind": guide.kind,
     }
+    if guide.source is not None:
+        metadata.update(
+            source_type="official_image_summary", source_url=guide.source.url,
+            source_locator=guide.source.locator, source_sha256=guide.source.image_sha256,
+            reviewed_at=guide.source.reviewed_at.isoformat(),
+            review_status=guide.source.review_status,
+        )
+    return metadata
 
 
 class Ingestor:
@@ -143,10 +152,11 @@ class Ingestor:
             if not guide.visible:
                 continue
             title = guide.qa_id
+            version = index.entry_versions.get(title, index.version)
             wanted.add(title)
             current = existing.get(title, [])
             if any(
-                (k.get("custom_metadata") or k.get("metadata") or {}).get("doc_version") == index.version
+                (k.get("custom_metadata") or k.get("metadata") or {}).get("doc_version") == version
                 for k in current
             ):
                 report.skipped += 1
@@ -155,7 +165,7 @@ class Ingestor:
                 await self.client.delete_knowledge(k["id"])
                 report.replaced += 1
             created = await self.client.create_manual_knowledge(kb["id"], title=title, content=qa_content(guide))
-            await self.client.update_knowledge(created["id"], custom_metadata=qa_metadata(guide, index.version))
+            await self.client.update_knowledge(created["id"], custom_metadata=qa_metadata(guide, version))
             report.created += 1
         if prune:
             for title, items in existing.items():

@@ -1,0 +1,17 @@
+# 独立维护的官方图表文字摘要，不由工作簿生成；内容或来源变化自动改变条目版本。
+# agent_source_checked 表示代理亲自核对官方原图，不表示厂家或业务人员批准。
+entries:
+  - id: supp-bp-s1-pro-green-light
+    title: What does the green indicator light on the S1 Pro (T8D04) pump hub mean?
+    pn: [T8D04]
+    category: breast_pump
+    scope_note: T8D04 pump hub battery/charging indicator only; not the charging case or other models.
+    content: |-
+      A flashing green light means charging is in progress.
+      A steady (solid) green light means charging is complete.
+    source:
+      url: https://service.eufy.com/article-description/What-does-the-status-of-each-LED-indicator-on-the-eufy-Breast-Pump-E10-S1-S1-Pro-representWhy-does-the-eufy-Breast-Pump-s-flange-stick-to-my-breast
+      locator: S1 Pro section, Light Guide image, first two green rows beside the battery/charging indicator symbol
+      image_sha256: 53872039f27e46c04497eac4ebcbe52fbb03a936b2b2833cd6ffb17333f1e937
+      reviewed_at: 2026-10-14
+      review_status: agent_source_checked

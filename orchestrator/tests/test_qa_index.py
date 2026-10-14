@@ -73,7 +73,7 @@ def test_code_without_model_resolves_to_owning_family():
 
 
 def test_kinds_and_step_parsing():
-    kinds = Counter(g.kind for g in INDEX.guides.values())
+    kinds = Counter(INDEX.guides[entry.id].kind for entry in OfficialData().qa)
     assert kinds == {"answer": 427, "steps": 410, "warranty": 38}
     guide = INDEX.guides["rv-0481"]
     assert [s.no for s in guide.steps] == [1, 2, 3, 4, 5]
@@ -96,7 +96,10 @@ def test_inline_steps_require_sequential_sentence_start_numbers():
 
 
 def test_version_tracks_source_sha():
-    assert len(INDEX.version) == 12 and INDEX.version != "unknown"
+    source_version = OfficialData().version("qa.yaml")
+    assert len(source_version) == 12 and source_version != "unknown"
+    assert INDEX.version.startswith(source_version + "+supp-")
+    assert all(INDEX.entry_versions[entry.id] == source_version for entry in OfficialData().qa)
 
 
 def test_restart_first_entries_become_two_steps_before_warranty():
@@ -141,7 +144,7 @@ def test_question_options_are_split_from_parentheses_and_slashes():
 def test_answer_entries_retain_their_typed_content():
     """单段答案也进入节点库；不能再用“操作至少 85%”奖励把说明错当操作。"""
     guides = list(get_qa_index().guides.values())
-    assert len(guides) == len(OfficialData().qa)
+    assert {entry.id for entry in OfficialData().qa} == {g.qa_id for g in guides if g.source is None}
     assert all(g.steps and all(s.text for s in g.steps) for g in guides)
     assert get_qa_index().guides["rv-0076"].steps[0].kind == "statement"
     assert get_qa_index().guides["rv-0028"].steps[0].kind == "handoff"

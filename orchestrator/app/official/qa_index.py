@@ -1,6 +1,7 @@
 """官方 Q&A 的确定性索引：错误码 + PN 精确查找、条目类型、步骤拆分、媒体链接。
 
-全部由 data/official/qa.yaml 派生，不依赖 WeKnora 与模型；WeKnora 只在没有错误码时做语义召回。
+由工作簿 qa.yaml 与独立核对的 qa_supplements.yaml 派生，不依赖 WeKnora 与模型。
+补充图表只生成解释条目，不从表格文字猜测排障动作。
 
 错误码抽取必须带锚点：S1 Pro 有 E20 / E25 / E28 错误码，与机型名 Omni E25 / E28 同形，
 全局正则会把机型名当成码（rv-0484）。码只认这几种位置：
@@ -10,6 +11,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -17,6 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.official.models import OfficialData, QAEntry, pn_of
+from app.official.supplements import ReviewedSource, load_supplements
 
 Kind = Literal["steps", "answer", "warranty"]
 # 一个编号段落对用户意味着什么（2026-10-09 第二批 I4）：要回答、要操作、只需知道、要提供材料、还是要交人工。
@@ -120,6 +124,7 @@ class Guide:
     # 人工审核写的整条前提：这条指南默认成立、却没写在标题里的条件（bp-0039「充电盒本身能通电」）。
     # 选方案时随候选交给模型，客户原话否定它就是对象冲突（T52 盒子自身充不进电，泵受电指南不适用）
     premise: str = ""
+    source: ReviewedSource | None = None
 
     @property
     def plan_id(self) -> str:
@@ -519,6 +524,7 @@ class QAIndex:
     by_code: dict[tuple[str, str], list[str]] = field(default_factory=dict)
     by_pn: dict[str, list[str]] = field(default_factory=dict)
     version: str = ""
+    entry_versions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def build(cls, data: OfficialData | None = None) -> QAIndex:
@@ -526,11 +532,29 @@ class QAIndex:
         index = cls(version=data.version("qa.yaml"))
         for entry in data.qa:
             guide = build_guide(entry)
+            index.entry_versions[guide.qa_id] = index.version
             index.guides[guide.qa_id] = guide
             for pn in guide.pns:
                 index.by_pn.setdefault(pn, []).append(guide.qa_id)
                 for code in guide.codes:
                     index.by_code.setdefault((pn, code), []).append(guide.qa_id)
+        supplements = load_supplements(data.root / "qa_supplements.yaml")
+        for entry in supplements:
+            if entry.id in index.guides:
+                raise ValueError(f"official supplement id collides with Q&A: {entry.id}")
+            answer = f"{entry.scope_note}\n{entry.content}"
+            index.guides[entry.id] = Guide(
+                qa_id=entry.id, title=entry.title, pns=tuple(entry.pn), codes=(), kind="answer",
+                steps=(Step(1, answer, kind="statement"),), answer=answer,
+                category=entry.category, source=entry.source,
+                media=(Media(entry.source.url, "link"),),
+            )
+            index.entry_versions[entry.id] = entry.version
+            for pn in entry.pn:
+                index.by_pn.setdefault(pn, []).append(entry.id)
+        if supplements:
+            versions = json.dumps({entry.id: entry.version for entry in supplements}, sort_keys=True)
+            index.version += "+supp-" + hashlib.sha256(versions.encode()).hexdigest()[:12]
         return index
 
     def lookup(self, sku: str | None, code: str) -> list[Guide]:
