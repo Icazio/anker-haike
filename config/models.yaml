@@ -36,7 +36,8 @@
 # 2026-10-13.2：domestic intake / diagnose.synthesize 主位换 deepseek-v4-pro（关思考），超时 9 s 后落到 deepseek-flash。
 #   63 单真实链路四组对比（docs/planning/2026-10-13-1613_stronger-models-63/对比结论.md）：SOP 87%→90%、完全命中 65%→70%，
 #   整单中位耗时 9.8→8.8 s；开思考单次 50–90 s 不可用；glm-5.3（思考 low）84% 且主模型失败 9 次。
-version: 2026-10-13.2
+# 2026-10-15.2：domestic intake 的 qwen-flash 前移至第二位，首选失败后先切换厂商；保留 qwen3.7-flash。
+version: 2026-10-15.2
 default_lane: domestic
 
 providers:
@@ -76,7 +77,7 @@ lanes:
     # 的 schema/准确率、P50、成本，顺序同 chain。裁决口径同 runner.judge：准确率只作门槛，达标后按 延迟/上限 + 成本×100 排序；
     # 智谱位一律用 glm-4.7 不用 glm-4.5-flash（免费档排队：reply.stream P50 12.1 s、67%/65%）。
     # 注意 repeats=3 在门槛线附近抖动可达 ±5 点，边界候选的裁决以 findings §「三家全量」的多轮记录为准。
-    intake:                {chain: [deepseek-pro, deepseek, qwen-flash], effort: low, max_tokens: 1536}   # 2026-10-13 63 单：v4-pro p50 4.5 s p90 7.1 s；旧主位 qwen-flash p50 5.5 s p90 8.6 s
+    intake:                {chain: [deepseek-pro, qwen-flash, deepseek], effort: low, max_tokens: 1536}   # 2026-10-13 63 单：v4-pro p50 4.5 s p90 7.1 s；旧主位 qwen-flash p50 5.5 s p90 8.6 s
     disambiguate.clarify:  {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 256}    # 100/100 752 ms ¥0.0001 | 100/100 990 ms ¥0.0010 | 100/100 965 ms
     diagnose.vision:       {chain: [qwen-vl-max, qwen-vl-plus, qwen-vl], effort: medium, needs_vision: true} # 2026-10-13 官方 5 张实物照片（线上同款 schema）：主体 / 裂纹 / 绿灯 qwen3.8-max 全对 p50 5.2 s | qwen3.7-plus 全对 4.9 s | qwen3-vl-plus 绿灯 0/2 6.6 s；原主位 deepseek T30 主体 0/6、glm-v T20 0/2，移出（2026-09-15 的 93% 来自合成图，未测主体识别）
     diagnose.synthesize:   {chain: [deepseek-pro, deepseek, qwen-max], effort: high}                  # 2026-10-13 63 单：v4-pro p50 5.1 s p90 7.2 s；旧主位 deepseek-flash p50 2.5 s
