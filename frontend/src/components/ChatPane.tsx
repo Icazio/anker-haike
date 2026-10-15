@@ -10,12 +10,13 @@ export const PRODUCT_CATEGORIES = [
   { key: 'security_cam', label: '安防摄像头', supported: true },
 ] as const;
 
-// 示例取自主办方真实工单（T18 荷兰语 App 报错、T55 英文 RMA、T1 物流、T45 经销商购买）。
+// 前三条节选自主办方工单：T18 App 报错（荷兰语原文改写成英文）、T55 吸奶器故障 + 订单号、T1 物流。
+// 第四条不是工单，是赛事细则「产品消歧」「情绪识别」两条示例合成的句子；S1 Pro 同时对应扫地机 T2080 与吸奶器 T8D04。
 export const STARTER_PROMPTS = [
   { text: 'Product Name: Omni E28\nProduct PN: T2352\nProblem Type: WARNING\nProblem Code: 3212-The mop is stuck.\nProblem Description: Rolling Mop Blockage. Please clean.', tag: 'App 报错' },
   { text: 'I have been using this breast pump for less than three weeks and the left pump will no longer suction. Order No: Anker016', tag: '故障 + 订单' },
   { text: 'The vacuum did not arrive. Only the replacement parts kit. Was the vacuum shipped? My order is Anker001', tag: '物流' },
-  { text: '我的 S1 Pro 不吸了，明天家里要来客人，急！', tag: '同名消歧' },
+  { text: '我的 S1 Pro 不吸了，明天家里要来客人，急！', tag: '赛题示例' },
 ] as const;
 
 type Props = { onPick: (text: string) => void; onLoadTicket?: (ticket: OfficialTicket) => void; disabled?: boolean };
@@ -49,7 +50,7 @@ export function ChatPane({ onPick, onLoadTicket, disabled }: Props) {
       </section>
 
       <details className={styles.examples} open>
-        <summary>不知道怎么说？看看真实工单示例</summary>
+        <summary>不知道怎么说？看看示例</summary>
         <ul className={styles.starters}>
           {STARTER_PROMPTS.map((s) => (
             <li key={s.text}>
