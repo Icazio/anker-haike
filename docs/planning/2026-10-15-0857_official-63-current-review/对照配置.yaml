@@ -1,0 +1,36 @@
+intake:
+  before:
+  - deepseek-pro
+  - deepseek
+  - qwen-flash
+  after:
+  - qwen-flash
+  - deepseek-pro
+  - deepseek
+diagnose.synthesize:
+  before:
+  - deepseek-pro
+  - deepseek
+  - qwen-max
+  after:
+  - qwen-max
+  - deepseek-pro
+  - deepseek
+guide.step:
+  before:
+  - deepseek
+  - qwen-max
+  - glm
+  after:
+  - qwen-max
+  - deepseek
+  - glm
+warranty.receipt_ocr:
+  before:
+  - deepseek
+  - qwen-vl
+  - glm-v
+  after:
+  - qwen-vl
+  - deepseek
+  - glm-v

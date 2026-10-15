@@ -46,6 +46,8 @@ reports/bakeoff/*.json
 reports/bakeoff-*/*.json
 # 评测运行产物：会话、方法和校验快照 JSON 只留本机，结论文档入库
 /reports/eval/**/*.json
+# 评测生成的单文件演示内嵌本机运行结果，可重新生成
+/reports/eval/**/*.html
 # 真实评测照片只在本机
 data/bakeoff-images/
 reports/inspection/*.json
