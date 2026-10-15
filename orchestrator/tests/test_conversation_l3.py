@@ -488,6 +488,39 @@ async def test_b15_accepting_expiry_and_asking_to_troubleshoot_does_not_reopen_t
     assert state["stage"] != "done"
 
 
+async def test_t53_synthesis_failure_after_expiry_keeps_troubleshooting_open(l3_runtime, monkeypatch, conversation):
+    """2026-10-15 官方 63 单首轮 T53：过保拒绝后推进排障，选方案超时，同一段回复先说「Next up: device troubleshooting」
+    紧接着「This case is closed」。模型故障时如实说明暂时给不出步骤，排障任务保留，下一条消息重试。"""
+    text = "I need help with possibly a replacement for my breast pump. It won't hold the battery and keeps cutting off. Order Anker014"
+    follow = "try again"
+    interpret_as(monkeypatch, {
+        text: TurnInterpretation(
+            primary_intent="replacement_request", secondary_intents=["report_problem"], device_relation="current",
+            facts=[{"value": "won't hold the battery, keeps cutting off", "quote": "It won't hold the battery and keeps cutting off"}]),
+        follow: TurnInterpretation(primary_intent="supplement", device_relation="current"),
+    })
+    set_knowledge_adapter(QAHitAdapter("bp-0043"))
+    conversation.models["diagnose.synthesize"].script = [RuntimeError("test provider timeout"), {"hypotheses": [{
+        "plan_id": "qa_bp_0043", "confidence": 0.9, "evidence_ids": ["chunk-bp-0043"],
+        "applicability": "supported", "supported_symptoms": ["won't hold the battery, keeps cutting off"],
+    }]}]
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            sid = (await client.post("/sessions")).json()["session_id"]
+            rows = events(await send(client, sid, text))
+            state = await state_of(sid)
+            reply = said(rows)
+            assert "warranty has expired" in reply and "temporary system problem" in reply
+            assert "case is closed" not in reply
+            assert not any(e["type"] in {"step_card", "escalation_summary"} for e in rows)
+            assert state["stage"] == "diagnose"
+            assert [t["status"] for t in state["task_queue"] if t["intent"] == "report_problem"] == ["active"]
+            rows = events(await send(client, sid, follow))
+            assert any(e["type"] == "step_card" for e in rows), [e["type"] for e in rows]
+    finally:
+        set_knowledge_adapter(None)
+
+
 async def test_handoff_after_closed_case_records_without_requeue(l3_runtime, monkeypatch):
     """过保结案后排障走到交接：案件已关闭，只记录摘要，不再入人工队列（否则 closed_unresolved → awaiting_approval 非法迁移）。"""
     text = "I need help with possibly a replacement for my breast pump. It won't hold the battery and keeps cutting off. Order Anker014"

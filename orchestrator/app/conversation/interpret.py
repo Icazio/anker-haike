@@ -614,7 +614,9 @@ async def interpret_turn(router, state: dict, *, lane: str):
             "intake",
             bundle.messages,
             TurnInterpretation,
-            budget_ms=15000,
+            # 主位 deepseek-pro 超时 8 s 后备用 qwen-flash 还有 9 s，盖住它的 p90 8.6 s。原 15 s 只剩约 6 s，
+            # 2026-10-15 官方 63 单并发回测 qwen-flash 在剩余时间内超时 5 次（T55 / T56 / T57 / T59 / T61）
+            budget_ms=17000,
             session_id=state.get("session_id"),
             lane=lane,
         )

@@ -169,7 +169,8 @@ async def test_vision_chain_failure_does_not_break_run(mem_runtime, img_store, t
     assert not any(e["type"] in {"error", "step_card"} for e in events)
     st = await _state(sid)
     assert st["vision_status"] == "failed" and st["image_observations"] == []
-    assert st.get("escalate_reason") == "R5" and "retrieve" in [
+    # 同一个假模型也让 synthesize 失败：按运行故障说明，不报 R5（2026-10-15 官方 63 单 T57）
+    assert not st.get("escalate_reason") and st["diagnose_outcome"]["mode"] == "unavailable" and "retrieve" in [
         e.get("substage") for e in events if e["type"] == "progress"
     ]
     assert any(

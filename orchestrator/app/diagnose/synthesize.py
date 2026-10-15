@@ -87,7 +87,8 @@ class Hypothesis(BaseModel):
         description="needs_confirmation 时用一句英文询问文档要求但尚未知的入口前提；只确认事实，不要求执行操作",
     )
     matched_section: str | None = Field(default=None, max_length=120, description="候选列出多个故障小节时，用户现象对应的小节标题逐字；不能确定留空")
-    missing_fact: str | None = Field(default=None, max_length=120, description="needs_confirmation 时，clarification_question 要确认的那个前提，摘自候选原文")
+    # 原话摘录常超过 120 字：2026-10-15 回测 deepseek-v4-pro 4 次 schema_error 全是它，带错误提示重试也照样超长
+    missing_fact: str | None = Field(default=None, max_length=300, description="needs_confirmation 时，clarification_question 要确认的那个前提，摘自候选原文")
     question_targets: list[str] = Field(default_factory=list, description="needs_confirmation 时，这个追问在区分哪条有效症状（逐字）")
     question_relation: QuestionRelation = Field(
         default=None, description="needs_confirmation 时：narrows = 前提是该症状的一种具体表现或发生条件；different_problem = 文档讲的是另一个问题")
@@ -120,7 +121,7 @@ def _schema_with_enum(plan_ids: list[str]) -> type[BaseModel]:
         rationale=(Rationale, Field(default="", max_length=80)),
         clarification_question=(str | None, Field(default=None, max_length=300)),
         matched_section=(str | None, Field(default=None, max_length=120)),
-        missing_fact=(str | None, Field(default=None, max_length=120)),
+        missing_fact=(str | None, Field(default=None, max_length=300)),
         question_targets=(list[str], Field(default_factory=list)),
         question_relation=(QuestionRelation, Field(default=None)),
         conflict=(Conflict | None, Field(default=None)),

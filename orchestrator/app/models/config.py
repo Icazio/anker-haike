@@ -77,6 +77,8 @@ class RetrySpec(_Strict):
     """429 专用：同模型最多重试次数，退避 1 / 2 / 4 s + 抖动（07 §13）。"""
     chain_max: int = Field(default=3, ge=1)
     sdk_max_retries: int = Field(default=0, ge=0)
+    cooldown_s: float = Field(default=0, ge=0)
+    """模型用满自身 timeout_s 仍超时、或 5xx 后，在所有链上排到末位的时长（秒）；0 = 关闭。"""
 
 
 class ConcurrencySpec(_Strict):

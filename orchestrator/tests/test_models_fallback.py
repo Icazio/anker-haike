@@ -254,6 +254,47 @@ async def test_whole_chain_fails_reports_all_attempts(cfg):
     assert len(sleeps) == 1  # 只有 b 的 429 退避；超时换家与 c 的 schema 重试不等待
 
 
+@pytest.fixture
+def cooldown_cfg(tmp_path):
+    p = tmp_path / "models.yaml"
+    p.write_text(CONFIG.replace("sdk_max_retries: 0}", "sdk_max_retries: 0, cooldown_s: 30}"), encoding="utf-8")
+    return load_models_config(p)
+
+
+async def test_full_timeout_moves_model_to_chain_end_across_tasks_until_cooldown_ends(cooldown_cfg):
+    """2026-10-15 官方 63 单 T58：intake 主位超时、备用接住后，同一轮 synthesize 主位再等满超时，备用只剩约 4 s。
+    超时的模型在冷却期内对所有任务排到链尾；冷却结束恢复原顺序，再成功一次清除冷却。"""
+    clock = FakeClock()
+    router, fakes, _ = build(cooldown_cfg, {"a": [TimeoutError(), OK, OK], "b": [OK, OK]}, clock=clock)
+    res = await router.invoke("intake", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "timeout"), ("b", "ok")]
+    clock.t += 10
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("b", "ok")]
+    clock.t += 30
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "ok")]
+    assert len(fakes["a"].calls) == 2
+
+
+async def test_cooling_model_is_still_tried_last(cooldown_cfg):
+    """冷却只调顺序不移除：排到前面的备用也失败时，冷却中的模型照样有机会。"""
+    router, _fakes, _ = build(cooldown_cfg, {"a": [server_error(), server_error(), OK], "b": [OK, TimeoutError()]})
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "server_error"), ("a", "server_error"), ("b", "ok")]
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("b", "timeout"), ("a", "ok")]
+
+
+async def test_budget_truncated_timeout_does_not_cool_the_model(cooldown_cfg):
+    """只剩 2 s 时的超时是预算不够，不是模型慢：下一次照常先试它。"""
+    router, _fakes, _ = build(cooldown_cfg, {"a": [TimeoutError(), OK], "b": [OK]})
+    with pytest.raises(ModelInvokeError):
+        await router.invoke("disambiguate.clarify", MSGS, Out, budget_ms=2_000)
+    res = await router.invoke("intake", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "ok")]
+
+
 def test_sdk_max_retries_is_zero_in_repo_config_and_instances():
     from app.settings import REPO_ROOT
 

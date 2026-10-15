@@ -37,7 +37,11 @@
 #   63 单真实链路四组对比（docs/planning/2026-10-13-1613_stronger-models-63/对比结论.md）：SOP 87%→90%、完全命中 65%→70%，
 #   整单中位耗时 9.8→8.8 s；开思考单次 50–90 s 不可用；glm-5.3（思考 low）84% 且主模型失败 9 次。
 # 2026-10-15.2：domestic intake 的 qwen-flash 前移至第二位，首选失败后先切换厂商；保留 qwen3.7-flash。
-version: 2026-10-15.2
+# 2026-10-15.3：官方 63 单回测（docs/planning/2026-10-15-1417_official-63-retest/）主位超时后备用来不及。deepseek-pro 超时 9 → 8 s，
+#   intake 预算 15 → 17 s（interpret.py），qwen-flash 有 9 s；新增 retry.cooldown_s：超时 / 5xx 的模型 30 s 内排到链尾，
+#   同一轮 intake 主位超时后 synthesize 直接从 deepseek-flash 开始。synthesize 链不换厂商：qwen-max 在当前选方案 prompt 下
+#   p50 7.7 s、最长 13.1 s（T52–T62 实测 9 次），放第二位只剩约 7 s 装不下；留在链尾，DeepSeek 两个位都冷却时自然排到最前。
+version: 2026-10-15.3
 default_lane: domestic
 
 providers:
@@ -61,8 +65,9 @@ models:
   qwen-vl-plus: {context_window: 1000000, provider: dashscope, id: qwen3.7-plus,                vision: true,  structured: json_object, max_images: 10, timeout_s: 30, params: {enable_thinking: false}}
   # deepseek-flash（V4.1-Flash）实测：json_object 可用、能读图（max_images 按 4 张保守）、关思考后 intake ≈ 0.9 s
   deepseek:     {context_window: 1000000, provider: deepseek,  id: deepseek-flash,              vision: true,  structured: json_object, max_images: 4,  timeout_s: 20, params: {thinking: {type: disabled}}}
-  # deepseek-v4-pro：理解与选方案主位（不读图，实测对图片凭空描述）。p90 约 7 s；超时 9 s 留出落到 deepseek-flash 的余量
-  deepseek-pro: {context_window: 1000000, provider: deepseek,  id: deepseek-v4-pro,             vision: false, structured: json_object, timeout_s: 9, params: {thinking: {type: disabled}}}
+  # deepseek-v4-pro：理解与选方案主位（不读图，实测对图片凭空描述）。2026-10-15 官方 63 单成功调用：intake p90 7.2 s、最长 8.2 s，
+  # synthesize p90 6.0 s、最长 7.4 s；超时 8 s，给换厂商的备用留时间（intake 17 s 预算下 qwen-flash 有 9 s）
+  deepseek-pro: {context_window: 1000000, provider: deepseek,  id: deepseek-v4-pro,             vision: false, structured: json_object, timeout_s: 8, params: {thinking: {type: disabled}}}
   # 智谱 2026-09-13 本机实测：json_schema 被静默忽略（返回散文 → 校验必失败），只能用 json_object；思考模式默认开，需关
   glm:          {context_window: 200000, provider: zhipu,     id: glm-4.7,                     vision: false, structured: json_object, timeout_s: 20, params: {thinking: {type: disabled}}}
   # glm-4.7-flash 不存在（调用返回 500 操作失败）；轻量档实测可用的是 glm-4.5-flash
@@ -112,6 +117,7 @@ lanes:
     retrieve.grade:        {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 1024}
 
 # same_model_max：超时 / 5xx / schema 失败的同模型重试；rate_limit_max：429 专用（退避 1 / 2 / 4 s + 抖动）
-retry: {same_model_max: 1, rate_limit_max: 3, chain_max: 3, sdk_max_retries: 0}
+# cooldown_s：模型用满自身 timeout_s 仍超时或 5xx 后，30 s 内在所有链上排到末位（不移除）
+retry: {same_model_max: 1, rate_limit_max: 3, chain_max: 3, sdk_max_retries: 0, cooldown_s: 30}
 # 全局同时进行的模型调用上限，满则立即返回 error(recoverable=true)（07 §13）
 concurrency: {max_in_flight: 50}

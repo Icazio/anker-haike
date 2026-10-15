@@ -254,6 +254,21 @@ class ModelRouter:
         self.same_model_max = registry.cfg.retry.same_model_max
         self.rate_limit_max = registry.cfg.retry.rate_limit_max
         self.chain_max = registry.cfg.retry.chain_max
+        self.cooldown_s = registry.cfg.retry.cooldown_s
+        self._cooling_until: dict[str, float] = {}
+
+    def _ordered(self, chain: list[ResolvedModel]) -> list[ResolvedModel]:
+        """冷却中的模型排到链尾（只调顺序，不移除）。厂商过载是成片的：2026-10-15 回测里 intake 主位超时后，
+        同一轮 synthesize 的主位再等满超时，备用只剩约 4 s（T58）。"""
+        now = self._clock()
+        return sorted(chain, key=lambda r: self._cooling_until.get(r.alias, 0.0) > now)
+
+    def _note_outcome(self, alias: str, outcome: Outcome, full_timeout: bool) -> None:
+        # 被剩余预算截短的超时不算模型慢，不冷却
+        if self.cooldown_s and (outcome == "server_error" or outcome == "timeout" and full_timeout):
+            self._cooling_until[alias] = self._clock() + self.cooldown_s
+        elif outcome == "ok":
+            self._cooling_until.pop(alias, None)
 
     async def invoke(
         self,
@@ -333,7 +348,7 @@ class ModelRouter:
         def remaining_s() -> float:
             return deadline - self._clock()
 
-        for resolved in self.registry.chain(task, lane)[: self.chain_max]:
+        for resolved in self._ordered(self.registry.chain(task, lane))[: self.chain_max]:
             skip = self._skip_reason(resolved, need_vision)
             if skip:
                 attempts.append(
@@ -384,6 +399,7 @@ class ModelRouter:
                         input_budget,
                     )
                 )
+                self._note_outcome(resolved.alias, outcome, timeout_s >= resolved.spec.timeout_s)
                 if outcome == "ok":
                     parsed, raw_msg = result
                     return ModelResult(

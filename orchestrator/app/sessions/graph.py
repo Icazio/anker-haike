@@ -2014,6 +2014,7 @@ async def retrieve(state: SessionState) -> SessionState:
                 clarifications=plans.pop("clarifications", []),
                 previous_outcome=state.get("diagnose_outcome"),
                 state=state,
+                synthesis_failed=plans.pop("synthesis_failed"),
             )
         )
         return {
@@ -2293,12 +2294,15 @@ async def retrieve(state: SessionState) -> SessionState:
         evidence.setdefault(it["evidence_id"], {k: v for k, v in it.items() if k != "knowledge_title"})
     plans = await _synthesize_step({**state, "query": query}, round_evidence, lane, rcfg)
     trace += plans.pop("retrieval_trace", [])
+    synthesis_failed = plans.pop("synthesis_failed")
     # 首批无法支持操作时，给被预算裁掉的候选一次机会；单次上下文预算保持不变。
     # 不重试已读片段，不重新查询知识库，也不把 needs_confirmation 当成 supported。
     # 首批已有待确认的追问（needs_confirmation）就先问，不补查：补查只看得到被裁掉的几条、没有首批作对照，
     # 容易把勉强沾边的候选判成适用并顶掉首批的追问（T36：首批 rv-0341 待确认 0.62，补查把「集尘时异响」rv-0315 判适用）。
+    # 首批是模型调用失败时也不补查：剩余预算只够同一个失败的模型再超时一次（2026-10-15 回测 T53 / T54 / T57 第二次 1–2 s 超时）。
     omitted = [hit for hit in candidates if selection.excluded.get(hit.evidence_id) in {"item_limit", "char_limit"}]
-    if not plans.get("plans_ranked") and not plans.get("clarifications") and omitted and get_model_router() is not None:
+    if (not synthesis_failed and not plans.get("plans_ranked") and not plans.get("clarifications") and omitted
+            and get_model_router() is not None):
         if _remaining_ms(state) >= rcfg.retrieval.min_remaining_for_second_round_ms:
             recovery = pack_hits(
                 omitted, max_items=rcfg.retrieval.final_k,
@@ -2311,7 +2315,9 @@ async def retrieve(state: SessionState) -> SessionState:
             if extra_evidence:
                 extra = await _synthesize_step({**state, "query": query, "model_trace": plans.get("model_trace", [])}, extra_evidence, lane, rcfg)
                 trace += extra.pop("retrieval_trace", [])
-                # 恢复调用失败时不能把检索顺序降级结果升级成可执行方案。
+                # 恢复调用失败时不能把检索顺序降级结果升级成可执行方案。被裁掉的候选没判完，同样是运行故障，
+                # 不能报「资料没覆盖」（2026-10-15 T53：补查超时后走 R5，撞上已关闭的过保案件说「case is closed」）
+                synthesis_failed = extra.pop("synthesis_failed")
                 extra["plans_ranked"] = [plan for plan in extra["plans_ranked"] if plan.get("source") == "synthesize"]
                 round_evidence.update(extra_evidence)
                 if extra.get("plans_ranked") or not plans.get("clarifications"):
@@ -2330,6 +2336,7 @@ async def retrieve(state: SessionState) -> SessionState:
             clarifications=plans.pop("clarifications", []),
             previous_outcome=state.get("diagnose_outcome"),
             state=state,
+            synthesis_failed=synthesis_failed,
         )
     )
     return {
@@ -2378,7 +2385,9 @@ async def _synthesize_step(
         session_id=state.get("session_id"),
         lane=lane,
     )
-    update: dict[str, Any] = {"plans_ranked": out["plans_ranked"], "clarifications": out.get("clarifications", [])}
+    update: dict[str, Any] = {"plans_ranked": out["plans_ranked"], "clarifications": out.get("clarifications", []),
+                              # 模型调用失败（超时 / schema 重试耗尽）不是「候选都不适用」，由调用方 pop 后单独出口
+                              "synthesis_failed": str(out["degraded"] or "").startswith("model:")}
     if out["model_trace"]:
         update["model_trace"] = [*state.get("model_trace", []), out["model_trace"]]
     if out["dropped"] or out["degraded"]:
@@ -2426,8 +2435,16 @@ def _diagnose_outcome(
     exhausted_plans: list[str] = (),
     clarifications: list[dict] = (), previous_outcome: dict | None = None,
     state: SessionState | None = None,
+    synthesis_failed: bool = False,
 ) -> dict[str, Any]:
     """经过适用性核验或精确码核实的方案进入 guide；无可执行方案先澄清或交接。"""
+    if synthesis_failed and not plans_ranked:
+        # 选方案的模型调用失败：不知道候选适不适用，既不能说「资料没覆盖」（R5 knowledge_gap，T57 补测），
+        # 也不能当作已办结推进下一项（T53 首轮「Next up」后紧接「case is closed」）。问题保持打开，下一条消息重新检索。
+        return {
+            "diagnose_outcome": {"mode": "unavailable", "reason": "synthesize_failed", "knowledge_status": knowledge_status},
+            "escalate_reason": None, "plan_cursor": None,
+        }
     clarifications = [candidate for candidate in clarifications if candidate["plan_id"] not in exhausted_plans]
     previous = previous_outcome or {}
     attempts = previous.get("attempts", 0) if previous.get("mode") == "clarify" else 0
@@ -2571,10 +2588,46 @@ def route_after_retrieve(state: SessionState) -> str:
         return "escalate"
     if (state.get("_decision") or {}).get("outcome") == "model_card":
         return "prepare_card"
-    if (state.get("diagnose_outcome") or {}).get("mode") == "clarify":
+    mode = (state.get("diagnose_outcome") or {}).get("mode")
+    if mode == "clarify":
         return "clarify"
+    if mode == "unavailable":
+        return "diagnose_unavailable"
     # Only guide may publish operations, after evidence and pre-step policy checks.
     return "guide" if state.get("plan_cursor") else "reply"
+
+
+DIAGNOSE_UNAVAILABLE_TEXT = (
+    "I couldn't load the troubleshooting steps just now because of a temporary system problem. "
+    "This is not a finding about your device. Your description is saved and this issue stays open; "
+    "send any message (for example \"try again\") and I'll check the official guidance again, "
+    "or ask for a colleague if you'd rather not wait."
+)
+
+
+async def diagnose_unavailable(state: SessionState) -> SessionState:
+    """选方案模型调用失败（运行故障）：如实说明暂时给不出步骤，不交人工、不结案、不推进下一项任务。
+    retrieve 不留下 plans_ranked，下一条消息经 _after_product 重新检索与选方案。"""
+    writer = get_stream_writer()
+    log.warning(
+        "diagnose unavailable session=%s run=%s", state.get("session_id"), state.get("run_id"),
+        extra={"event": "runtime_fault", "task": "diagnose.synthesize",
+               "session_id": state.get("session_id"), "run_id": state.get("run_id")},
+    )
+    message_id = uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{state.get('session_id')}:{state.get('run_id')}:diagnose_unavailable"
+    ).hex
+    text = acknowledge_current_turn(dict(state), DIAGNOSE_UNAVAILABLE_TEXT)
+    writer({"type": "message_start", "message_id": message_id})
+    writer({"type": "message", "message_id": message_id, "delta": text})
+    writer({"type": "message_end", "message_id": message_id, "status": "completed"})
+    return {
+        "stage": "diagnose",
+        "visible_messages": [
+            *(state.get("visible_messages") or []),
+            {"message_id": message_id, "kind": "reply", "text": text, "model_tier": None},
+        ],
+    }
 
 
 async def guide(state: SessionState) -> SessionState:
@@ -3368,8 +3421,11 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
     )
     g.add_conditional_edges(
         "retrieve", route_after_retrieve,
-        {"reply": "reply", "guide": "guide", "escalate": "escalate", "clarify": "clarify", "prepare_card": "prepare_card"}
+        {"reply": "reply", "guide": "guide", "escalate": "escalate", "clarify": "clarify", "prepare_card": "prepare_card",
+         "diagnose_unavailable": "diagnose_unavailable"}
     )
+    g.add_node("diagnose_unavailable", durable_node(diagnose_unavailable))
+    g.add_edge("diagnose_unavailable", "commit_issue")
     g.add_conditional_edges("reply", route_after_reply, {"guide": "guide", "end": "commit_issue"})
     g.add_conditional_edges(
         "guide", route_after_guide,
