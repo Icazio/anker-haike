@@ -70,6 +70,9 @@ rv-0061:
 bp-0114:
   # 第 6 段塞了 4 个子病因（T53）：磁吸线充电；软件错误的 12 秒重置与第 2 段重复，客户已反馈过；
   # 出厂按钮损坏要先确认是到货就坏，才走官方的换机结论；电池耗尽换充电器和线
+  # 前提：开机 / 加热两个小节都在查泵主机本身。2026-10-14 T52 补测：客户说盒子充不进电所以泵充不了，
+  # 模型选了这条并替客户选中「泵无法开机」，发了 5 张泵操作卡
+  premise: "The pump hub itself cannot be turned on or its function fails; the problem is not only that the charging case will not charge."
   6:
     parts:
       - {kind: action}

@@ -88,6 +88,16 @@ def test_t52_premise_is_shown_to_the_model_next_to_the_candidate():
     assert "（前提：The charging case itself powers on" in human
 
 
+def test_t52_pump_not_working_entry_is_about_the_pump_hub_itself():
+    """2026-10-14 T52 补测：盒子充不进电被当成 bp-0114「泵完全不工作」并替客户选中开机分支；前提写明它查泵主机本身。"""
+    from app.diagnose.synthesize import synthesis_messages
+
+    premise = LIB.get("qa_bp_0114").premise
+    assert premise.startswith("The pump hub itself cannot be turned on") and "charging case will not charge" in premise
+    state = {"symptoms": ["charging case will not charge"], "text": T52_SAID}
+    assert f"（前提：{premise}）" in synthesis_messages(state, [LIB.get("qa_bp_0114")], [], [], 3)[1][1]
+
+
 def test_t52_premise_conflict_asks_about_the_case_not_the_pump():
     """客户否定了前提（盒子自身充不进电）：模型判 object 冲突、ask_about 取前提里的充电盒，追问盒子本身，不发泵受电指南。"""
     conflict = {"kind": "object", "customer_quote": "My charging case will not charge",
