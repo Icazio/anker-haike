@@ -9,5 +9,6 @@ KNOWN_TASKS: tuple[str, ...] = (
     "reply.stream",
     "escalate.summary",
     "warranty.receipt_ocr",
+    "remedy.review",
 )
 OPTIONAL_TASKS: tuple[str, ...] = ("query.rewrite", "retrieve.grade")

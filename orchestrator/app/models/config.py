@@ -143,9 +143,31 @@ class ModelsConfig(_Strict):
             all_tasks.update(tasks)
         for task in sorted(all_tasks - set(default_tasks) - set(OPTIONAL_TASKS)):
             problems.append(f"lanes.{self.default_lane}: task {task!r} has no chain")
+        problems.extend(self._review_independence_problems())
         for kind in ("embedding", "rerank"):
             if not self.aliases_of_kind(kind):  # type: ignore[arg-type]
                 problems.append(f"models: no alias with kind: {kind}")
+        return problems
+
+    def _review_independence_problems(self) -> list[str]:
+        """remedy.review 审查的是 intake / diagnose.synthesize 的结论：链上出现它们首位的厂商，
+        主位一超时审查就落回同源模型，独立性只剩纸面。"""
+        problems = []
+        for lane, tasks in self.lanes.items():
+            review = tasks.get("remedy.review")
+            if review is None:
+                continue
+            reviewed = {
+                self.models[tasks[t].chain[0]].provider
+                for t in ("intake", "diagnose.synthesize")
+                if t in tasks and tasks[t].chain[0] in self.models
+            }
+            for alias in review.chain:
+                if alias in self.models and self.models[alias].provider in reviewed:
+                    problems.append(
+                        f"lanes.{lane}.remedy.review.chain: {alias!r} shares provider "
+                        f"{self.models[alias].provider!r} with the reviewed tasks"
+                    )
         return problems
 
 

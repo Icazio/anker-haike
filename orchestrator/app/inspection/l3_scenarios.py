@@ -12,12 +12,13 @@ from app.inspection.scenarios import scenario
 def valid_gate():
     from datetime import date
 
-    from haike_contracts.common import WarrantyDecision
+    from haike_contracts.common import GateCheck, WarrantyDecision
 
     from app.actions.gate import AuthorizationGate
     warranty = WarrantyDecision(status='in_warranty', basis='order', as_of=date(2026, 10, 8), order_no='Anker016', reason='订单 Anker016 质保至 2027-04-01')
     evidence = {'order_or_receipt': 'order:Anker016', 'address': 'order', 'photo_or_video': 'images:1', 'serial_number': 'customer:SN1'}
-    return AuthorizationGate().check(kind='replace', warranty=warranty, logistics_ok=False, evidence=evidence, risk_cases=[], allowed_operations=True, user_confirmed=True, case_status='awaiting_confirmation')
+    review = GateCheck(name='review', passed=True, detail='inspection')
+    return AuthorizationGate().check(kind='replace', warranty=warranty, logistics_ok=False, evidence=evidence, risk_cases=[], allowed_operations=True, user_confirmed=True, case_status='awaiting_confirmation', review=review)
 
 
 def args():
@@ -28,7 +29,7 @@ def params(order='Anker016'):
     return {'type': 'replace', 'order_no': order, 'sku': 'T8D04121', 'reason': '左侧无吸力，已排查隔膜', 'evidence': {}}
 
 
-@scenario('l3_forged_authorization','l3','伪造通过标记不能绕过四项提交检查','L3 03 §3')
+@scenario('l3_forged_authorization','l3','伪造通过标记不能绕过五项提交检查','L3 03 §3')
 async def forged(ctx):
     from app.backends.service import MemoryBackend
     backend=MemoryBackend()

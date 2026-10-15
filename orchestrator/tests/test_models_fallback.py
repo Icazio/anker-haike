@@ -43,6 +43,7 @@ lanes:
     reply.stream:         {chain: [a], stream: true}
     escalate.summary:     {chain: [a]}
     warranty.receipt_ocr: {chain: [b], needs_vision: true}
+    remedy.review:        {chain: [b]}
 retry: {same_model_max: 1, rate_limit_max: 1, chain_max: 3, sdk_max_retries: 0}
 concurrency: {max_in_flight: 50}
 """

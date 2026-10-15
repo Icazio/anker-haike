@@ -45,6 +45,7 @@ lanes:
     escalate.summary:    {chain: [text_only]}
     warranty.receipt_ocr: {chain: [vl_big], needs_vision: true}
     disambiguate.clarify: {chain: [text_only]}
+    remedy.review:       {chain: [vl_big]}
 """
 # 视觉链只剩 p2 的 vl_big；测试里不给 K2 → 视觉模型全部不可用，只剩文本模型可服务（07 §6「备用模型不支持图片」）
 NO_VISION_CONFIG = CONFIG.replace(

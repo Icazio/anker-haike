@@ -14,7 +14,7 @@ HANDLERS = {
     "warranty.check": "get_order",
     "service_order.create": "create_service_order",
 }
-GATE_CHECKS = ["eligibility", "evidence", "safety", "idempotency"]
+GATE_CHECKS = ["eligibility", "evidence", "safety", "idempotency", "review"]
 # 主办方工具只收单：不承诺发货或退款时效。
 SUBMITTED_NEXT_STEP = (
     "Your service request has been submitted and a colleague is handling it. The result will come back to "

@@ -42,6 +42,7 @@ lanes:
     reply.stream:         {chain: [main, backup], stream: true}
     escalate.summary:     {chain: [fast]}
     warranty.receipt_ocr: {chain: [main], needs_vision: true}
+    remedy.review:        {chain: [backup]}
 """
 # 票 19 起命中计划的排障轮直接由 guide 出步骤卡，不再走自由回复；
 # 用户可见的流式回复发生在对话轮（app/conversation/reply.py）。

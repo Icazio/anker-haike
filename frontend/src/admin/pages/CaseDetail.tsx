@@ -5,6 +5,7 @@ import { CASE_LABELS } from '../../state/progress';
 import { ProposalCard } from '../../components/ProposalCard';
 import type { ProposalOption } from '../../types/events';
 import { CaseRecords, HandoffSummary } from '../components/CaseRecords';
+import { ReviewPanel } from '../components/ReviewPanel';
 import { SessionRecord, SessionView } from '../components/SessionView';
 import { l3Api } from '../l3';
 import { GATE_TEXT, SERVICE_TYPE_TEXT, WARRANTY_BASIS_TEXT, WARRANTY_TEXT, sla, when } from '../format';
@@ -106,6 +107,7 @@ export function CaseDetail() {
           {row.gate_result ? row.gate_result.checks.map((check) => (
             <p key={check.name} style={{ margin: '2px 0', fontSize: 12.5 }}>{check.passed ? '✓' : '×'} {GATE_TEXT[check.name] ?? check.name}<span className="muted"> · {check.detail}</span></p>
           )) : <p className="muted" style={{ fontSize: 12.5 }}>尚未进入提交检查。</p>}
+          <ReviewPanel events={row.events} gate={row.gate_result} />
           <CaseRecords executions={row.executions} commitments={row.commitments} events={row.events} />
         </section>
 

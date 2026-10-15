@@ -53,7 +53,7 @@ def evaluate(kind, value):
     if kind == "authorization":
         from datetime import date
 
-        from haike_contracts.common import WarrantyDecision
+        from haike_contracts.common import GateCheck, WarrantyDecision
 
         from app.actions.gate import AuthorizationGate
 
@@ -68,6 +68,7 @@ def evaluate(kind, value):
             "allowed_operations": True,
             "user_confirmed": True,
             "case_status": "awaiting_confirmation",
+            "review": GateCheck(name="review", passed=True, detail="eval"),
         }
         return {"passed": AuthorizationGate().check(**(gate | value.get("gate", {}))).passed}
     if kind == "vision":

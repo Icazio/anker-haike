@@ -74,6 +74,18 @@ describe('CaseDetail', () => {
     expect(screen.getByText(/依据：订单质保结束日期 · 按 2026-10-08 计/)).toBeInTheDocument();
   });
 
+  test('执行前审查的结论与闸门第 5 项写在案件页上', async () => {
+    const detail = '独立审查不一致：审查读到客户诉求是退款，候选是换货：「I just want my money back」';
+    open({
+      ...CASE,
+      gate_result: { passed: false, fallback: 'await_human', checks: [{ name: 'review', passed: false, detail }] },
+      events: [{ seq: 3, type: 'review_completed', at: '2026-09-25T06:03:00Z', actor: 'system',
+                 payload: { outcome: 'mismatch', detail, snapshot_hash: 'abc123', premises: [] } }],
+    });
+    await waitFor(() => expect(screen.getByText(`执行前审查：${detail}`, { exact: false })).toBeInTheDocument());
+    expect(screen.getByText(/独立审查/, { selector: 'p' })).toBeInTheDocument();
+  });
+
   test('尚未交接的案件说明没有摘要', async () => {
     open({ ...CASE, handoff_summary: null, executions: [], commitments: [], events: [] });
     await waitFor(() => expect(screen.getByText('案件尚未交接人工，没有交接摘要。')).toBeInTheDocument());

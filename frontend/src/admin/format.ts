@@ -148,8 +148,8 @@ export const EMOTION_TEXT: Record<string, string> = { calm: '平静', anxious: '
 export const STRATEGY_TEXT: Record<string, string> = {
   normal: '常规处理', reassure_first: '先安抚再排查', reassure_and_shorten: '先安抚、缩短步骤', direct_resolution: '直接给方案', de_escalate_and_offer_human: '降温并提供人工',
 };
-/** 服务单提交闸门四项检查 */
-export const GATE_TEXT: Record<string, string> = { eligibility: '办理资格', evidence: 'SOP 证据与客户确认', safety: '安全限制', idempotency: '幂等键' };
+/** 服务单提交闸门五项检查 */
+export const GATE_TEXT: Record<string, string> = { eligibility: '办理资格', evidence: 'SOP 证据与客户确认', safety: '安全限制', idempotency: '幂等键', review: '独立审查' };
 
 /** L3 案件状态分组（工作台 tab） */
 export const CASE_GROUPS: { key: string; label: string; statuses: string[] }[] = [

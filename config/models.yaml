@@ -41,7 +41,11 @@
 #   intake 预算 15 → 17 s（interpret.py），qwen-flash 有 9 s；新增 retry.cooldown_s：超时 / 5xx 的模型 30 s 内排到链尾，
 #   同一轮 intake 主位超时后 synthesize 直接从 deepseek-flash 开始。synthesize 链不换厂商：qwen-max 在当前选方案 prompt 下
 #   p50 7.7 s、最长 13.1 s（T52–T62 实测 9 次），放第二位只剩约 7 s 装不下；留在链尾，DeepSeek 两个位都冷却时自然排到最前。
-version: 2026-10-15.3
+# 2026-10-15.4：新增 remedy.review（换货 / 退款提交前的独立审查，docs/claude/spec_2026-10-15-1448_independent-review.md）。
+#   链上不得出现同通道 intake / diagnose.synthesize 首位的厂商（config.py 校验），否则审查与被审结论同源；
+#   domestic 主位 qwen-max（上面实测 p50 7.7 s，审查预算 15 s）、兜底 glm，不接 deepseek。glm 只接住主位的快速失败
+#   （5xx / 格式错，或 cooldown 中被排到链尾）；主位慢到用完预算时审查记为不可用、转人工。未做 bake-off。
+version: 2026-10-15.4
 default_lane: domestic
 
 providers:
@@ -92,6 +96,7 @@ lanes:
     warranty.receipt_ocr:  {chain: [deepseek, qwen-vl, glm-v],    effort: low,    needs_vision: true} # 100/100 1218 ms ¥0.0027 | 100/100 3355 ms ¥0.0029 | 100/100 2958 ms（票 40 真实凭证四字段全对）
     query.rewrite:         {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 128}    # 100/75 535 ms | 100/75 915 ms | 100/62 851 ms —— 三家全未达标且轮间摆动大（上一轮 qwen-flash 还是 100%），票 32 词表问题未解，默认关闭（config/retrieval.yaml）
     retrieve.grade:        {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 1024}   # 旧评分报告仅作历史记录；新充分性语义需重新评测。grade或query_rewrite启用时调用
+    remedy.review:         {chain: [qwen-max, glm],               effort: medium, max_tokens: 1024}   # 审查不与 deepseek 主位同源
   overseas:
     intake:                {chain: [haiku, sonnet],                     effort: low,    max_tokens: 1536}
     disambiguate.clarify:  {chain: [haiku, sonnet],                     effort: low}
@@ -103,6 +108,7 @@ lanes:
     warranty.receipt_ocr:  {chain: [sonnet, gemini-flash],              effort: low,    needs_vision: true}
     query.rewrite:         {chain: [haiku, sonnet],                     effort: low,    max_tokens: 128}
     retrieve.grade:        {chain: [haiku, sonnet],                     effort: low,    max_tokens: 1024}
+    remedy.review:         {chain: [gemini-flash],                      effort: medium, max_tokens: 1024}
 
   zhipu:
     intake:                {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 1536}
@@ -115,6 +121,7 @@ lanes:
     warranty.receipt_ocr:  {chain: [glm-v, qwen-vl, deepseek],         effort: low,    needs_vision: true}
     query.rewrite:         {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 128}
     retrieve.grade:        {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 1024}
+    remedy.review:         {chain: [qwen-max, deepseek],               effort: medium, max_tokens: 1024}
 
 # same_model_max：超时 / 5xx / schema 失败的同模型重试；rate_limit_max：429 专用（退避 1 / 2 / 4 s + 抖动）
 # cooldown_s：模型用满自身 timeout_s 仍超时或 5xx 后，30 s 内在所有链上排到末位（不移除）

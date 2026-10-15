@@ -422,6 +422,14 @@ class CaseService:
 
         return await self.store.mutate(case_id, apply)
 
+    async def record_review(self, case_id, payload):
+        """执行前独立审查的档案（快照哈希、正向结论、前提绑定、反证）。每次审查一条，只给坐席看。"""
+
+        def apply(row):
+            _event(row, "review_completed", payload, "system")
+
+        return await self.store.mutate(case_id, apply)
+
     async def record_handoff(self, case_id, summary):
         """The latest AI handoff for the desk. Case events never reach the customer's timeline."""
 

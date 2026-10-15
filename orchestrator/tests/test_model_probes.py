@@ -198,5 +198,7 @@ def test_safe_error_categories(code, detail):
 
 def test_other_lane_is_based_on_route_membership(service):
     service.registry.cfg.default_lane = "overseas"
+    # MINIMAL 里 deepseek 只作为 overseas 的审查链出现（审查不能与 sonnet 同厂商），去掉后才是非成员
+    del service.registry.cfg.lanes["overseas"]["remedy.review"]
     rows = {row.alias: row for row in service.snapshot().models}
     assert rows["sonnet"].current_lane and not rows["deepseek"].current_lane
