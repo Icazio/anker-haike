@@ -148,8 +148,35 @@ def announces_order(incoming: list[str]) -> bool:
 
 
 def settle(tasks, intent, outcome):
-    """人工结论回来：等人工的该类诉求按结论收尾（批准 / 驳回都算本轮办结，请补充则回 pending）。"""
-    return [{**t, "status": outcome} if t["status"] == "waiting_human" and t["intent"] == intent else t for t in tasks]
+    """人工结论回来：等人工的该类诉求按结论收尾（批准 / 驳回都算本轮办结，请补充则回 pending）。
+    随它一起交给人工的诉求（carried_by，见 carry_over）同样收尾。"""
+    return [_released(t, outcome) if t["status"] == "waiting_human" and intent in {t["intent"], t.get("carried_by")} else t
+            for t in tasks]
+
+
+def carry_over(tasks, holder):
+    """等人工时推进不了的诉求并入同一次交接：记 waiting_human，并注明随哪项诉求交给人工（T49 / T59 / T63）。
+
+    等人工时排障 / 办理不推进（round3：推进会覆盖 awaiting_human）；但人工结论回来后也不会恢复它们，
+    留在 pending 就再没有下文。并入交接后由人工一并处理，人工结论按 holder 一起收尾（settle）。
+    """
+    result = deepcopy(tasks)
+    carried = []
+    for task in result:
+        if task["status"] == "pending":
+            task.update(status="waiting_human", carried_by=holder)
+            carried.append(task)
+    return result, carried
+
+
+def reopen_waiting(tasks):
+    """人工尚未处理就撤回队列（客户补信息后找到官方步骤）：原诉求回到 active，随它交接的回到 pending。"""
+    return [_released(t, "pending" if t.get("carried_by") else "active") if t["status"] == "waiting_human" else t
+            for t in tasks]
+
+
+def _released(task, status):
+    return {**{k: v for k, v in task.items() if k != "carried_by"}, "status": status}
 
 
 def next_task(tasks, completed_intent, *, business=None, task_id=None, outcome="done", only=None):

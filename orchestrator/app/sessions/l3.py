@@ -35,7 +35,15 @@ from app.conversation.effects import writer
 from app.conversation.quotes import quoted
 from app.conversation.reduce import stable_id
 from app.conversation.reply import acknowledge_current_turn
-from app.conversation.tasks import NOT_EXECUTABLE, REMEDY_INTENTS, settle
+from app.conversation.tasks import (
+    LABELS,
+    NOT_EXECUTABLE,
+    REMEDY_INTENTS,
+    carry_over,
+    next_task,
+    settle,
+    task_business,
+)
 from app.emotion.policy import complaint_flagged
 from app.escalation.summary import build_summary
 from app.official.message import parse_message
@@ -805,7 +813,9 @@ async def consult(state):
             )
             return {
                 "consult_intent": intent, "consult_attempts": attempts,
-                "stage": state.get("stage", "consult") if state.get("pending_card") else "consult",
+                # 转人工后才推进到的查询（T41）缺单号：阶段仍是等人工，不能被追问改成 consult
+                "stage": state.get("stage", "consult")
+                if state.get("pending_card") or state.get("stage") == "awaiting_human" else "consult",
                 "l3_route": "commit_issue" if attempts < 3 else "summarize",
                 "escalate_reason": None if attempts < 3 else "R7",
             }
@@ -856,7 +866,9 @@ async def consult(state):
         if case:
             case_update["case_status"] = case["status"]
             view["fields"]["case_status"] = {"value": case["status"], "source": "case"}
-    propose_logistics = bool(offer) and not state.get("pending_card")
+    # 案件已在人工队列（转人工后才推进到这项查询，T41）：只答物流事实，不另开补发 / 调查方案 ——
+    # 同一案件不能同时等两份审批；包裹状态由 advance_tasks 并进交接摘要（T9 同一分支）
+    propose_logistics = bool(offer) and not state.get("pending_card") and state.get("stage") != "awaiting_human"
     answer = render_answer(request, view)
     if logistics_note:
         answer = logistics_note.rsplit("\n", 1)[0] if propose_logistics else logistics_note
@@ -1137,8 +1149,6 @@ async def vision_conflict(state):
 
 
 async def advance_tasks(state):
-    from app.conversation.tasks import LABELS, next_task, task_business
-
     completed = state.get("completed_task_intent") or "report_problem"
     business = BusinessContext.restore(state)
     decision = state.get("turn_decision") or {}
@@ -1199,6 +1209,17 @@ async def advance_tasks(state):
             }
         )
     else:
+        holder = next((t["intent"] for t in tasks if t["status"] == "waiting_human" and not t.get("carried_by")), None)
+        tasks, carried = carry_over(tasks, holder) if waiting and holder else (tasks, [])
+        if carried:
+            # 推进不了的诉求不能悬空：客户被告知过处理顺序，这里说明它们也交给了同一位同事，交接摘要随之更新
+            update["task_queue"] = tasks
+            labels = ", ".join(LABELS[t["intent"]] for t in carried)
+            say(state, f"I've also added your other request ({labels}) to the same case, "
+                       "so the colleague can handle it together.")
+            if state.get("case_id"):
+                row = await require_services().cases.store.get(state["case_id"])
+                await _record_handoff({**state, "task_queue": tasks}, row)
         update["l3_route"] = "await_input" if state.get("pending_card") else "commit_issue"
         if (
             state.get("stage") == "done"

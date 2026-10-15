@@ -7,7 +7,15 @@ from app.analytics.l3 import episode, metrics
 from app.cases.service import CaseService
 from app.cases.store import CaseConflict
 from app.conversation.reply import OFFER_HUMAN, acknowledge_current_turn, offer_human_after_stream
-from app.conversation.tasks import CONSULT_ONLY, enqueue, next_task, ordered_intents, settle
+from app.conversation.tasks import (
+    CONSULT_ONLY,
+    carry_over,
+    enqueue,
+    next_task,
+    ordered_intents,
+    reopen_waiting,
+    settle,
+)
 from app.diagnose.localization import (
     normalize,
     part_categories,
@@ -381,6 +389,31 @@ def test_waiting_for_a_colleague_only_lets_read_only_tasks_continue():
     queue, _ = enqueue(queue, "order_change", [], "cancel it", "b")
     held = [t for t in queue if t["intent"] == "order_change"]
     assert [(t["status"], t["quote"]) for t in held] == [("waiting_human", "cancel it")]
+
+
+def test_requests_that_cannot_advance_while_waiting_join_the_same_handoff():
+    """2026-10-15 63 单回测 T49 / T59 / T63：第一项转人工后，排障留在 pending 没有下文。
+
+    等人工时仍只推进查询类任务；推进不了的并入同一次交接（waiting_human + carried_by），
+    人工结论按原诉求一并收尾；人工处理前撤回队列时，原诉求回 active、随它交接的回 pending。
+    """
+    queue, _ = enqueue([], "parts_purchase", ["report_problem"], "买不到刷罩，而且扫不干净", "i")
+    queue, task = next_task(queue, "parts_purchase", outcome="waiting_human", only=CONSULT_ONLY)
+    assert task is None
+    queue, carried = carry_over(queue, "parts_purchase")
+    assert [t["intent"] for t in carried] == ["report_problem"]
+    assert {t["intent"]: (t["status"], t.get("carried_by")) for t in queue} == {
+        "parts_purchase": ("waiting_human", None), "report_problem": ("waiting_human", "parts_purchase")}
+    # 客户再说一遍故障：已随交接的诉求不重复入队
+    again, _ = enqueue(queue, "parts_purchase", ["report_problem"], "买不到刷罩，而且扫不干净", "i2")
+    assert len(again) == 2
+    assert {t["intent"]: t["status"] for t in settle(queue, "parts_purchase", "done")} == {
+        "parts_purchase": "done", "report_problem": "done"}
+    asked = settle(queue, "parts_purchase", "pending")
+    assert all(t["status"] == "pending" and "carried_by" not in t for t in asked)
+    reopened = reopen_waiting(queue)
+    assert {t["intent"]: t["status"] for t in reopened} == {"parts_purchase": "active", "report_problem": "pending"}
+    assert all("carried_by" not in t for t in reopened)
 
 
 def test_remedy_closed_completes_the_active_task_even_when_it_is_troubleshooting():

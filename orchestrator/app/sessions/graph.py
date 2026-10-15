@@ -32,7 +32,7 @@ from app.conversation.product_questions import answer_product_question, handles_
 from app.conversation.quotes import quoted
 from app.conversation.reply import acknowledge_current_turn, offer_human_after_stream, say_text
 from app.conversation.request_constraints import ground_additional_queries
-from app.conversation.tasks import REMEDY_INTENTS
+from app.conversation.tasks import REMEDY_INTENTS, reopen_waiting
 from app.diagnose import (
     build_query,
     get_retrieval_config,
@@ -2751,8 +2751,7 @@ async def guide(state: SessionState) -> SessionState:
                     state["case_id"], input_id=state["input_id"], quote=state.get("text") or "")
                 get_stream_writer()(case_event(row, issue_id=state["active_issue_id"], reason="客户补充信息后找到官方排查步骤"))
                 update.update(case_status=row["status"], escalate_reason=None,
-                              task_queue=[{**t, "status": "active"} if t.get("status") == "waiting_human" else t
-                                          for t in state.get("task_queue", [])])
+                              task_queue=reopen_waiting(state.get("task_queue", [])))
             return update
         if prep.outcome == "blocked":
             return {**update, **_apply_next_action(work)}
@@ -3095,9 +3094,14 @@ async def summarize(state: SessionState) -> SessionState:
             handoff_status = "prepared"
         case_update = {"case_id": row["case_id"], "case_status": row["status"]}
         if row["status"] == "awaiting_approval":
-            case_update.update(stage="awaiting_human", pending_card=None,
-                               task_queue=[{**task, "status": "waiting_human"} if task.get("status") == "active" else task
-                                           for task in state.get("task_queue", [])])
+            queue = [{**task, "status": "waiting_human"} if task.get("status") == "active" else task
+                     for task in state.get("task_queue", [])]
+            case_update.update(stage="awaiting_human", pending_card=None, task_queue=queue)
+            held = next((t["intent"] for t in state.get("task_queue", []) if t.get("status") == "active"), None)
+            if not state.get("summary_refresh") and held and any(t.get("status") == "pending" for t in queue):
+                # 排在后面的诉求回到任务队列：查询照常推进（T41 的配件物流），推进不了的并入本次交接（T49 / T59）。
+                # 以前这里固定 commit_issue，后面的诉求永远 pending，客户和人工都看不到下文。
+                case_update.update(completed_task_intent=held, task_outcome="waiting_human", l3_route="advance_tasks")
         writer(case_event(row, issue_id=state["active_issue_id"], reason=summary.reason.text))
     text = reassurance_text(reason, dict(state))
     if handoff_status == "requested" and state.get("case_status") == "awaiting_approval":

@@ -955,7 +955,55 @@ async def test_asking_for_a_colleague_does_not_start_the_pending_troubleshooting
         assert not any(e["type"] == "step_card" for e in rows)
         state = await state_of(sid)
         assert state["stage"] == "awaiting_human"
-        assert [q[:2] for q in await _queue_of(sid)] == [("replacement_request", "waiting_human"), ("report_problem", "pending")]
+        # 排障不推进，但不能悬空：并入同一次交接并告诉客户（2026-10-15 回测 T49 / T59 / T63）
+        assert "also added your other request (device troubleshooting)" in said(rows), said(rows)
+        assert [q[:2] for q in await _queue_of(sid)] == [("replacement_request", "waiting_human"), ("report_problem", "waiting_human")]
+
+
+async def test_a_query_queued_behind_a_handed_off_fault_is_still_answered(l3_runtime, monkeypatch):
+    """2026-10-15 回测 T41：故障经 summarize 转人工后，排在后面的物流查询一直 pending，客户没得到答复。
+    转人工后回到任务队列：查询照常回答，阶段仍是等人工，不另开第二份审批。"""
+    text = TICKETS["T13"] + "\nAlso, has my order Anker008 shipped yet?"
+    interpret_as(monkeypatch, {text: TurnInterpretation(
+        primary_intent="report_problem", secondary_intents=["logistics_query"], device_relation="current",
+        request_quotes={"logistics_query": "Also, has my order Anker008 shipped yet?"},
+        facts=[{"value": "communicatiefout tussen de robot en het station",
+                "quote": "Er is een communicatiefout tussen de robot en het station"}],
+    )})
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        rows = events(await send(client, sid, text))
+        assert not any(e["type"] == "error" for e in rows), rows
+        reply = said(rows)
+        assert "Next up: delivery status" in reply and "expected to ship on 2026-10-20" in reply, reply
+        assert not any(e["type"] == "proposal_card" for e in rows)
+        case = await _case_detail(client, rows)
+        assert case["status"] == "awaiting_approval"
+        state = await state_of(sid)
+        assert state["stage"] == "awaiting_human"
+        assert [q[:2] for q in await _queue_of(sid)] == [("report_problem", "waiting_human"), ("logistics_query", "done")]
+
+
+async def test_troubleshooting_queued_behind_a_handed_off_replacement_joins_the_handoff(l3_runtime, monkeypatch):
+    """2026-10-15 回测 T49 / T59：换货没有订单 → 跳过凭证 → summarize 转人工，排障一直 pending。
+    排障不推进（等人工结论），并入同一次交接并告知客户；人工驳回时两项一起收尾。"""
+    interpret_as(monkeypatch, {TICKETS["T49"]: TurnInterpretation(
+        primary_intent="replacement_request", secondary_intents=["report_problem"], device_relation="current",
+    )})
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        first = events(await send(client, sid, TICKETS["T49"]))
+        assert "replacement request → device troubleshooting" in said(first), said(first)
+        rows = events(await act(client, sid, "skip_receipt", {"reason": "none"}))
+        assert not any(e["type"] == "error" for e in rows), rows
+        assert "also added your other request (device troubleshooting)" in said(rows), said(rows)
+        assert not any(e["type"] == "step_card" for e in rows)
+        assert [q[:2] for q in await _queue_of(sid)] == [("replacement_request", "waiting_human"), ("report_problem", "waiting_human")]
+        case = await _case_detail(client, rows)
+        assert {(r["intent"], r["status"]) for r in case["handoff_summary"]["business"]["pending_requests"]} == {
+            ("replacement_request", "waiting_human"), ("report_problem", "waiting_human")}
+        await _decide(client, sid, "reject")
+        assert [q[:2] for q in await _queue_of(sid)] == [("replacement_request", "done"), ("report_problem", "done")]
 
 
 async def test_t11_device_prompt_gets_the_official_eb1l_steps(l3_runtime, monkeypatch):
@@ -1010,6 +1058,12 @@ async def test_t63_parts_purchase_is_handed_off_with_the_fault_kept(l3_runtime, 
     assert "brush guard snaps off" in summary["problem"]
     queue = {t["intent"]: t["status"] for t in state["task_queue"]}
     assert queue["parts_purchase"] == "waiting_human"
+    # 2026-10-15 回测：清洁差的排障排在采购后面，采购转人工后一直 pending、没有下文。
+    # 等人工时仍不推进排障，并入同一次交接：客户被告知，人工的待办里看得到它由谁处理
+    assert queue["report_problem"] == "waiting_human"
+    assert "also added your other request (device troubleshooting)" in text, text
+    assert {(r["intent"], r["status"]) for r in summary["business"]["pending_requests"]} == {
+        ("parts_purchase", "waiting_human"), ("report_problem", "waiting_human")}
 
 
 def test_a_parts_purchase_request_is_kept_whatever_the_model_reads():
