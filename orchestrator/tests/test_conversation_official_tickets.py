@@ -83,7 +83,28 @@ async def test_restart_then_warranty_entry_ends_in_the_warranty_flow(l3_runtime,
     assert any(e["type"] == "awaiting_input" for e in rows)
 
 
-RV_0023_FINE = "The seal ring and tank parts look fine, but the error still shows after reinstalling"
+async def test_order_number_alone_after_failed_troubleshooting_checks_the_warranty(l3_runtime, monkeypatch):
+    # 2026-10-16 产品测试 c5b71a9e：排障未解决进入索要凭证后，客户只发订单号（理解为 supplement），
+    # 因为 requested_remedy 为空，被路由到 dialogue，回了排障暂停话术；演示订单按钮在这条路径上同样走不通。
+    interpret_as(monkeypatch, {
+        TICKETS["T28"]: TurnInterpretation(primary_intent="report_problem", device_relation="current"),
+        "Anker003": TurnInterpretation(primary_intent="supplement", device_relation="current"),
+    })
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        events(await send(client, sid, TICKETS["T28"]))
+        rows = events(await act(client, sid, "step_feedback", {"feedback": "not_solved"}))
+        assert "To check the warranty" in said(rows)
+        state = await state_of(sid)
+        assert state["stage"] == "context" and not state.get("requested_remedy")
+        rows = events(await send(client, sid, "Anker003"))
+        state = await state_of(sid)
+    assert "troubleshooting steps have been tried" not in said(rows)
+    assert "order Anker003 is under warranty until 2027-09-21" in said(rows)
+    assert state["case_order_no"] == "Anker003" and state["warranty"]["status"] == "in_warranty"
+
+
+RV_0023_FINE ="The seal ring and tank parts look fine, but the error still shows after reinstalling"
 RV_0023_BROKEN = "The seal ring is deformed or broken"
 RV_0023_UNCHECKED = "I haven't checked yet"
 

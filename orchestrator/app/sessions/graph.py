@@ -1169,8 +1169,7 @@ async def understand(state: SessionState) -> SessionState:
     business_order_no = None
     if get_services() is not None and state.get("entry") == "message" and (
         meaning.primary_intent in REMEDY_INTENTS
-        or (state.get("requested_remedy") and (state.get("stage") == "context" or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"})
-            and meaning.primary_intent in {"supplement", "unknown", "answer_pending"})
+        or (_collecting_order_details(state) and meaning.primary_intent in {"supplement", "unknown", "answer_pending"})
     ):
         from app.conversation.business import BusinessContext
 
@@ -1481,6 +1480,18 @@ def _troubleshoot_before_remedy(state: SessionState, intent: str) -> bool:
     )
 
 
+def _collecting_order_details(state: SessionState) -> bool:
+    """售后办理正在等订单号或凭证。
+
+    办理有两条来路：客户提了换货 / 退款（requested_remedy），或排障未解决后进了订单质保判断（已开 case，
+    requested_remedy 为空）。只认前者时，后者的客户只发订单号会落进 dialogue、回排障暂停话术（2026-10-16 c5b71a9e）。
+    """
+    return bool(state.get("requested_remedy") or state.get("case_id")) and (
+        state.get("stage") == "context"
+        or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"}
+    )
+
+
 def route_after_close(state: SessionState) -> str:
     from app.actions.runtime import get_services
     return "advance_tasks" if get_services() is not None else "commit_issue"
@@ -1545,7 +1556,7 @@ def route_entry(state: SessionState) -> str:
             return "service_context"
         if decision.get("evidence_supplied"):
             return "propose"
-        if state.get("requested_remedy") and (state.get("stage") == "context" or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"}) and intent in {"supplement", "unknown", "answer_pending"}:
+        if _collecting_order_details(state) and intent in {"supplement", "unknown", "answer_pending"}:
             return "service_context"
         if state.get("human_request_info") and intent in {"supplement","correct","answer_pending"}:
             return "service_context"

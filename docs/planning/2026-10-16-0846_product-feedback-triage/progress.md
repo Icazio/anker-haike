@@ -29,3 +29,20 @@
    - 影响：演示订单按钮填进去的订单号同样走不通。T55 能走完，是因为订单号写在了第一条消息里。
    - 这个问题属于 A1，需要改后端。
 2. **React 重复 key 警告。** 会话 51fde499 的 tool 行与 execution_card 用了同一个 id（e5d0ce30…），Timeline 里出现重复 key。这次改动之前就存在。
+
+## 2026-10-16 修复：排障未解决后只发订单号推进不了（上面问题 1，属 A1）
+
+原因：从「排障未解决」进入订单质保判断时，`service_context` 已经建了 case，也把阶段停在 context（`stage=context`），但 `requested_remedy`（客户提出的退换诉求）是空的。下一轮发「Anker016」，意图被理解成 supplement。`understand` 和 `route_entry` 里「办理中补资料就回到 service_context」的条件都只认 `requested_remedy`，所以落进了 dialogue。会话 c5b71a9e 两轮的意图都是 supplement，可以印证。
+
+改动：
+
+- `graph.py` 新增 `_collecting_order_details`，「售后办理中」改为 `requested_remedy or case_id`，再加上阶段为 context 或待办是凭证卡这一条。`understand`（绑定订单号）和 `route_entry`（回到 service_context）两处共用它。apply_action 处理凭证确认时（`graph.py:818`）本来就是这个口径。
+- 回归测试：`test_conversation_official_tickets.py::test_order_number_alone_after_failed_troubleshooting_checks_the_warranty`。T28 一步没解决后只发「Anker003」，断言进入质保判断，回复里出现在保信息。改之前失败（落到 dialogue）。
+
+验证：
+
+- 新测试改前失败、改后通过。相关 10 个测试文件 243 个用例通过；`test_conversation_*`、`test_sessions_*` 共 32 个文件 269 个用例通过；`make lint` 无报错。
+- 经用户同意，用 `docker compose up -d --build --no-deps orchestrator` 只重建了 orchestrator，重建期间公网演示后端中断约 1 分钟。
+- 浏览器测一单（会话 979a9f46，真实模型）：S1 Pro 吸奶器左侧没有吸力，5 步都选「还没解决」后进入索要凭证。点演示订单 Anker016 发送，回复 `I've checked: order Anker016 is under warranty until 2027-04-01`，并列出换货还缺的故障照片 / 视频和 SN。信息面板订单号显示「已核验」，进度推进到「确认处理方案」。控制台没有报错，后端没有异常日志。
+
+复验中看到、没改的问题：订单核验通过、进入补照片和 SN 之后，输入框仍是凭证模式，演示订单按钮也还在显示。并进 A1 的凭证收集卡一起改。
