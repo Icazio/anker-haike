@@ -2,6 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AssistantBubble } from './AssistantBubble';
 import { ProductCard } from './ProductCard';
+import { ProposalCard } from './ProposalCard';
+import { RatingCard } from './RatingCard';
 import { SummaryCard, summaryToText } from './SummaryCard';
 import { ToolRow } from './ToolRow';
 
@@ -67,6 +69,19 @@ describe('cards', () => {
     expect(screen.getByText('已选择')).toBeVisible();
     rerender(<ProductCard item={{ ...item, allow_unknown: false }} active onSelect={onSelect} />);
     expect(screen.queryByRole('button', { name: /其他型号/ })).toBeNull();
+  });
+
+  it('RatingCard 的分数是并列选项：没有分数被预先高亮，选中的分数标 aria-pressed，只有「提交评价」是主按钮', () => {
+    const { container } = render(<RatingCard item={{ kind: 'rating_card', card_id: 'r', version: 1 }} active onRate={vi.fn()} />);
+    expect([...container.querySelectorAll('button[data-primary]')].map((b) => b.textContent)).toEqual(['提交评价']);
+    expect(screen.getByRole('button', { name: '1 分' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: '4 分' }));
+    expect(screen.getByRole('button', { name: '4 分' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('ProposalCard 只有「确认提交」是主按钮，转人工与暂不办理是次要操作', () => {
+    const { container } = render(<ProposalCard item={{ kind: 'proposal_card', card_id: 'p', version: 1, decision_summary: '保内故障', options: [{ option_id: 'replace', type: 'replace', title: '提交换货单' }] }} active onConfirm={vi.fn()} onDecline={vi.fn()} />);
+    expect([...container.querySelectorAll('button[data-primary]')].map((b) => b.textContent)).toEqual(['确认提交']);
   });
 
   it('ToolRow shows failed state text', () => {

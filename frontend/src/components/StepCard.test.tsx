@@ -133,6 +133,25 @@ describe('StepCard（票 34）', () => {
   });
 });
 
+describe('一张卡至多一个主按钮（spec_2026-10-16-1514 §3）', () => {
+  const primaries = (container: HTMLElement) => [...container.querySelectorAll('button[data-primary]')].map((b) => b.textContent);
+
+  it.each<[StepCardItem['step']['kind'], Partial<StepCardItem['step']>, string[]]>([
+    ['action', {}, ['解决了']],
+    ['question', { options: ['Yes', 'No'] }, ['提交回答']],
+    ['material_request', {}, ['提交说明']],
+    ['statement', {}, ['知道了']],
+  ])('%s 卡只有一个主按钮', (kind, over, expected) => {
+    const { container } = render(<StepCard item={item({ step: step({ kind, ...over }) })} active onReply={vi.fn()} />);
+    expect(primaries(container)).toEqual(expected);
+  });
+
+  it('问句的选项是并列选择，第一个选项不显示成推荐', () => {
+    render(<StepCard item={item({ step: step({ kind: 'question', options: ['Yes', 'No'] }) })} active onReply={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Yes' })).not.toHaveAttribute('data-primary');
+  });
+});
+
 describe('StepCard 的读图回显', () => {
   const base = {
     kind: 'step_card', card_id: 'c1', version: 1, at: '2026-09-15T00:00:00Z', seq: 1,

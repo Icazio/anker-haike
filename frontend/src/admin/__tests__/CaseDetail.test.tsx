@@ -1,11 +1,13 @@
 /** 案件页：坐席打开待处理案件时，交接摘要、核对字段、质保判断、执行与承诺记录都在页面上，不用翻聊天记录。 */
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ServiceCase } from '../l3';
+import type { SessionSnapshot } from '../../types/snapshot';
 
 const detail = vi.fn();
-vi.mock('../l3', () => ({ l3Api: { detail: (...args: unknown[]) => detail(...args) } }));
+const decide = vi.fn();
+vi.mock('../l3', () => ({ l3Api: { detail: (...args: unknown[]) => detail(...args), decide: (...args: unknown[]) => decide(...args) } }));
 
 const { CaseDetail } = await import('../pages/CaseDetail');
 
@@ -45,7 +47,96 @@ function open(row: ServiceCase) {
   );
 }
 
-beforeEach(() => detail.mockReset());
+beforeEach(() => {
+  detail.mockReset();
+  decide.mockReset().mockResolvedValue({ run_id: 'r' });
+  // jsdom 没有实现 <dialog> 的模态方法
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.setAttribute('open', ''); } });
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.removeAttribute('open'); } });
+});
+
+const sendButton = () => screen.getByRole('button', { name: /^按「.+」发送$/ });
+const reply = () => screen.getByLabelText('发给客户的回复') as HTMLTextAreaElement;
+
+describe('CaseDetail 人工决定区（spec_2026-10-16-1514 §4）', () => {
+  test('横幅先问要决定什么，「发生了什么」只用案件里已有的数据', async () => {
+    open(CASE);
+    expect(await screen.findByRole('heading', { name: '需要你决定：是否按「换货单」为客户办理？' })).toBeInTheDocument();
+    const banner = screen.getByRole('region', { name: '需要你决定' });
+    expect(banner).toHaveTextContent('客户反馈 eufy Wearable Breast Pump S1 Pro：左侧无吸力。');
+    expect(banner).toHaveTextContent('AI 已排查 2 步，转交原因：提交条件未满足：缺少：产品 SN。');
+    expect(banner).toHaveTextContent('质保判断为保内（订单 Anker016 质保至 2027-04-01）。');
+  });
+
+  test('默认选中客户已确认的方案；换货发送前二次确认，复述客户会看到的回复', async () => {
+    open(CASE);
+    const approve = await screen.findByRole('radio', { name: /批准：换货单/ });
+    expect(approve).toBeChecked();
+    expect(approve.closest('label')).toHaveTextContent('客户已确认');
+    // 客户消息里没有中文，模板默认英文
+    expect(reply().value).toContain('arranged a replacement for you');
+    fireEvent.click(sendButton());
+    expect(decide).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '确认决定' });
+    expect(dialog).toHaveTextContent('确认批准「换货单」？');
+    expect(dialog).toHaveTextContent('批准后会按此方案提交服务单');
+    expect(dialog).toHaveTextContent(`Reply from our team: ${reply().value}`);
+    fireEvent.click(screen.getByRole('button', { name: '确认并发送' }));
+    expect(decide).toHaveBeenCalledWith(CASE.case_id, expect.objectContaining({
+      decision: 'approve', option_id: 'replace', expected_revision: 7, override_reason: null, edited_option: null, note: reply().value,
+    }));
+    expect(await screen.findByText('决定已保存并投递到会话。')).toBeInTheDocument();
+  });
+
+  test('切换方案与语言即换模板；占位没替换前不能发送，拒绝不附带方案、不弹确认', async () => {
+    open(CASE);
+    fireEvent.click(await screen.findByRole('radio', { name: /拒绝办理/ }));
+    expect(reply().value).toContain('[reason]');
+    expect(sendButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '中文' }));
+    expect(reply().value).toBe('您好，我们核实后，这次暂时无法为您办理，原因是：【请填写原因】。');
+    expect(screen.getByText(/请先替换 【请填写原因】/)).toBeInTheDocument();
+    fireEvent.change(reply(), { target: { value: '您好，我们核实后，这次暂时无法为您办理，原因是：订单不在本店购买。' } });
+    expect(sendButton()).toHaveTextContent('按「拒绝办理」发送');
+    fireEvent.click(sendButton());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(decide).toHaveBeenCalledWith(CASE.case_id, expect.objectContaining({ decision: 'reject', option_id: null, note: '您好，我们核实后，这次暂时无法为您办理，原因是：订单不在本店购买。' }));
+  });
+
+  test('过保仍要批准换货时才出现例外理由，必填', async () => {
+    open({ ...CASE, warranty: { ...CASE.warranty!, status: 'out_of_warranty', reason: '订单 Anker011 已于 2026-01-01 过保' } });
+    await screen.findByRole('radio', { name: /批准：换货单/ });
+    expect(screen.getByRole('textbox', { name: /例外理由/ })).toBeRequired();
+    expect(sendButton()).toBeDisabled();
+    // 改选补充信息：不是批准，例外理由消失；切回批准时理由重新为空
+    fireEvent.click(screen.getByRole('radio', { name: /请客户补充信息/ }));
+    expect(screen.queryByRole('textbox', { name: /例外理由/ })).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: /批准：换货单/ }));
+    fireEvent.change(screen.getByRole('textbox', { name: /例外理由/ }), { target: { value: '经销商确认购买日期有误' } });
+    fireEvent.click(sendButton());
+    expect(screen.getByRole('dialog', { name: '确认决定' })).toHaveTextContent('经销商确认购买日期有误');
+    fireEvent.click(screen.getByRole('button', { name: '确认并发送' }));
+    expect(decide).toHaveBeenCalledWith(CASE.case_id, expect.objectContaining({ decision: 'approve', override_reason: '经销商确认购买日期有误' }));
+  });
+
+  test('客户用中文提问时模板默认中文；页头可回到客户页', async () => {
+    const snapshot: SessionSnapshot = {
+      session_id: 's1', version: 3, stage: 'awaiting_human', substage: null, pending_input: null, active_run: null, last_error: null, cancelled_run: null,
+      timeline: [{ kind: 'user_message', id: 'u1', text: '我的吸奶器左侧没有吸力', at: '2026-09-25T06:00:00Z' }],
+    };
+    open({ ...CASE, snapshot });
+    await screen.findByRole('radio', { name: /批准：换货单/ });
+    expect(reply().value).toBe('您好，我们已核实您的订单与问题，为您安排换货。处理结果会显示在本会话中。');
+    expect(screen.getByRole('link', { name: '客户页 ↗' })).toHaveAttribute('href', '/?session=s1');
+  });
+
+  test('不在待审批时不显示横幅，表单禁用', async () => {
+    open({ ...CASE, status: 'approved' });
+    await screen.findByText('案件当前不在等待审核，决定表单不可用。');
+    expect(screen.queryByRole('region', { name: '需要你决定' })).toBeNull();
+    expect(screen.getByRole('radio', { name: /批准：换货单/ })).toBeDisabled();
+  });
+});
 
 describe('CaseDetail', () => {
   test('交接摘要给出转人工原因、客户诉求、已做排查与核对字段', async () => {

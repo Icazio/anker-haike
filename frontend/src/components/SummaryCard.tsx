@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { EscalationSummary, ExecutedStep, Feedback, HandoffBusiness } from '../types/snapshot';
 import styles from './Cards.module.css';
-import { HANDOFF_LABELS } from '../state/record';
+import { HANDOFF_LABELS, fieldLabel } from '../state/record';
 
 const STATUS: Record<string, string> = {
   not_collected: '未收集', insufficient: '信息不足', order_verified: '订单已核实', order_product_mismatch: '订单与设备不一致',
@@ -27,12 +27,6 @@ function receiptFacts(facts: Record<string, string>): string {
 const BUSINESS_KIND: Record<HandoffBusiness['kind'], string> = {
   device_fault: '设备故障', order_change: '订单变更', parts_purchase: '配件采购', warranty_review: '质保核实', safety: '安全风险', unknown: '待确认',
 };
-const BUSINESS_FIELD: Record<string, string> = {
-  product: '产品', symptoms: '现象', actions_taken: '已做操作', order_no: '订单号', package_status: '包裹状态', condition: '客户条件',
-  part: '部件', login_country: '登录国家',
-};
-
-const fieldLabel = (key: string) => BUSINESS_FIELD[key] ?? key;
 export function businessKnown(b: HandoffBusiness): string {
   return Object.entries(b.known ?? {}).map(([key, value]) => `${fieldLabel(key)}=${value}`).join('；') || '无';
 }
@@ -41,6 +35,16 @@ export function businessMissing(b: HandoffBusiness): string {
 }
 export function businessPending(b: HandoffBusiness): string {
   return (b.pending_requests ?? []).map((r) => `${r.intent}(${r.status})`).join('；') || '无';
+}
+
+// 键与后端 conversation/tasks.py 的 PRIORITY、任务状态一致；卡片上只显示中文，复制文本仍与后端同款
+const INTENT_TEXT: Record<string, string> = {
+  replacement_request: '换货', refund_request: '退款', address_update: '修改地址', order_change: '订单变更', parts_purchase: '购买配件',
+  report_problem: '故障报修', logistics_query: '查物流', warranty_query: '查质保', order_query: '查订单',
+};
+const TASK_STATUS_TEXT: Record<string, string> = { pending: '待处理', active: '处理中', waiting_human: '等待人工' };
+function pendingText(b: HandoffBusiness): string {
+  return (b.pending_requests ?? []).map((r) => `${INTENT_TEXT[r.intent] ?? '其他诉求'}（${TASK_STATUS_TEXT[r.status] ?? '待处理'}）`).join('；') || '无';
 }
 
 /** 与后端 summary_to_text 同款的可读文本（票 16 一键复制）。 */
@@ -61,8 +65,9 @@ export function summaryToText(s: EscalationSummary): string {
 }
 
 /** workbench：演示站给出人工工作台的入口（新标签页打开 /admin/desk/:case_id），现场可演示「转人工 → 坐席批准 → 回到会话」。
- *  真实客户页不该出现坐席入口，所以只由客户端 App 传入，观测台复用时不传。 */
-export function SummaryCard({ summary, updatedAt, revision, handoffStatus = 'prepared', outdated = false, workbench = false }: { summary: EscalationSummary; updatedAt?: string; revision?: number; handoffStatus?: string; outdated?: boolean; workbench?: boolean }) {
+ *  真实客户页不该出现坐席入口，所以只由客户端 App 传入，观测台复用时不传。
+ *  internal：显示规则码与 cause，只给观测台；客户页不出现内部编号与英文枚举。 */
+export function SummaryCard({ summary, updatedAt, revision, handoffStatus = 'prepared', outdated = false, workbench = false, internal = false }: { summary: EscalationSummary; updatedAt?: string; revision?: number; handoffStatus?: string; outdated?: boolean; workbench?: boolean; internal?: boolean }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
     try {
@@ -88,17 +93,18 @@ export function SummaryCard({ summary, updatedAt, revision, handoffStatus = 'pre
         <div><dt>产品</dt><dd>{summary.product}</dd></div>
         <div><dt>问题</dt><dd>{summary.problem}</dd></div>
         <div><dt>观察</dt><dd>{summary.observations?.length ? summary.observations.join('；') : '无'}</dd></div>
-        <div><dt>假设</dt><dd>{summary.hypotheses?.length ? summary.hypotheses.join('；') : '无'}</dd></div>
+        {/* 假设是 AI 的内部推断，后端缺故障名时直接用方案 ID（qa_rv_0270）充当；只给观测台看，复制文本照旧带上 */}
+        {internal && <div><dt>假设</dt><dd>{summary.hypotheses?.length ? summary.hypotheses.join('；') : '无'}</dd></div>}
         <div><dt>排查记录</dt><dd>{summary.steps?.length ? summary.steps.map(stepText).join('；') : '无'}</dd></div>
         {summary.business && (
           <>
             <div><dt>业务类型</dt><dd data-kind="business-kind">{BUSINESS_KIND[summary.business.kind]}</dd></div>
             <div><dt>已知</dt><dd data-kind="business-known">{businessKnown(summary.business)}</dd></div>
             <div><dt>缺失</dt><dd data-kind="business-missing">{businessMissing(summary.business)}</dd></div>
-            <div><dt>待办</dt><dd data-kind="business-pending">{businessPending(summary.business)}</dd></div>
+            <div><dt>待办</dt><dd data-kind="business-pending">{pendingText(summary.business)}</dd></div>
           </>
         )}
-        <div><dt>结束原因</dt><dd data-kind="end-reason">{summary.reason.text}<small> · 规则码 <code>{summary.reason.rule_id}</code>{summary.reason.cause ? ` · ${summary.reason.cause}` : ''}</small></dd></div>
+        <div><dt>结束原因</dt><dd data-kind="end-reason">{summary.reason.text}{internal && <small> · 规则码 <code>{summary.reason.rule_id}</code>{summary.reason.cause ? ` · ${summary.reason.cause}` : ''}</small>}</dd></div>
         <div><dt>凭证状态</dt><dd>{STATUS[summary.receipt.status] ?? summary.receipt.status}{summary.receipt.next_step ? ` · 下一步：${summary.receipt.next_step}` : ''}</dd></div>
         {Object.keys(summary.receipt.verified_facts ?? {}).length > 0 && <div><dt>凭证核实事实</dt><dd>{receiptFacts(summary.receipt.verified_facts ?? {})}</dd></div>}
         {!!summary.receipt.conflicts?.length && <div><dt>凭证待核实差异</dt><dd>{summary.receipt.conflicts.join('；')}</dd></div>}

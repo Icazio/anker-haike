@@ -84,8 +84,11 @@
 .feedbackButtons button { padding: 8px 14px; min-height: 40px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 14px; cursor: pointer; }
 .feedbackButtons button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
 .feedbackButtons button[data-feedback] { flex: 1 1 120px; font-weight: 600; min-height: 44px; }
-.feedbackButtons button[data-feedback="solved"] { border-color: var(--ok); color: var(--ok); }
-.feedbackButtons button:first-child:not([data-feedback]) { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+/* 一张卡至多一个主按钮，显式标 data-primary；并列选项（问句选项、评分）不设主按钮，选中态走 aria-pressed */
+.feedbackButtons button[data-primary] { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
+.feedbackButtons button[data-primary]:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.feedbackButtons button[data-primary]:disabled { opacity: .45; cursor: default; }
+.feedbackButtons button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .answered { margin: 0; font-size: 13px; color: var(--muted); }
 .stepCollapsed { margin-left: 38px; max-width: 720px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .stepCollapsed > span:first-child { flex: 1; min-width: 0; color: var(--text); }

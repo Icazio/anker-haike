@@ -2,6 +2,7 @@ import type { SessionState } from './types';
 import type { EscalationSummary, ExecutionCardItem, ReceiptCardItem, TimelineItem } from '../types/snapshot';
 import { findProduct, type ProductInfo } from '../lib/products';
 import { CASE_LABELS, caseStatusOf, progressFor } from './progress';
+import { fieldLabel } from './record';
 
 /** 信息收集面板的一项：value 为空表示还没收集到；source 说明这条信息从哪来（客户说的 / 订单核验 / 凭证识别）。 */
 export type InfoSlot = { key: string; label: string; value: string | null; source: string | null; verified?: boolean };
@@ -98,7 +99,7 @@ export function deriveInfo(state: SessionState): CollectedInfo {
     { key: 'service_order_no', label: '服务单号', value: refs.service_order_no ?? execution?.receipt.service_order_no ?? null, source: refs.service_order_no || execution?.receipt.service_order_no ? '售后系统' : null, verified: true },
   ];
 
-  const missing = [...(summary?.business?.missing ?? [])];
+  const missing = (summary?.business?.missing ?? []).map(fieldLabel);
   if (state.pendingInput?.kind === 'upload_receipt' && !orderSlot.value) missing.unshift('订单号或购买凭证');
 
   const steps = timeline.filter((t) => t.kind === 'step_card');

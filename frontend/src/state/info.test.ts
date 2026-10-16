@@ -45,6 +45,17 @@ describe('信息收集面板', () => {
     expect(deriveInfo({ ...state, timeline: timeline.slice(0, 5), pendingInput: pending }).missing).not.toContain('订单号或购买凭证');
   });
 
+  it('交接摘要里缺的字段按中文列出，不露英文键（会话 587c65da 显示过「待补 order_no」）', () => {
+    const summary = {
+      product: 'eufy Clean X10 Pro Omni', problem: '水盘不能排空', observations: [], hypotheses: [], steps: [],
+      reason: { rule_id: 'R6', text: '用户提出退换诉求' }, emotion: { level: null, strategy: 'normal' as const },
+      receipt: { status: 'not_collected' as const, verified_facts: {}, conflicts: [] }, model_trace: [],
+      business: { kind: 'warranty_review' as const, known: {}, missing: ['order_no', 'brand_new_field'], pending_requests: [] },
+    };
+    const withSummary: TimelineItem[] = [{ kind: 'escalation_summary', summary_id: 'sm', revision: 1, source_through_seq: 1, updated_at: at, card_id: 'sm', summary }];
+    expect(deriveInfo({ ...state, timeline: withSummary }).missing).toEqual(['订单号', 'brand_new_field']);
+  });
+
   it('客户消息里只出现 PN 时也能认出产品', () => {
     const info = deriveInfo({ ...initialState, timeline: [{ kind: 'user_message', id: 'u', at, text: 'Product PN: T2352\nProblem Code: 3212', image_ids: [], images: [] }] });
     expect(info.product?.sku).toBe('T2352');

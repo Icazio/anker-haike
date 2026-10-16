@@ -5,10 +5,11 @@ import { CASE_LABELS } from '../../state/progress';
 import { ProposalCard } from '../../components/ProposalCard';
 import type { ProposalOption } from '../../types/events';
 import { CaseRecords, HandoffSummary } from '../components/CaseRecords';
+import { DecisionBanner, DecisionPanel } from '../components/DecisionPanel';
 import { ReviewPanel } from '../components/ReviewPanel';
 import { SessionRecord, SessionView } from '../components/SessionView';
-import { l3Api } from '../l3';
-import { GATE_TEXT, SERVICE_TYPE_TEXT, WARRANTY_BASIS_TEXT, WARRANTY_TEXT, sla, when } from '../format';
+import { l3Api, type DecisionRequest } from '../l3';
+import { GATE_TEXT, WARRANTY_BASIS_TEXT, WARRANTY_TEXT, sla, when } from '../format';
 import { useAsync } from '../useAsync';
 
 /** 主办方 SOP：服务单提交后由人工处理。「批准」= 人工确认办理（尚未提交的单子会按原方案提交）。 */
@@ -17,18 +18,11 @@ const DECISION_TEXT: Record<string, string> = { approve: '批准', reject: '拒�
 export function CaseDetail() {
   const { id = '' } = useParams();
   const result = useAsync(() => l3Api.detail(id), [id]);
-  const [decision, setDecision] = useState('approve');
-  const [optionId, setOptionId] = useState('');
-  const [note, setNote] = useState('');
-  const [override, setOverride] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [hover, setHover] = useState<string[]>([]);
   const row = result.data;
   const options: ProposalOption[] = row?.proposal?.options ?? [];
-  const selectedOption = options.find((o) => o.option_id === optionId) ?? options[0];
-  // 过保 / 非授权经销商按 SOP 不办理换货退款；人工仍可批准，但必须写明例外理由。
-  const needsOverride = decision === 'approve' && !!row?.warranty && row.warranty.status !== 'in_warranty' && ['replace', 'refund'].includes(selectedOption?.type ?? '');
   const ended = !!row && ['closed', 'closed_unresolved', 'escalated_summary'].includes(row.status);
 
   async function changeLifecycle(command: 'close' | 'reopen') {
@@ -41,12 +35,10 @@ export function CaseDetail() {
     } catch (error) { setMessage(error instanceof Error ? error.message : '操作失败'); result.reload(); }
     finally { setBusy(false); }
   }
-  async function submit() {
-    if (!row) return;
+  async function decide(body: DecisionRequest) {
     setBusy(true); setMessage('');
     try {
-      if (!note.trim() || (needsOverride && !override.trim())) throw new Error('请填写说明及必要的例外理由。');
-      await l3Api.decide(id, { decision_id: crypto.randomUUID(), expected_revision: row.revision, decision, option_id: selectedOption?.option_id ?? null, note: note.trim(), override_reason: override.trim() || null, edited_option: null });
+      await l3Api.decide(id, body);
       setMessage('决定已保存并投递到会话。'); result.reload();
     } catch (error) { setMessage(error instanceof Error ? error.message : '提交失败'); result.reload(); }
     finally { setBusy(false); }
@@ -73,11 +65,14 @@ export function CaseDetail() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
+            {/* 客户页按 ?session= 深链打开同一会话，演示「批准 → 回到客户页看到回复」 */}
+            <a className="btn" href={`/?session=${encodeURIComponent(row.session_id)}`} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>客户页 ↗</a>
             <Link className="btn" to={`/sessions/${row.session_id}`} style={{ textDecoration: 'none' }}>会话旅程</Link>
             <Link className="btn" to="/desk" style={{ textDecoration: 'none' }}>返回工作台</Link>
           </div>
         </div>
       </div>
+      {row.status === 'awaiting_approval' && <DecisionBanner row={row} />}
 
       <div className="desk-grid">
         <section className="card">
@@ -113,27 +108,8 @@ export function CaseDetail() {
 
         <section className="card">
           <h2>人工决定</h2>
-          <form onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-            <fieldset disabled={busy || row.status !== 'awaiting_approval'}>
-              <label>处理方式
-                <select value={decision} onChange={(e) => setDecision(e.target.value)}>
-                  {Object.entries(DECISION_TEXT).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
-              </label>
-              {options.length > 0 && (
-                <label>方案
-                  <select value={selectedOption?.option_id ?? ''} onChange={(e) => setOptionId(e.target.value)}>
-                    {options.map((o) => <option key={o.option_id} value={o.option_id}>{o.title}</option>)}
-                  </select>
-                </label>
-              )}
-              <label>说明或补充问题<textarea required value={note} onChange={(e) => setNote(e.target.value)} /></label>
-              <label>例外理由{needsOverride && <span className="muted">（过保或非授权经销商仍要办理时必填）</span>}<input value={override} required={needsOverride} onChange={(e) => setOverride(e.target.value)} /></label>
-              <button className="btn" data-variant="primary">
-                {decision === 'approve' ? `批准：${selectedOption ? SERVICE_TYPE_TEXT[selectedOption.type] ?? selectedOption.title : '—'}` : DECISION_TEXT[decision]} 并恢复会话
-              </button>
-            </fieldset>
-          </form>
+          {/* revision 变了（决定已保存、案件被他人处理）就重建表单，不沿用旧方案与旧回复 */}
+          <DecisionPanel key={row.revision} row={row} busy={busy} onDecide={(body) => void decide(body)} />
           {row.status !== 'awaiting_approval' && <p className="muted" style={{ fontSize: 12.5 }}>案件当前不在等待审核，决定表单不可用。</p>}
           {message && <p role="status" className="notice">{message}</p>}
 

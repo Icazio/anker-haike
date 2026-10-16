@@ -39,7 +39,7 @@ function ReceiptFieldsEditor({ item, active, disabled, onConfirm, onSkip }: Prop
       </dl>
       {!done && (
         <div className={styles.feedbackButtons}>
-          <button type="button" disabled={!active || disabled} onClick={() => onConfirm(fields, edited)}>确认</button>
+          <button type="button" data-primary disabled={!active || disabled} onClick={() => onConfirm(fields, edited)}>确认</button>
           <button type="button" disabled={!active || disabled} onClick={onSkip}>信息有误，交人工核实</button>
         </div>
       )}

@@ -44,7 +44,7 @@ const POINTER: Partial<Record<TimelineItem['kind'], (item: CardItem) => string>>
   rating_card: () => '评价本次服务',
 };
 
-function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction: OnAction, onHover?: (ids: string[]) => void, outdated = false, workbench = false) {
+function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction: OnAction, onHover?: (ids: string[]) => void, outdated = false, workbench = false, internal = false) {
   switch (item.kind) {
     case 'product_card':
       return <ProductCard key={item.card_id} item={item} active={active} disabled={disabled} onSelect={(sku) => onAction('select_product', { sku })} />; // sku=null：其他型号 / 不确定
@@ -63,7 +63,7 @@ function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction
     case 'case_changed':
       return <CaseStatus key={item.card_id} item={item} />;
     case 'escalation_summary':
-      return <SummaryCard key={item.card_id} summary={item.summary} updatedAt={item.updated_at} revision={item.revision} handoffStatus={item.handoff_status} outdated={outdated} workbench={workbench} />;
+      return <SummaryCard key={item.card_id} summary={item.summary} updatedAt={item.updated_at} revision={item.revision} handoffStatus={item.handoff_status} outdated={outdated} workbench={workbench} internal={internal} />;
     default:
       return null;
   }
@@ -126,7 +126,8 @@ export function Timeline({ state, onAction, onHover, dockPending = false, readOn
           nodes.push(<div key={item.card_id} className={styles.pointer} data-testid="pending-pointer"><span>{label}</span><span>等待你的反馈 ↓</span></div>);
         } else {
           const outdated = item.kind === 'escalation_summary' && state.timeline.some((t) => t.kind === 'escalation_summary' && t.summary_id === item.summary_id && t.revision > item.revision);
-          nodes.push(renderCard(item, active, busy, onAction, onHover, outdated, workbench));
+          // 观测台（readOnly）给坐席看，摘要卡显示规则码；客户页不显示
+          nodes.push(renderCard(item, active, busy, onAction, onHover, outdated, workbench, readOnly));
         }
       }
     }

@@ -15,7 +15,7 @@ export function ProposalCard({ item, active, disabled, onConfirm, onDecline }: {
       <small>提交后由人工处理，处理结果会回到本会话。</small>
     </div>)}
     <div className={styles.feedbackButtons}>
-      <button disabled={locked || !selected} onClick={() => onConfirm(selected)}>{item.retry ? '重试原申请' : '确认提交'}</button>
+      <button data-primary disabled={locked || !selected} onClick={() => onConfirm(selected)}>{item.retry ? '重试原申请' : '确认提交'}</button>
       <button disabled={locked} onClick={() => onDecline('request_human')}>转人工</button>
       <button disabled={locked} onClick={() => onDecline('not_now')}>暂不办理</button>
     </div>
