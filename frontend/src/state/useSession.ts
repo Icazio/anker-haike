@@ -297,7 +297,6 @@ export function useSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch]);
 
-  const requestHuman = useCallback(() => act({ kind: 'request_human', payload: {} }), [act]);
   const reset = useCallback(() => {
     operation.current?.abort();
     operation.current = null;
@@ -323,5 +322,5 @@ export function useSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch]);
 
-  return { state, recent, send, act, cancel, requestHuman, recover, reset, startNew, switchTo, clearError: () => dispatch({ type: 'clear_error' }) };
+  return { state, recent, send, act, cancel, recover, reset, startNew, switchTo, clearError: () => dispatch({ type: 'clear_error' }) };
 }

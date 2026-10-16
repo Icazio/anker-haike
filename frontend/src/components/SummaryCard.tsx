@@ -60,7 +60,9 @@ export function summaryToText(s: EscalationSummary): string {
   ].join('\n');
 }
 
-export function SummaryCard({ summary, updatedAt, revision, handoffStatus = 'prepared', outdated = false }: { summary: EscalationSummary; updatedAt?: string; revision?: number; handoffStatus?: string; outdated?: boolean }) {
+/** workbench：演示站给出人工工作台的入口（新标签页打开 /admin/desk/:case_id），现场可演示「转人工 → 坐席批准 → 回到会话」。
+ *  真实客户页不该出现坐席入口，所以只由客户端 App 传入，观测台复用时不传。 */
+export function SummaryCard({ summary, updatedAt, revision, handoffStatus = 'prepared', outdated = false, workbench = false }: { summary: EscalationSummary; updatedAt?: string; revision?: number; handoffStatus?: string; outdated?: boolean; workbench?: boolean }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
     try {
@@ -75,6 +77,11 @@ export function SummaryCard({ summary, updatedAt, revision, handoffStatus = 'pre
     <section className={styles.card} data-kind="escalation_summary" aria-label="转人工摘要">
       <header className={styles.cardHead}><strong>问题摘要已整理，可复制给人工客服</strong><button type="button" onClick={copy} className={styles.copyBtn}>{copied ? '已复制' : '一键复制'}</button></header>
       <p className={styles.handoffStatus} data-kind="handoff-status" data-status={handoffStatus}>人工处理：{HANDOFF_LABELS[handoffStatus as keyof typeof HANDOFF_LABELS] ?? handoffStatus}</p>
+      {workbench && (
+        <a className={styles.workbench} href={summary.case_id ? `/admin/desk/${encodeURIComponent(summary.case_id)}` : '/admin/desk'} target="_blank" rel="noreferrer">
+          在人工工作台处理此案件<span aria-hidden="true"> ↗</span>
+        </a>
+      )}
       {revision && <small>第 {revision} 版{outdated ? ' · 此为当时记录，已有更新' : ''}</small>}
       {updatedAt && <small className={styles.answered}>{new Date(updatedAt).toLocaleString('zh-CN')}</small>}
       <dl className={styles.summary}>

@@ -115,3 +115,5 @@
 /* design §3.1：步骤观察单选组；与三态反馈分开呈现 */
 
 @media (max-width: 660px) { .card, .stepCollapsed, .pointer { margin-left: 0; } .assistantRow .avatar { display: none; } }
+.workbench { display: flex; width: fit-content; align-items: center; margin: 2px 0 10px; padding: 5px 12px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 600; text-decoration: none; }
+.workbench:hover { filter: brightness(1.08); }

@@ -1,4 +1,5 @@
 import type { ProductCardItem } from '../types/snapshot';
+import { CATEGORY_LABELS, findProduct } from '../lib/products';
 import styles from './Cards.module.css';
 
 type Props = { item: ProductCardItem; active: boolean; disabled?: boolean; onSelect: (sku: string | null) => void };
@@ -15,7 +16,10 @@ export function ProductCard({ item, active, disabled, onSelect }: Props) {
       <header className={styles.cardHead}><strong>请确认是哪一台设备</strong>{answered && <span className={styles.doneTag}>已选择</span>}</header>
       {item.note && <p className={styles.cardNote}>{item.note}</p>}
       <ul className={styles.candidates}>
-        {item.candidates.map((c) => (
+        {item.candidates.map((c) => {
+          // 目录没配图时用前端随包的官网主图（lib/products.ts），按 PN 对应
+          const src = c.image ?? findProduct(c.sku)?.image ?? null;
+          return (
           <li key={c.sku}>
             <button
               type="button"
@@ -24,12 +28,12 @@ export function ProductCard({ item, active, disabled, onSelect }: Props) {
               disabled={locked}
               onClick={() => onSelect(c.sku)}
             >
-              {c.image ? <img src={c.image} alt="" /> : <span className={styles.candidateIcon} aria-hidden="true">{c.in_scope ? '🤖' : '📦'}</span>}
+              {src ? <img src={src} alt="" /> : <span className={styles.candidateIcon} aria-hidden="true">{c.in_scope ? '🤖' : '📦'}</span>}
               <span className={styles.candidateName}>{c.name}</span>
-              <span className={styles.candidateMeta}>{c.in_scope ? c.category : '本期不支持'}</span>
+              <span className={styles.candidateMeta}>{c.in_scope ? <><code>{c.sku}</code> {CATEGORY_LABELS[c.category as keyof typeof CATEGORY_LABELS] ?? c.category}</> : '本期不支持'}</span>
             </button>
           </li>
-        ))}
+        ); })}
         {item.allow_unknown && (
           <li key="__unknown">
             <button
