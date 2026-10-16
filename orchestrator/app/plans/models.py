@@ -44,6 +44,10 @@ class PlanStep(_Strict):
     source_gap: bool = False
     # 2026-10-10：「If <条件>, …」开头的操作步骤只在条件成立时适用；进指南前与用户原话核对（app/guide/fact_check.py）
     condition: str | None = None
+    # 2026-10-12：资料覆盖边界说明（qa_overrides scope_note）：[客户原话正则, 系统说明]，命中时附在卡片上
+    scope_note: list[str] | None = None
+    # 2026-10-13：说明讲的是资料不覆盖客户要的结果（T34 旧地图），显示过且指南走完时按资料缺口交人工（decide_next）
+    beyond_source: bool = False
 
     @field_validator("instruction_src")
     @classmethod
@@ -77,6 +81,8 @@ class Plan(_Strict):
     applies_to: AppliesTo
     symptom_codes: list[str] = Field(default_factory=list)
     steps: list[PlanStep] = Field(min_length=1)
+    # 2026-10-13：人工审核写的整条前提（qa_overrides 的 premise），选方案时交给模型判断客户是否否定了它
+    premise: str = ""
 
     @model_validator(mode="after")
     def _steps_consistent(self) -> Plan:

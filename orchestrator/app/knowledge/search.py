@@ -69,9 +69,11 @@ def fuse_queries(primary: ToolResult, extra: ToolResult, top_k: int, *, k: int =
     英文描述是模型的转述，会丢掉原文里的推送文字等信号（T18「De mop met rol is verstopt」被概括成 mop obstructed，
     等权合并时把原文排第 1 的金标挤出前 5）。降权后两路都命中的条目靠前，英文独有的条目补到原文前几名之后，
     不顶掉原文已经排在前面的条目（T39 / T57 / T59：原文没召回的离线 / 连接条目由英文补进来）。"""
-    if extra.status != "ok" or not extra.hits:
+    # 回放命中的状态是 replay，与 ok 同样是有效结果（_STATUS_RANK 同级）；只认 ok 时回放跳过英文路，
+    # 候选与录制时不同，选方案的提示对不上录制包（2026-10-13 t55_main 连续重录仍 replay_miss）
+    if _STATUS_RANK.get(extra.status, 3) != 0 or not extra.hits:
         return primary
-    if primary.status != "ok" or not primary.hits:
+    if _STATUS_RANK.get(primary.status, 3) != 0 or not primary.hits:
         return extra
     scores: dict[str, float] = {}
     first: dict[str, Hit] = {}

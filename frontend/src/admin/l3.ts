@@ -30,13 +30,18 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   if (!response.ok) throw new Error(data.detail?.message ?? data.message ?? '操作失败，请刷新后重试');
   return data;
 }
-export type L3Metrics = { episodes: number; terminal: number; managed: number; managed_rate: number | null; rated: number; rating_coverage: number | null; nss: number | null; intent_labeled: number; intent_accuracy: number | null; unauthorized_executions: number | null };
+/** 与后端 l3_router.DecisionBody 一致；note 会发给客户 */
+export type DecisionRequest = {
+  decision_id: string; expected_revision: number; decision: 'approve' | 'reject' | 'request_info';
+  option_id: string | null; note: string; override_reason: string | null; edited_option: null;
+};
+export type L3Metrics ={ episodes: number; terminal: number; managed: number; managed_rate: number | null; rated: number; rating_coverage: number | null; nss: number | null; intent_labeled: number; intent_accuracy: number | null; unauthorized_executions: number | null };
 export const l3Api = {
   metrics: (from: string) => request<L3Metrics>(`/metrics/l3?since=${encodeURIComponent(from)}`),
   /** status 为空即全部状态（后端最多 200 条，投诉风险优先） */
   queue: (status = 'awaiting_approval', priority = '') => request<{ items: ServiceCase[] }>(`/cases/queue?status=${encodeURIComponent(status)}&priority=${encodeURIComponent(priority)}`),
   detail: (id: string) => request<ServiceCase>(`/cases/${encodeURIComponent(id)}`),
-  decide: (id: string, body: unknown) => request<{ run_id: string }>(`/cases/${encodeURIComponent(id)}/decision`, body),
+  decide: (id: string, body: DecisionRequest) => request<{ run_id: string }>(`/cases/${encodeURIComponent(id)}/decision`, body),
   resume: (id: string, decisionId: string) => request(`/cases/${encodeURIComponent(id)}/decisions/${encodeURIComponent(decisionId)}/resume`, {}),
   close: (id: string, revision: number) => request(`/cases/${encodeURIComponent(id)}/close`, { expected_revision: revision }),
   reopen: (id: string, revision: number) => request(`/cases/${encodeURIComponent(id)}/reopen`, { expected_revision: revision }),

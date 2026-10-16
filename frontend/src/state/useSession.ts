@@ -138,10 +138,20 @@ export function useSession() {
     mounted.current = true;
     let saved: string | null = null;
     try { saved = sessionStorage.getItem(STORAGE_KEY); } catch { /* storage unavailable */ }
-    if (saved) void open(saved);
+    // ?session=<id> 深链（彩排、从人工工作台回到客户页）优先于本页记住的会话。
+    // 读后从地址栏去掉：open 已写入 sessionStorage，刷新照常恢复；点「新会话」也不会被地址栏带回旧会话。
+    const params = new URLSearchParams(window.location.search);
+    const linked = params.get('session')?.trim() || null;
+    if (params.has('session')) {
+      params.delete('session');
+      const query = params.toString();
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    }
+    const target = linked ?? saved;
+    if (target) void open(target);
     // 独立于 operation：校验只读本地列表，既不该被会话请求打断，也不该打断会话请求。
     const probe = new AbortController();
-    void verifyRecent(probe.signal, saved).catch(() => { /* 探测失败即整轮跳过，列表保持原样 */ });
+    void verifyRecent(probe.signal, target).catch(() => { /* 探测失败即整轮跳过，列表保持原样 */ });
     return () => { mounted.current = false; probe.abort(); operation.current?.abort(); operation.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch]);
@@ -297,7 +307,6 @@ export function useSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch]);
 
-  const requestHuman = useCallback(() => act({ kind: 'request_human', payload: {} }), [act]);
   const reset = useCallback(() => {
     operation.current?.abort();
     operation.current = null;
@@ -323,5 +332,5 @@ export function useSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch]);
 
-  return { state, recent, send, act, cancel, requestHuman, recover, reset, startNew, switchTo, clearError: () => dispatch({ type: 'clear_error' }) };
+  return { state, recent, send, act, cancel, recover, reset, startNew, switchTo, clearError: () => dispatch({ type: 'clear_error' }) };
 }

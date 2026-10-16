@@ -98,10 +98,22 @@ describe('A3 receipt workflow through App and HTTP/SSE', () => {
     expect(screen.getByRole('form', { name: '上传购买凭证' })).toBeInTheDocument();
     fireEvent.click(logo);
     await waitFor(() => expect(screen.queryByRole('form', { name: '上传购买凭证' })).not.toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /扫地机器人/ })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '您好，这里是 eufy 售后服务' })).toBeVisible();
     expect(sessionStorage.getItem('haike.session_id')).toBeNull();
     fireEvent.click(logo);
     expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops pending attachments when starting a new session', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(snapshot({ pending_input: null }))));
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    render(<App />);
+    await screen.findByRole('button', { name: '新建会话' }).then((b) => waitFor(() => expect(b).toBeEnabled()));
+    fireEvent.change(screen.getByTestId('image-input'), { target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] } });
+    await screen.findByLabelText('待发送图片');
+    fireEvent.click(screen.getByRole('button', { name: '新建会话' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建会话' })).toBeDisabled());
+    expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument();
   });
 
   it('skips collection with a reason and reaches the uncollected summary', async () => {
@@ -115,6 +127,28 @@ describe('A3 receipt workflow through App and HTTP/SSE', () => {
     expect(JSON.parse(fetch.mock.calls[1]?.[1].body)).toMatchObject({ kind: 'skip_receipt', expected_version: 4, card_id: 'upload', input_token: 'upload', payload: { reason: 'none' } });
     expect(screen.queryByRole('form', { name: '上传购买凭证' })).not.toBeInTheDocument();
     expect(screen.getByText('未收集', { exact: false })).toBeVisible();
+  });
+
+  it('offers demo orders while collecting proof of purchase and fills the chosen one', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(snapshot())));
+    render(<App />);
+    const group = await screen.findByRole('group', { name: '演示订单' });
+    // 产品未确认时列出全部演示订单；已确认产品时只列同型号订单（见 state/info.test.ts）
+    expect(group).toHaveTextContent('Anker003');
+    expect(group).toHaveTextContent('Anker016');
+    fireEvent.click(screen.getByRole('button', { name: /Anker003/ }));
+    expect(screen.getByLabelText('凭证备注（选填）')).toHaveValue('Anker003');
+  });
+
+  it('links the handoff summary to the agent workbench case', async () => {
+    const withCase = { ...summary, case_id: 'case-42' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(snapshot({ pending_input: null, timeline: [
+      { kind: 'escalation_summary', summary_id: 'summary-1', revision: 1, source_through_seq: 1, updated_at: '2026-09-13T00:00:00Z', card_id: 'summary', summary: withCase },
+    ] }))));
+    render(<App />);
+    const link = await screen.findByRole('link', { name: /在人工工作台处理此案件/ });
+    expect(link).toHaveAttribute('href', '/admin/desk/case-42');
+    expect(link).toHaveAttribute('target', '_blank');
   });
 
   it('keeps receipt mode, note and attachment after an upload is rejected, and permits retry', async () => {

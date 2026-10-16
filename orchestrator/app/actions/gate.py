@@ -1,12 +1,14 @@
 """服务单提交闸门：能否把单子交给售后工具，不是能否自动办理（主办方要求提交后一律转人工）。
 
-四项检查（顺序固定，执行器按名单核对）：
+五项检查（顺序固定，执行器按名单核对）：
 - eligibility：换货 / 退款要保内（订单质保结束日期或授权经销商 12 个月）；补发要物流未送达且客户未收到；
   承运商调查要显示已送达而客户称未收到（D3）。
 - evidence：主办方「换货 / 退款必须提供的质保信息」——订单或购买凭证、收货地址、照片或视频、SN（故障类）。
   补发与调查只需订单。
 - safety：未解除的 R4 安全风险不提交服务单，直接转人工。
 - idempotency：案件允许提交且没有执行中或已成功的同键动作。
+- review：换货 / 退款的独立审查（app/actions/review.py）——诉求、故障、产品与客户原话和订单行一致，无反证。
+  结果由调用方先算好传入：它要调模型，闸门本身保持同步、无 I/O。
 """
 
 from haike_contracts.common import GateCheck, GateResult, WarrantyDecision
@@ -50,6 +52,7 @@ class AuthorizationGate:
         allowed_operations: bool,
         user_confirmed: bool,
         case_status: str,
+        review: GateCheck,
         execution_status: str | None = None,
     ) -> GateResult:
         if kind in {"replace", "refund"}:
@@ -80,6 +83,7 @@ class AuthorizationGate:
                 and case_status in {"awaiting_confirmation", "approved", "executing_failed"},
                 detail="案件允许提交且没有执行中或已成功的同键动作",
             ),
+            review,
         ]
         assert [c.name for c in checks] == GATE_CHECKS
         passed = all(c.passed for c in checks)

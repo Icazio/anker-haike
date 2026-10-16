@@ -262,6 +262,10 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
             (f for f in facts if f["fact_id"] == correction.fact_id and f["status"] == "active"),
             None,
         )
+        if not old and not any(f["status"] == "active" for f in facts):
+            # 还没有任何记录可更正（首封消息）：模型把一句已做检查写成 corrections（T27「no blockage seen」，fact_id 填的是
+            # 现象原文），不是更正，也不追问「哪项记录说错了」；这句话由补抽当作已做事实收下
+            continue
         if not old or not quoted(correction.quote, text):
             clarify = "请指出需要更正的是哪项记录，以及正确的情况。"
             continue
@@ -512,9 +516,10 @@ def reduce_turn(state: dict, meaning: TurnInterpretation, *, precheck_risk: bool
         in_text = quoted(meaning.human_request_quote, text)
         if in_text and quote_source(meaning.human_request_quote, spans) == "user_statement":
             human_request_source = "user_statement"
-        elif in_text and (parse_codes(text) or any(c.kind == "symptom" for c in meaning.facts)):
-            # 引文确实在原文里，但落在设备推送字段（T11 的「Click to contact customer service」），
-            # 而这封消息报的是故障：这是一条故障求助，按排障处理。
+        elif parse_codes(text) or any(c.kind == "symptom" for c in meaning.facts):
+            # 引文落在设备推送字段（T11 的「Click to contact customer service」），或模型给不出出自原文的引文
+            #（T13 荷兰语推送「Neem contact op met de klantenservice」，2026-10-12 复测一次判 request_human 却没有可核对的原话），
+            # 而这封消息报的是故障：这是一条故障求助，按排障处理，不反问客户要不要人工。
             intent = "report_problem"
         else:
             # A classifier's recommendation is not a user request to cancel a task.

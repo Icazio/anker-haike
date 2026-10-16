@@ -25,3 +25,11 @@
 .skipOptions button { border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; }
 .skipOptions button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
 @media (max-width: 420px) { .ghost { padding: 0 8px; } }
+
+/* 演示订单：评委不知道主办方订单号格式，等凭证时给出可直接填入的订单 */
+.demoOrders { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 4px 0; font-size: 12px; color: var(--muted); }
+.demoOrders > span { margin-right: 2px; }
+.demoOrders button { display: inline-flex; gap: 6px; align-items: baseline; border: 1px dashed var(--accent); border-radius: 999px; padding: 4px 11px; background: var(--accent-soft); color: var(--text); font: inherit; font-size: 12px; }
+.demoOrders button:hover:not(:disabled) { border-style: solid; }
+.demoOrders code { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.demoNote { margin: 10px 4px 0; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 12px; color: var(--text); line-height: 1.6; }

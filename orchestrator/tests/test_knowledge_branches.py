@@ -128,15 +128,20 @@ def test_emotion_strategy_stop_is_its_own_pause_not_an_operation_condition():
     assert decide_next(resumed, library=library).plan_cursor["step_id"] == "s3"
 
 
-def test_guide_covered_by_what_the_customer_already_did_is_a_finished_guide():
-    """T27：错误码精确命中的指南只有一步「检查是否堵塞」，客户说没堵（fact_check 判 done 跳过），计划耗尽。
-    客户自己做过仍未解决与点「未解决」是同一事实：按 SOP 指南走完进质保判断（guide_exhausted 带转售后理由），
-    不是「没有可用后续」。"""
+def test_customer_saying_it_is_done_does_not_finish_the_guide_only_card_feedback_does():
+    """T27：错误码精确命中的指南只有一步「检查是否堵塞」，客户说没堵。自述不消费步骤：卡照发；
+    客户在卡上反馈未解决后，指南走完进质保判断（guide_exhausted），不是「没有可用后续」。"""
     library = qa_plan_library()
     plan = library.get("qa_rv_0147")
-    state = {"category": "robot_vacuum", "product_confirmed": {"sku": "T2351"}, "input_id": "now",
-             "plans_ranked": [{"plan_id": plan.plan_id, "confidence": 1.0}], "exhausted_plans": [plan.plan_id]}
-    assert decide_next(state, library=library).reason == "no_supported_followup"
-    done = {**state, "step_checks": {plan.plan_id: {"steps": {plan.steps[0].step_id: {"status": "done", "skip": True, "quote": "no blockage"}}}}}
-    action = decide_next(done, library=library)
+    step = plan.steps[0]
+    state = {"category": "robot_vacuum", "product_confirmed": {"sku": "T2353"}, "input_id": "now",
+             "plans_ranked": [{"plan_id": plan.plan_id, "confidence": 1.0}],
+             "active_issue_id": "i", "issues": {"i": {"facts": [{"kind": "action_taken", "status": "active",
+                                                                  "value": "no blockage seen", "quote": "no blockage seen"}]}}}
+    action = decide_next(state, library=library)
+    assert (action.kind, action.plan_cursor["step_id"]) == ("step", step.step_id)
+    fed_back = {**state, "exhausted_plans": [plan.plan_id], "step_attempts": [{
+        "plan_id": plan.plan_id, "step_id": step.step_id, "instruction_src": step.instruction_src,
+        "kind": "action", "feedback": "not_solved"}]}
+    action = decide_next(fed_back, library=library)
     assert (action.kind, action.reason) == ("handoff_offer", "guide_exhausted")

@@ -32,7 +32,20 @@
 # 旧的 2026-09-13.5 排序基于合成大字示意图，对分辨率与小字是盲的，不再作为该 task 的裁决依据。
 # 2026-09-18.1：充分性评估最多12条证据及缺口列表，输出预算调至1024，避免旧256截断JSON；模型顺序不变。
 # 2026-09-18.2：会话1ad8的intake在512 token触发LengthFinishReasonError，默认通道提高至1536，与其他通道一致。
-version: 2026-09-18.2
+# 2026-10-13.1：domestic diagnose.vision 换为 qwen3.8-max → qwen3.7-plus → qwen3-vl-plus（官方真实照片实测，见链行尾注）。
+# 2026-10-13.2：domestic intake / diagnose.synthesize 主位换 deepseek-v4-pro（关思考），超时 9 s 后落到 deepseek-flash。
+#   63 单真实链路四组对比（docs/planning/2026-10-13-1613_stronger-models-63/对比结论.md）：SOP 87%→90%、完全命中 65%→70%，
+#   整单中位耗时 9.8→8.8 s；开思考单次 50–90 s 不可用；glm-5.3（思考 low）84% 且主模型失败 9 次。
+# 2026-10-15.2：domestic intake 的 qwen-flash 前移至第二位，首选失败后先切换厂商；保留 qwen3.7-flash。
+# 2026-10-15.3：官方 63 单回测（docs/planning/2026-10-15-1417_official-63-retest/）主位超时后备用来不及。deepseek-pro 超时 9 → 8 s，
+#   intake 预算 15 → 17 s（interpret.py），qwen-flash 有 9 s；新增 retry.cooldown_s：超时 / 5xx 的模型 30 s 内排到链尾，
+#   同一轮 intake 主位超时后 synthesize 直接从 deepseek-flash 开始。synthesize 链不换厂商：qwen-max 在当前选方案 prompt 下
+#   p50 7.7 s、最长 13.1 s（T52–T62 实测 9 次），放第二位只剩约 7 s 装不下；留在链尾，DeepSeek 两个位都冷却时自然排到最前。
+# 2026-10-15.4：新增 remedy.review（换货 / 退款提交前的独立审查，docs/claude/spec_2026-10-15-1448_independent-review.md）。
+#   链上不得出现同通道 intake / diagnose.synthesize 首位的厂商（config.py 校验），否则审查与被审结论同源；
+#   domestic 主位 qwen-max（上面实测 p50 7.7 s，审查预算 15 s）、兜底 glm，不接 deepseek。glm 只接住主位的快速失败
+#   （5xx / 格式错，或 cooldown 中被排到链尾）；主位慢到用完预算时审查记为不可用、转人工。未做 bake-off。
+version: 2026-10-15.4
 default_lane: domestic
 
 providers:
@@ -50,10 +63,15 @@ models:
   qwen-plus:    {context_window: 1000000, provider: dashscope, id: qwen3.7-plus,                vision: false, structured: native,      timeout_s: 20, params: {enable_thinking: false}}
   qwen-max:     {context_window: 1000000, provider: dashscope, id: qwen3.8-max,                 vision: false, structured: native,      timeout_s: 20, params: {enable_thinking: false}}
   qwen-vl:      {context_window: 262144, provider: dashscope, id: qwen3-vl-plus,               vision: true,  structured: json_object, max_images: 10, timeout_s: 30}
+  # 2026-10-13 百炼新一代多模态（docs/planning/2026-10-13-0824_vision-root-cause/方案.md）：5 张官方实物照片上主体 / 裂纹 / 灯全对，
+  # deepseek 把 T30 机器人本体稳定认成基站（0/6）。qwen3.7-plus 走 json_schema 时 5/12 输出 JSON 数组，只能用 json_object
+  qwen-vl-max:  {context_window: 1000000, provider: dashscope, id: qwen3.8-max,                 vision: true,  structured: native,      max_images: 10, timeout_s: 30, params: {enable_thinking: false}}
+  qwen-vl-plus: {context_window: 1000000, provider: dashscope, id: qwen3.7-plus,                vision: true,  structured: json_object, max_images: 10, timeout_s: 30, params: {enable_thinking: false}}
   # deepseek-flash（V4.1-Flash）实测：json_object 可用、能读图（max_images 按 4 张保守）、关思考后 intake ≈ 0.9 s
   deepseek:     {context_window: 1000000, provider: deepseek,  id: deepseek-flash,              vision: true,  structured: json_object, max_images: 4,  timeout_s: 20, params: {thinking: {type: disabled}}}
-  # deepseek-v4-pro：强推理档对照位（不读图，实测对图片凭空描述）；只作 synthesize / guide 的候选，默认不在链上
-  deepseek-pro: {context_window: 1000000, provider: deepseek,  id: deepseek-v4-pro,             vision: false, structured: json_object, timeout_s: 30, params: {thinking: {type: disabled}}}
+  # deepseek-v4-pro：理解与选方案主位（不读图，实测对图片凭空描述）。2026-10-15 官方 63 单成功调用：intake p90 7.2 s、最长 8.2 s，
+  # synthesize p90 6.0 s、最长 7.4 s；超时 8 s，给换厂商的备用留时间（intake 17 s 预算下 qwen-flash 有 9 s）
+  deepseek-pro: {context_window: 1000000, provider: deepseek,  id: deepseek-v4-pro,             vision: false, structured: json_object, timeout_s: 8, params: {thinking: {type: disabled}}}
   # 智谱 2026-09-13 本机实测：json_schema 被静默忽略（返回散文 → 校验必失败），只能用 json_object；思考模式默认开，需关
   glm:          {context_window: 200000, provider: zhipu,     id: glm-4.7,                     vision: false, structured: json_object, timeout_s: 20, params: {thinking: {type: disabled}}}
   # glm-4.7-flash 不存在（调用返回 500 操作失败）；轻量档实测可用的是 glm-4.5-flash
@@ -68,16 +86,17 @@ lanes:
     # 的 schema/准确率、P50、成本，顺序同 chain。裁决口径同 runner.judge：准确率只作门槛，达标后按 延迟/上限 + 成本×100 排序；
     # 智谱位一律用 glm-4.7 不用 glm-4.5-flash（免费档排队：reply.stream P50 12.1 s、67%/65%）。
     # 注意 repeats=3 在门槛线附近抖动可达 ±5 点，边界候选的裁决以 findings §「三家全量」的多轮记录为准。
-    intake:                {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 1536}   # 100/98 1051 ms ¥0.0002 | 100/100 953 ms ¥0.0016 | 100/97 1364 ms
+    intake:                {chain: [deepseek-pro, qwen-flash, deepseek], effort: low, max_tokens: 1536}   # 2026-10-13 63 单：v4-pro p50 4.5 s p90 7.1 s；旧主位 qwen-flash p50 5.5 s p90 8.6 s
     disambiguate.clarify:  {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 256}    # 100/100 752 ms ¥0.0001 | 100/100 990 ms ¥0.0010 | 100/100 965 ms
-    diagnose.vision:       {chain: [deepseek, qwen-vl, glm-v],    effort: medium, needs_vision: true} # 2026-09-15 阶段 1 后 repeats=2：deepseek 93% 1377 ms | qwen-vl 88% 4939 ms | glm-v 82% 3390 ms；三家铭牌读出率 100/100/67。deepseek 只收 4 张图，qwen-vl / glm-v 收 10 张
-    diagnose.synthesize:   {chain: [deepseek, qwen-max, glm-v],   effort: high}                       # 100/100 1162 ms ¥0.0023 | 100/100 2179 ms ¥0.0094 | 100/88 2320 ms
+    diagnose.vision:       {chain: [qwen-vl-max, qwen-vl-plus, qwen-vl], effort: medium, needs_vision: true} # 2026-10-13 官方 5 张实物照片（线上同款 schema）：主体 / 裂纹 / 绿灯 qwen3.8-max 全对 p50 5.2 s | qwen3.7-plus 全对 4.9 s | qwen3-vl-plus 绿灯 0/2 6.6 s；原主位 deepseek T30 主体 0/6、glm-v T20 0/2，移出（2026-09-15 的 93% 来自合成图，未测主体识别）
+    diagnose.synthesize:   {chain: [deepseek-pro, deepseek, qwen-max], effort: high}                  # 2026-10-13 63 单：v4-pro p50 5.1 s p90 7.2 s；旧主位 deepseek-flash p50 2.5 s
     guide.step:            {chain: [deepseek, qwen-max, glm],     effort: medium}                     # 100/97 929 ms ¥0.0011 | 100/94 998 ms ¥0.0047 | 100/89 1130 ms（glm 89–92% 跨门槛线，仅兜底）
     reply.stream:          {chain: [qwen-plus, deepseek, glm],    effort: low,    stream: true}       # 首字 100/98 900 ms ¥0.0003 | 100/98 1084 ms ¥0.0005 | 100/98 582 ms ¥0.0002（工具按成本判 glm 为主，人工不让智谱进主位：账号并发 4 即 429）
     escalate.summary:      {chain: [qwen-flash, deepseek, glm-v], effort: low}                        # 100/100 648 ms ¥0.0001 | 100/100 899 ms ¥0.0006 | 100/100 723 ms
     warranty.receipt_ocr:  {chain: [deepseek, qwen-vl, glm-v],    effort: low,    needs_vision: true} # 100/100 1218 ms ¥0.0027 | 100/100 3355 ms ¥0.0029 | 100/100 2958 ms（票 40 真实凭证四字段全对）
     query.rewrite:         {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 128}    # 100/75 535 ms | 100/75 915 ms | 100/62 851 ms —— 三家全未达标且轮间摆动大（上一轮 qwen-flash 还是 100%），票 32 词表问题未解，默认关闭（config/retrieval.yaml）
     retrieve.grade:        {chain: [qwen-flash, deepseek, glm],   effort: low,    max_tokens: 1024}   # 旧评分报告仅作历史记录；新充分性语义需重新评测。grade或query_rewrite启用时调用
+    remedy.review:         {chain: [qwen-max, glm],               effort: medium, max_tokens: 1024}   # 审查不与 deepseek 主位同源
   overseas:
     intake:                {chain: [haiku, sonnet],                     effort: low,    max_tokens: 1536}
     disambiguate.clarify:  {chain: [haiku, sonnet],                     effort: low}
@@ -89,6 +108,7 @@ lanes:
     warranty.receipt_ocr:  {chain: [sonnet, gemini-flash],              effort: low,    needs_vision: true}
     query.rewrite:         {chain: [haiku, sonnet],                     effort: low,    max_tokens: 128}
     retrieve.grade:        {chain: [haiku, sonnet],                     effort: low,    max_tokens: 1024}
+    remedy.review:         {chain: [gemini-flash],                      effort: medium, max_tokens: 1024}
 
   zhipu:
     intake:                {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 1536}
@@ -101,8 +121,10 @@ lanes:
     warranty.receipt_ocr:  {chain: [glm-v, qwen-vl, deepseek],         effort: low,    needs_vision: true}
     query.rewrite:         {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 128}
     retrieve.grade:        {chain: [glm, deepseek, qwen-flash],        effort: low,    max_tokens: 1024}
+    remedy.review:         {chain: [qwen-max, deepseek],               effort: medium, max_tokens: 1024}
 
 # same_model_max：超时 / 5xx / schema 失败的同模型重试；rate_limit_max：429 专用（退避 1 / 2 / 4 s + 抖动）
-retry: {same_model_max: 1, rate_limit_max: 3, chain_max: 3, sdk_max_retries: 0}
+# cooldown_s：模型用满自身 timeout_s 仍超时或 5xx 后，30 s 内在所有链上排到末位（不移除）
+retry: {same_model_max: 1, rate_limit_max: 3, chain_max: 3, sdk_max_retries: 0, cooldown_s: 30}
 # 全局同时进行的模型调用上限，满则立即返回 error(recoverable=true)（07 §13）
 concurrency: {max_in_flight: 50}

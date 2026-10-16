@@ -1,6 +1,7 @@
 """官方 Q&A 的确定性索引：错误码 + PN 精确查找、条目类型、步骤拆分、媒体链接。
 
-全部由 data/official/qa.yaml 派生，不依赖 WeKnora 与模型；WeKnora 只在没有错误码时做语义召回。
+由工作簿 qa.yaml 与独立核对的 qa_supplements.yaml 派生，不依赖 WeKnora 与模型。
+补充图表只生成解释条目，不从表格文字猜测排障动作。
 
 错误码抽取必须带锚点：S1 Pro 有 E20 / E25 / E28 错误码，与机型名 Omni E25 / E28 同形，
 全局正则会把机型名当成码（rv-0484）。码只认这几种位置：
@@ -10,6 +11,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -17,6 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.official.models import OfficialData, QAEntry, pn_of
+from app.official.supplements import ReviewedSource, load_supplements
 
 Kind = Literal["steps", "answer", "warranty"]
 # 一个编号段落对用户意味着什么（2026-10-09 第二批 I4）：要回答、要操作、只需知道、要提供材料、还是要交人工。
@@ -83,6 +87,12 @@ class Step:
     default: int | str | None = None  # 回答不在选项里时去哪儿；None 沿原文顺序走下一步
     retry_options: tuple[str, ...] = ()  # 表示「还没做 / 不知道」的选项：卡片不算答完，带提示重发（B21）
     title: str = ""  # 人工审核给的卡片标题（question 卡只显示标题与选项，原文段落不是问句时必须给）
+    caution: str = ""  # 人工审核补的注意事项（原文这一段没写、同型号另一条写了的后果，T31 恢复出厂会删地图）
+    owns_media: bool = False  # 拆分段里由这一部分挂原段的图示 / 链接（默认第一张出卡的部分）
+    # 资料覆盖边界说明：客户原话命中 when（正则）时附在这一步的卡片上，系统口吻、不改原文（T34 找回旧地图、T37 水箱已满）
+    scope_note: tuple[str, str] | None = None
+    # 说明讲的是客户要的结果资料根本不覆盖（T34 要旧地图，资料只有查地图页与重建）：说明显示过、指南走完时按资料缺口交人工，不进质保
+    beyond_source: bool = False
     parts: tuple[Step, ...] = ()  # 人工审核把一段拆成多步（段内问句、诊断树）；为空即整段一步
     disabled: bool = False
     disabled_reason: str = ""
@@ -111,6 +121,10 @@ class Guide:
     visible: bool = True
     category: str = ""
     sections: tuple[FaultSection, ...] = ()
+    # 人工审核写的整条前提：这条指南默认成立、却没写在标题里的条件（bp-0039「充电盒本身能通电」）。
+    # 选方案时随候选交给模型，客户原话否定它就是对象冲突（T52 盒子自身充不进电，泵受电指南不适用）
+    premise: str = ""
+    source: ReviewedSource | None = None
 
     @property
     def plan_id(self) -> str:
@@ -301,14 +315,38 @@ def load_overrides(path: Path | None = None) -> dict[str, dict[int, dict]]:
     if not target.is_file():
         return {}
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    return {str(qa_id): {int(no): dict(spec or {}) for no, spec in (entries or {}).items()} for qa_id, entries in raw.items()}
+    return {str(qa_id): {int(no): dict(spec or {}) for no, spec in (entries or {}).items() if no != "premise"}
+            for qa_id, entries in raw.items()}
 
 
-SPEC_KEYS = {"kind", "title", "options", "branches", "default", "retry_options", "disabled", "reason"}
+@lru_cache(maxsize=1)
+def load_premises(path: Path | None = None) -> dict[str, str]:
+    """覆写文件里条目级的 premise（与段落位置并列的 premise 键）：{qa_id: 前提原文}。"""
+    import yaml
+
+    target = path or overrides_path()
+    if not target.is_file():
+        return {}
+    raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    return {str(qa_id): str(entries["premise"]).strip() for qa_id, entries in raw.items()
+            if isinstance(entries, dict) and entries.get("premise")}
+
+
+SPEC_KEYS = {"kind", "title", "options", "branches", "default", "retry_options", "disabled", "reason", "caution", "media", "scope_note"}
 
 
 def _target(value: int | str) -> int | str:
     return value if isinstance(value, int) else str(value)
+
+
+def _scope_note(spec: dict | None, pos: int) -> tuple[str, str] | None:
+    """{when: 客户原话正则, text: 系统说明, beyond_source: 可选}；正则在加载时编译一次校验，写错直接报错而不是静默不生效。"""
+    if not spec:
+        return None
+    if not {"when", "text"} <= set(spec) <= {"when", "text", "beyond_source"}:
+        raise ValueError(f"scope_note in paragraph {pos} needs when + text (beyond_source optional)")
+    re.compile(spec["when"])
+    return str(spec["when"]), str(spec["text"])
 
 
 def _spec_step(no: int, pos: int, text: str, spec: dict, *, warranty: bool) -> Step:
@@ -322,6 +360,10 @@ def _spec_step(no: int, pos: int, text: str, spec: dict, *, warranty: bool) -> S
         default=_target(spec["default"]) if spec.get("default") is not None else None,
         retry_options=tuple(spec.get("retry_options") or ()),
         title=str(spec.get("title") or ""),
+        caution=str(spec.get("caution") or ""),
+        owns_media=bool(spec.get("media")),
+        scope_note=_scope_note(spec.get("scope_note"), pos),
+        beyond_source=bool((spec.get("scope_note") or {}).get("beyond_source")),
         disabled=bool(spec.get("disabled")), disabled_reason=str(spec.get("reason") or ""),
         source_gap=bool(DANGLING_REFERENCE.search(text)),
     )
@@ -433,6 +475,7 @@ def build_guide(entry: QAEntry, overrides: dict[int, dict] | None = None) -> Gui
         visible=entry.visible,
         category=CATEGORY.get(entry.directory[1], "robot_vacuum"),
         sections=sections,
+        premise=load_premises().get(entry.id, ""),
     )
 
 
@@ -481,6 +524,7 @@ class QAIndex:
     by_code: dict[tuple[str, str], list[str]] = field(default_factory=dict)
     by_pn: dict[str, list[str]] = field(default_factory=dict)
     version: str = ""
+    entry_versions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def build(cls, data: OfficialData | None = None) -> QAIndex:
@@ -488,11 +532,29 @@ class QAIndex:
         index = cls(version=data.version("qa.yaml"))
         for entry in data.qa:
             guide = build_guide(entry)
+            index.entry_versions[guide.qa_id] = index.version
             index.guides[guide.qa_id] = guide
             for pn in guide.pns:
                 index.by_pn.setdefault(pn, []).append(guide.qa_id)
                 for code in guide.codes:
                     index.by_code.setdefault((pn, code), []).append(guide.qa_id)
+        supplements = load_supplements(data.root / "qa_supplements.yaml")
+        for entry in supplements:
+            if entry.id in index.guides:
+                raise ValueError(f"official supplement id collides with Q&A: {entry.id}")
+            answer = f"{entry.scope_note}\n{entry.content}"
+            index.guides[entry.id] = Guide(
+                qa_id=entry.id, title=entry.title, pns=tuple(entry.pn), codes=(), kind="answer",
+                steps=(Step(1, answer, kind="statement"),), answer=answer,
+                category=entry.category, source=entry.source,
+                media=(Media(entry.source.url, "link"),),
+            )
+            index.entry_versions[entry.id] = entry.version
+            for pn in entry.pn:
+                index.by_pn.setdefault(pn, []).append(entry.id)
+        if supplements:
+            versions = json.dumps({entry.id: entry.version for entry in supplements}, sort_keys=True)
+            index.version += "+supp-" + hashlib.sha256(versions.encode()).hexdigest()[:12]
         return index
 
     def lookup(self, sku: str | None, code: str) -> list[Guide]:

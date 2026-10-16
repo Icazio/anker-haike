@@ -4,6 +4,7 @@ import { clipboardImages, isTouchPrimary, TOUCH_PRIMARY_QUERY } from '../lib/dev
 import { prepareImage } from '../lib/image';
 import type { ImagePurpose } from '../lib/image';
 import type { PendingInput } from '../types/snapshot';
+import type { demoOrdersFor } from '../lib/products';
 import styles from './Composer.module.css';
 
 export type Attachment = { id: string; file: File; previewUrl: string | null };
@@ -20,8 +21,12 @@ type Props = {
   maxImages?: number;
   busy?: boolean;
   onCancel?: () => void;
-  /** 外部预置的附件（「载入真实工单」带的原图）；引用变化时加入附件区，走与手动选择相同的处理。 */
+  /** 外部预置的附件（「载入真实工单」带的原图）：替换附件区（空数组即清空），走与手动选择相同的处理。
+   *  一次性：取用后调 onPresetConsumed，调用方置空，否则输入框每次重挂载（出卡片、换问题）都会重放。 */
   presetFiles?: File[] | null;
+  onPresetConsumed?: () => void;
+  /** 演示站：等凭证时列出可用的演示订单，点一下填入输入框（主办方订单号格式 Anker001–016，评委不会知道）。 */
+  demo?: ReturnType<typeof demoOrdersFor> | null;
 };
 
 // 等待步骤时仍可正常对话，是否更新排障由本轮语义决定。
@@ -55,7 +60,7 @@ function autoGrow(el: HTMLTextAreaElement | null) {
   el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
 }
 
-export function Composer({ value, onChange, offline, inputRef, onSend, onSkipReceipt, pendingKind = null, purpose = 'fault', maxImages = 3, busy: runBusy = false, onCancel, presetFiles = null }: Props) {
+export function Composer({ value, onChange, offline, inputRef, onSend, onSkipReceipt, pendingKind = null, purpose = 'fault', maxImages = 3, busy: runBusy = false, onCancel, presetFiles = null, onPresetConsumed, demo = null }: Props) {
   const inputId = useId();
   const fileRef = useRef<HTMLInputElement>(null);
   const localRef = useRef<HTMLTextAreaElement>(null);
@@ -94,11 +99,11 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onSkipRec
   }, [purpose, pendingKind]);
 
   useEffect(() => {
-    if (presetFiles?.length) {
-      release(attachmentsRef.current);
-      updateAttachments([]);
-      void addFiles(presetFiles.slice(0, maxImages));
-    }
+    if (!presetFiles) return;
+    release(attachmentsRef.current);
+    updateAttachments([]);
+    if (presetFiles.length) void addFiles(presetFiles.slice(0, maxImages));
+    onPresetConsumed?.();
     // 只在载入新工单（新数组引用）时触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetFiles]);
@@ -240,6 +245,17 @@ export function Composer({ value, onChange, offline, inputRef, onSend, onSkipRec
           <button type="submit" className={styles.send} disabled={!canSend}>{submitting ? '提交中…' : receipt ? '上传凭证' : '发送'}</button>
         </div>
       </div>
+      {receipt && demo?.note && <p className={styles.demoNote}>{demo.note}</p>}
+      {receipt && !!demo?.orders.length && (
+        <div className={styles.demoOrders} role="group" aria-label="演示订单">
+          <span>演示订单</span>
+          {demo.orders.map((o) => (
+            <button key={o.order_no} type="button" disabled={inputBlocked} onClick={() => onChange(o.order_no)}>
+              <code>{o.order_no}</code>{o.note}
+            </button>
+          ))}
+        </div>
+      )}
       {receipt && onSkipReceipt && (
         <div className={styles.skipOptions}>
           <button type="button" disabled={inputBlocked} onClick={() => void skip()}>暂时没有凭证，跳过</button>

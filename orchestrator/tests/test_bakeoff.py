@@ -103,7 +103,11 @@ def test_every_task_has_samples_and_vision_images_are_synthetic():
     assert all(counts[t] for t in ALL_TASKS)
     assert len(counts["intake"]) >= 20 and len(counts["diagnose.vision"]) >= 15
     assert len(counts["warranty.receipt_ocr"]) >= 15
-    for s in counts["diagnose.vision"] + counts["warranty.receipt_ocr"]:
+    # 主办方工单真实附件（official: T30.jpg）读仓库里的原图；其余视觉样本运行时合成
+    official = [s for s in counts["diagnose.vision"] if (s.image or {}).get("official")]
+    assert {s.image["official"] for s in official} == {"T14.jpg", "T20.jpg", "T30.jpg", "T42.jpg", "T48.jpg"}
+    assert all(s.images and s.images[0][0] == "image/jpeg" for s in official)
+    for s in [s for s in counts["diagnose.vision"] if s not in official] + counts["warranty.receipt_ocr"]:
         assert s.images and s.images[0][0] == "image/png" and s.images[0][1][:4] == b"\x89PNG"
     # 图片不落仓库（tests/test_images 亦有全局扫描）
     assert not list((REPO_ROOT / "orchestrator" / "tests" / "fixtures" / "bakeoff").glob("*.png"))
@@ -299,3 +303,27 @@ def test_conversation_cost_lists_missing_tasks(cfg):
     results = [TaskResult("intake", "domestic", 1, [c], primary="deepseek")]
     total, missing = conversation_cost(results, cfg)
     assert total is None and "reply.stream" in missing
+
+
+def test_official_photo_metrics_check_the_subject_and_required_details():
+    """真实照片样本（2026-10-13）：第一条观察是画面主体；主体认错、该看到的裂纹 / 灯没写出来都要扣分。"""
+    from types import SimpleNamespace
+
+    from app.bakeoff.scoring import vision_metrics
+
+    def out(observations):
+        return SimpleNamespace(status="ok", observations=observations, visible_parts=[],
+                               fault_localization={"findings": [], "image_quality": {"usable": True}})
+
+    t30 = {"subject_any": ["机器人"], "subject_none": ["基站"], "observe_all": [["红"]]}
+    keys = ("subject", "subject_not_wrong", "observe")
+
+    def pick(m):
+        return {k: m[k] for k in keys if k in m}
+
+    assert pick(vision_metrics(out(["画面主体：扫地机器人本体", "红灯：正面 eufy 标志"]), t30)) == {
+        "subject": True, "subject_not_wrong": True, "observe": True}
+    assert vision_metrics(out(["画面主体：扫地机器人基站", "红灯：正面"]), t30)["subject_not_wrong"] is False
+    t48 = {"subject_none": ["充电盒"], "observe_all": [["裂"], ["绿"]]}
+    assert pick(vision_metrics(out(["画面主体：吸奶器主机", "绿灯：电源键左侧"]), t48)) == {
+        "subject_not_wrong": True, "observe": False}

@@ -1,0 +1,39 @@
+.panel { display: flex; flex-direction: column; min-height: 0; height: 100%; font-size: 12.5px; line-height: 1.55; }
+.head { padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.head p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+.turns { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 2px; }
+
+.turn { border-radius: 10px; }
+.turn > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 7px 10px; border-radius: 10px; }
+.turn > summary::-webkit-details-marker { display: none; }
+.turn > summary:hover { background: var(--subtle); }
+.turn[open] > summary { background: var(--subtle); }
+.turnNo { font-weight: 600; color: var(--muted); white-space: nowrap; }
+.turnInput { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.chain { grid-column: 2; font-size: 11px; color: var(--muted); }
+
+/* 接力轨道：每个角色一个色块节点，竖线串起这一轮的先后 */
+.nodes { list-style: none; margin: 6px 0 4px; padding: 0 0 0 10px; display: flex; flex-direction: column; }
+.node { --c: var(--role-quiet); position: relative; display: grid; grid-template-columns: 96px 1fr; gap: 10px; padding: 0 0 12px 14px; }
+.node::before { content: ""; position: absolute; left: 0; top: 6px; width: 9px; height: 9px; border-radius: 3px; background: var(--c); }
+.node:not(:last-child)::after { content: ""; position: absolute; left: 4px; top: 18px; bottom: 0; width: 1px; background: var(--border); }
+.node[data-role="leader"] { --c: var(--role-leader); }
+.node[data-role="diagnose"], .node[data-role="consult"], .node[data-role="service"] { --c: var(--role-worker); }
+.node[data-role="review"] { --c: var(--role-review); }
+.node[data-role="human"] { --c: var(--role-human); }
+.role { color: var(--c); font-weight: 600; white-space: nowrap; }
+.body { min-width: 0; }
+.body strong { display: block; font-weight: 500; color: var(--text); }
+.body p { margin: 1px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.node[data-live]::before { animation: pulse 1.2s ease-in-out infinite; }
+.node[data-live] .body strong::after { content: " …"; color: var(--muted); }
+@keyframes pulse { 50% { transform: scale(1.5); opacity: .5; } }
+
+.legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; color: var(--muted); }
+.legend li { --c: var(--role-quiet); display: grid; grid-template-columns: 96px 1fr; gap: 10px; }
+.legend li[data-role="leader"] { --c: var(--role-leader); }
+.legend li[data-role="diagnose"], .legend li[data-role="consult"], .legend li[data-role="service"] { --c: var(--role-worker); }
+.legend li[data-role="review"] { --c: var(--role-review); }
+.legend li[data-role="human"] { --c: var(--role-human); }

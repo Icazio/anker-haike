@@ -68,6 +68,7 @@ lanes:
     reply.stream:         {chain: [main, backup], stream: true}
     escalate.summary:     {chain: [fast]}
     warranty.receipt_ocr: {chain: [main], needs_vision: true}
+    remedy.review:        {chain: [backup]}
 """
 
 # ---- 常用脚本 ----

@@ -179,6 +179,11 @@ async def run_scenario(app, scenario: dict[str, Any]) -> list[dict[str, Any]]:
                 if step.get("image"):
                     image_name = step["image"]
                     image_data = IMAGES.get(image_name)
+                    if image_name.startswith("official:"):
+                        from app.official.models import OfficialData
+
+                        image_name = image_name.removeprefix("official:")
+                        image_data = OfficialData().attachment(image_name).read_bytes()
                     if image_data is None:
                         from app.settings import REPO_ROOT
 

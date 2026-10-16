@@ -109,13 +109,45 @@ async def test_recovery_respects_deadline(conversation, monkeypatch):
 
 
 async def test_failed_recovery_does_not_execute_unverified_plan(conversation):
+    """补查调用失败：被裁掉的候选没判完，按运行故障说明（2026-10-15 T53），不报资料没覆盖、不交人工。"""
     set_knowledge_adapter(ManyCandidates())
     model = conversation.models["diagnose.synthesize"]
     model.script = [{"hypotheses": []}, RuntimeError("test provider unavailable")]
     events = await conversation.send(REPORT_TEXT, REPORT)
     assert len(model.calls) == 2
-    assert not any(e["type"] == "step_card" for e in events)
-    assert (await conversation.state())["stage"] == "awaiting_human"
+    assert not any(e["type"] in {"step_card", "escalation_summary"} for e in events)
+    state = await conversation.state()
+    assert state["stage"] == "diagnose" and state["diagnose_outcome"]["mode"] == "unavailable"
+
+
+async def test_synthesis_model_failure_is_reported_as_runtime_fault_not_knowledge_gap(conversation):
+    """2026-10-15 官方 63 单补测 T57：选方案两次失败后交接为 R5 knowledge_gap，客户收到「官方资料没覆盖」。
+    模型故障如实说明暂时给不出步骤，不交人工、不补查；问题保持打开，下一条消息重新选方案。"""
+    set_knowledge_adapter(ManyCandidates())
+    model = conversation.models["diagnose.synthesize"]
+    supported = {"hypotheses": [{
+        "plan_id": "qa_rv_0272", "confidence": 0.9, "evidence_ids": ["c0"],
+        "applicability": "supported", "supported_symptoms": ["El robot está desconectado"],
+    }]}
+    model.script = [RuntimeError("test provider unavailable"), supported]
+    meaning = {
+        "primary_intent": "report_problem", "device_relation": "current", "product_hints": ["X10 Pro Omni"],
+        "facts": [{"value": "El robot está desconectado", "quote": "El robot está desconectado"}],
+    }
+    events = await conversation.send("X10 Pro Omni: El robot está desconectado", meaning)
+    reply = "".join(e.get("delta", "") for e in events)
+    assert "temporary system problem" in reply
+    assert "couldn't confirm official troubleshooting guidance" not in reply
+    assert not any(e["type"] in {"step_card", "escalation_summary"} for e in events)
+    assert len(model.calls) == 1  # 失败后不再拿剩余预算补查
+    state = await conversation.state()
+    assert state["stage"] == "diagnose" and not state.get("escalate_reason")
+    assert state["diagnose_outcome"]["mode"] == "unavailable"
+    assert not any(t.get("event") == "context_recovery" for t in state["retrieval_trace"])
+
+    events = await conversation.send("try again", {"primary_intent": "supplement", "device_relation": "current"})
+    assert any(e["type"] == "step_card" for e in events)
+    assert len(model.calls) == 2
 
 
 async def test_unknown_conditions_have_bounded_questions(conversation):

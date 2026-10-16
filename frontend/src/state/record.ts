@@ -21,6 +21,13 @@ export const HANDOFF_LABELS: Record<HandoffStatus, string> = {
   cancelled: '人工请求已取消',
 };
 
+/** 交接摘要业务块的字段键（后端 escalation/summary.py 的 known / missing）→ 中文；客户页与信息面板共用，不露英文键。 */
+const BUSINESS_FIELD: Record<string, string> = {
+  product: '产品', symptoms: '现象', actions_taken: '已做操作', order_no: '订单号', package_status: '包裹状态', condition: '客户条件',
+  part: '部件', login_country: '登录国家',
+};
+export const fieldLabel = (key: string) => BUSINESS_FIELD[key] ?? key;
+
 // 生成的 Feedback 允许为空（排查记录里问句卡只有回答，2026-10-10）；这里只给真实反馈配文案
 export const FEEDBACK_LABELS: Record<NonNullable<Feedback>, string> = { solved: '解决了', not_solved: '还没解决', cannot_do: '做不到' };
 

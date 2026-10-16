@@ -27,6 +27,8 @@ type Props = {
   dockPending?: boolean;
   /** 只读（观测台）：所有卡片禁用，待反馈卡留在流里 */
   readOnly?: boolean;
+  /** 转人工摘要卡上显示人工工作台入口（演示站） */
+  workbench?: boolean;
 };
 
 type CardItem = Extract<TimelineItem, { card_id: string }>;
@@ -42,7 +44,7 @@ const POINTER: Partial<Record<TimelineItem['kind'], (item: CardItem) => string>>
   rating_card: () => '评价本次服务',
 };
 
-function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction: OnAction, onHover?: (ids: string[]) => void, outdated = false) {
+function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction: OnAction, onHover?: (ids: string[]) => void, outdated = false, workbench = false, internal = false) {
   switch (item.kind) {
     case 'product_card':
       return <ProductCard key={item.card_id} item={item} active={active} disabled={disabled} onSelect={(sku) => onAction('select_product', { sku })} />; // sku=null：其他型号 / 不确定
@@ -61,7 +63,7 @@ function renderCard(item: CardItem, active: boolean, disabled: boolean, onAction
     case 'case_changed':
       return <CaseStatus key={item.card_id} item={item} />;
     case 'escalation_summary':
-      return <SummaryCard key={item.card_id} summary={item.summary} updatedAt={item.updated_at} revision={item.revision} handoffStatus={item.handoff_status} outdated={outdated} />;
+      return <SummaryCard key={item.card_id} summary={item.summary} updatedAt={item.updated_at} revision={item.revision} handoffStatus={item.handoff_status} outdated={outdated} workbench={workbench} internal={internal} />;
     default:
       return null;
   }
@@ -90,7 +92,7 @@ function timeLabel(at: string): string {
 }
 
 /** 按 timeline 渲染（05 §3）。时间戳按 5 分钟分组成分隔行；连续助手消息合并头像；工具 / 动作 / 案件变更走系统行；来源不进流，由记录面板承载。 */
-export function Timeline({ state, onAction, onHover, dockPending = false, readOnly = false }: Props) {
+export function Timeline({ state, onAction, onHover, dockPending = false, readOnly = false, workbench = false }: Props) {
   const pendingCard = state.ui === 'awaiting_input' ? state.pendingInput?.card_id ?? null : null;
   const busy = readOnly || state.pendingActionId !== null;
   const nodes: ReactNode[] = [];
@@ -124,7 +126,8 @@ export function Timeline({ state, onAction, onHover, dockPending = false, readOn
           nodes.push(<div key={item.card_id} className={styles.pointer} data-testid="pending-pointer"><span>{label}</span><span>等待你的反馈 ↓</span></div>);
         } else {
           const outdated = item.kind === 'escalation_summary' && state.timeline.some((t) => t.kind === 'escalation_summary' && t.summary_id === item.summary_id && t.revision > item.revision);
-          nodes.push(renderCard(item, active, busy, onAction, onHover, outdated));
+          // 观测台（readOnly）给坐席看，摘要卡显示规则码；客户页不显示
+          nodes.push(renderCard(item, active, busy, onAction, onHover, outdated, workbench, readOnly));
         }
       }
     }

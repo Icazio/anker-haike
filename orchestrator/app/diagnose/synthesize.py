@@ -7,8 +7,7 @@
 from __future__ import annotations
 
 import logging
-import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from langchain_core.messages import convert_to_messages
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
@@ -16,13 +15,13 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationEr
 from app.context.budget import context_input_budget, measure_input
 from app.context.builder import ContextBudgetExceeded
 from app.context.runtime import prepare_messages
-from app.diagnose.charging import charging_question, check_charging_recipient
-from app.diagnose.decision import concrete
+from app.conversation.quotes import normalize, quoted
+from app.diagnose.decision import SWITCH_CONFIDENCE, concrete
+from app.guide.fact_check import user_corpus
 from app.knowledge.context import render_evidence
 from app.models.queue import CapacityExceeded
 from app.models.router import ModelInvokeError, ModelRouter
 from app.plans.models import Plan
-from app.plans.runtime import get_plan_library
 from app.prompts import compose_system_prompt, wrap_data
 
 log = logging.getLogger("diagnose.synthesize")
@@ -35,6 +34,40 @@ def _clip(limit: int):
 
 
 Rationale = Annotated[str, _clip(80)]
+# 追问与客户症状的关系（T61 2026-10-13：两个时机冲突候选丢弃后，只覆盖「清扫不记录」的 0.3 候选拿「地图准不准」
+# 去追问）。表外的值当作没给，回到置信度门槛，不让整次选方案因一个字段作废
+QuestionRelationName = Literal["narrows", "different_problem"]
+QuestionRelation = Annotated[
+    QuestionRelationName | None, BeforeValidator(lambda v: v if v in get_args(QuestionRelationName) else None)]
+
+
+class Conflict(BaseModel):
+    """候选讲的问题与客户说的问题不是同一件事。原先是三套英文词表（部件名、提前 / 没启动、充电句式），换个说法、
+    换种语言就漏（2026-10-13 复评：「won't take a charge」「se descarga」「laadt niet op」）。现在由模型判断并
+    逐字引两边原话；服务端只核对引文确实出自客户原话与候选原文，不再用词表猜意思。"""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["object", "direction", "not_reported"] = Field(
+        description="object = 候选针对的部件 / 受电方与客户说的不同（充电盒自身不进电 vs 盒给泵充电）；"
+                    "direction = 时机或结果相反（提前启动 vs 无法启动）；"
+                    "not_reported = 候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电），"
+                    "或候选只是用法 / 规格说明而客户报的是故障（客户说充电盒充不进电，候选讲充满要多久）")
+    customer_quote: str | None = Field(
+        default=None, max_length=200,
+        description="object / direction：从 customer_original 逐字摘录客户描述该问题的那一句；not_reported 留空")
+    candidate_quote: str = Field(max_length=200, description="从候选标题或检索片段逐字摘录它讲的对象 / 时机 / 现象")
+    ask_about: str | None = Field(
+        default=None, max_length=80,
+        description="object：客户说的那个部件或对象（如 charging case），用来追问它自身的状态；其余留空")
+
+
+class KnownPrecondition(BaseModel):
+    """needs_confirmation 的前提，客户其实已经说过（原先按词干重叠猜，「Mop not dried」对「havent needed any mop drying」
+    要靠去词尾规则对上，换种说法就漏）。由模型判断并逐字引客户原话，服务端只核对引文出处。"""
+
+    model_config = ConfigDict(extra="forbid")
+    answer: Literal["yes", "no"] = Field(description="yes = 客户原话说明前提成立；no = 客户原话说明前提不成立 / 没做过")
+    customer_quote: str = Field(max_length=200, description="从 customer_original 或 answered_preconditions 的回答逐字摘录")
 
 
 class Hypothesis(BaseModel):
@@ -53,10 +86,18 @@ class Hypothesis(BaseModel):
         default=None, max_length=300,
         description="needs_confirmation 时用一句英文询问文档要求但尚未知的入口前提；只确认事实，不要求执行操作",
     )
-    matched_subject: str | None = Field(default=None, max_length=80, description="该方案针对的部件或对象，摘自候选标题/正文原话")
-    matched_timing: str | None = Field(default=None, max_length=80, description="该方案针对的时机或方向，摘自候选原话；没有留空")
     matched_section: str | None = Field(default=None, max_length=120, description="候选列出多个故障小节时，用户现象对应的小节标题逐字；不能确定留空")
-    missing_fact: str | None = Field(default=None, max_length=120, description="needs_confirmation 时，clarification_question 要确认的那个前提，摘自候选原文")
+    # 原话摘录常超过 120 字：2026-10-15 回测 deepseek-v4-pro 4 次 schema_error 全是它，带错误提示重试也照样超长
+    missing_fact: str | None = Field(default=None, max_length=300, description="needs_confirmation 时，clarification_question 要确认的那个前提，摘自候选原文")
+    question_targets: list[str] = Field(default_factory=list, description="needs_confirmation 时，这个追问在区分哪条有效症状（逐字）")
+    question_relation: QuestionRelation = Field(
+        default=None, description="needs_confirmation 时：narrows = 前提是该症状的一种具体表现或发生条件；different_problem = 文档讲的是另一个问题")
+    conflict: Conflict | None = Field(default=None, description="候选与客户的问题不是同一件事时填写；同一件事留空")
+    plan_step: str | None = Field(
+        default=None, max_length=20,
+        description="needs_confirmation 时：要确认的前提正是计划第一步本身要检查或要问的事，填该步 step_id；否则留空")
+    precondition_known: KnownPrecondition | None = Field(
+        default=None, description="needs_confirmation 时：客户已经说过这个前提成立或不成立就填，并逐字引原话；没说过留空")
 
 
 class PlansRanked(BaseModel):
@@ -79,10 +120,13 @@ def _schema_with_enum(plan_ids: list[str]) -> type[BaseModel]:
         evidence_ids=(list[str], Field(default_factory=list)),
         rationale=(Rationale, Field(default="", max_length=80)),
         clarification_question=(str | None, Field(default=None, max_length=300)),
-        matched_subject=(str | None, Field(default=None, max_length=80)),
-        matched_timing=(str | None, Field(default=None, max_length=80)),
         matched_section=(str | None, Field(default=None, max_length=120)),
-        missing_fact=(str | None, Field(default=None, max_length=120)),
+        missing_fact=(str | None, Field(default=None, max_length=300)),
+        question_targets=(list[str], Field(default_factory=list)),
+        question_relation=(QuestionRelation, Field(default=None)),
+        conflict=(Conflict | None, Field(default=None)),
+        plan_step=(str | None, Field(default=None, max_length=20)),
+        precondition_known=(KnownPrecondition | None, Field(default=None)),
     )
     return create_model(
         "PlansRankedEnum",
@@ -91,194 +135,59 @@ def _schema_with_enum(plan_ids: list[str]) -> type[BaseModel]:
     )  # type: ignore[valid-type]
 
 
-# 用户说「提前 / 过早」而候选讲「没能启动」：同一个关键词（schedule）下两种相反的事实（T61）。
-EARLY = ("before", "early", "earlier", "ahead", "too soon", "提前", "过早", "早了")
-NOT_STARTED = ("failed to start", "not start", "won't start", "doesn't start", "did not start", "无法启动", "没有启动", "未启动")
-
-
-def _norm(text: str | None) -> str:
-    return " ".join((text or "").casefold().split())
-
-
-def _timing_conflicts(user_timing: str, candidate_timing: str | None, candidate_title: str) -> bool:
-    user = _norm(user_timing)
-    cand = _norm(candidate_timing) + " " + _norm(candidate_title)
-    early, failed = any(k in user for k in EARLY), any(k in user for k in NOT_STARTED)
-    return (early and any(k in cand for k in NOT_STARTED)) or (failed and any(k in cand for k in EARLY))
-
-
-# 「left one / my pump / the robot / stofzuiger」是整机或品类词，不是部件：候选讲滚刷、鸭嘴阀都是在说这台机器的某个部件，
-# 不构成对象层级冲突。只有用户点名了具体部件（charging case、duckbill valve）才和候选的部件比对（T52 对 T55 / T36 / T62）。
-_PART_WORDS = (
-    "case", "hub", "motor", "valve", "shield", "bowl", "diaphragm", "bottle", "tube", "tubing", "hose", "cable", "charger",
-    "adapter", "battery", "brush", "roller", "filter", "tank", "tray", "mop", "pad", "sensor", "wheel", "dock", "station",
-    "base", "bin", "lid", "cover", "seal", "ring", "nozzle", "contact", "pin", "port", "light", "indicator", "button", "app",
-    "map", "schedule", "wifi", "wi-fi", "firmware", "camera", "lens", "speaker",
-    # 吸奶器的 pump hub 是盒子里的部件；单说「my pump」仍按整机（_is_part 先查目录品类词）
-    "pump",
-)
-# 耗材与介质不是部件：「floor detergent」对「cleaning solution bottle / clean water tank」讲的是同一件事的容器与液位，
-# 不能按中心词判成对象不同（T40）。它们不进 _PART_WORDS，中心词为空就不比对。
-_DEVICE_WORDS = ("one", "unit", "device", "machine", "robot", "robovac", "vacuum", "hoover", "pump", "stofzuiger", "borstkolf", "camera")
-_FILLER_WORDS = {"the", "my", "this", "it", "left", "right", "side", "eufy", "anker", "both", "either", "other"}
-
-
-def _is_part(subject: str) -> bool:
-    """主语是否指向某个部件，而不是整机、型号名或品类词。"""
-    from app.sessions.cards import get_catalog
-
-    norm = _norm(subject)
-    words = set(re.findall(r"[a-z][a-z\-]+", norm))
-    catalog = get_catalog()
-    named_part = any(w in _PART_WORDS or w.rstrip("s") in _PART_WORDS for w in words if w not in _DEVICE_WORDS)
-    # 「my pump」「the robot」「Eufy S1 pro breast pump」：目录认得出品类或型号、又没点名部件 → 整机（T54）
-    if (catalog.category_hint(subject) or catalog.lookup_product(subject)) and not named_part:
+def unrelated_question(h: dict[str, Any], symptoms: set[str]) -> bool:
+    """追问不是在细分客户的某条症状：模型自报 different_problem，或说 narrows 却指不出逐字的有效症状。
+    没给关系（旧回放、模型漏填）时不判，交给置信度门槛（T61 两次失败都是 0.2–0.3 的候选；T62 对同一条 rv-0542 的
+    「是否反复清扫」追问是在细分「不走直线」，0.35 也合理，只靠门槛分不开）。"""
+    relation = h.get("question_relation")
+    if relation is None:
         return False
-    if named_part:
+    if relation == "different_problem":
         return True
-    return not (words <= set(_DEVICE_WORDS) | _FILLER_WORDS)
+    targets = [t for t in h.get("question_targets") or [] if t]
+    return not targets or not all(t in symptoms for t in targets)
 
 
-_PREPOSITIONS = (" in ", " on ", " of ", " inside ", " at ", " with ", " into ", " from ")
-
-
-def _head_part(subject: str) -> str | None:
-    """部件短语的中心词：「charging case」→ case、「cleaning tray」→ tray、「pump in the case」→ pump。
-    介词前的是主语，介词后的只是位置修饰。"""
-    norm = _norm(subject)
-    for prep in _PREPOSITIONS:
-        if prep in norm:
-            norm = norm.split(prep, 1)[0]
-            break
-    parts = [w.rstrip("s") for w in re.findall(r"[a-z][a-z\-]+", norm) if w in _PART_WORDS or w.rstrip("s") in _PART_WORDS]
-    return parts[-1] if parts else None
-
-
-# 同一类部件在官方资料里的不同叫法：用户说 tray、文档说 tank 都是在讲那个水盒（T29）
-_PART_FAMILY = {
-    "tray": "container", "tank": "container", "bin": "container", "box": "container", "bucket": "container",
-    "brush": "brush", "roller": "brush",
-    "dock": "station", "station": "station", "base": "station",
-    "contact": "contact", "pin": "contact", "port": "contact",
-    "tube": "tube", "tubing": "tube", "hose": "tube",
-}
-
-
-def _subject_conflicts(user_subject: str, candidate_subject: str) -> bool:
-    user, cand = _norm(user_subject), _norm(candidate_subject)
-    if not (user and cand) or user in cand or cand in user:
-        return False
-    if not _is_part(user_subject):
-        return False
-    # 「Water tray」对「cleaning tray / dirty water tank」是同一类部件的不同叫法（T29），同族不算冲突；
-    # 「charging case」对「pump in the case」中心词是 case 对 pump，才是对象不同（T52）。
-    user_head, cand_head = _head_part(user_subject), _head_part(candidate_subject)
-    if user_head is None or cand_head is None or user_head == cand_head:
-        return False
-    return _PART_FAMILY.get(user_head, user_head) != _PART_FAMILY.get(cand_head, cand_head)
-
-
-# 追问要确认的前提若已被用户说过，就不该再问（T41 第十轮：用户已说「没跑过拖地」，仍被问「不跑拖地是否也报错」）。
-# 比对只看内容词：前提原话与事实的 value / subject / quote 共享至少一个词干（mop ~ mopping、charg ~ charging）。
-# 设备词、填充词和「error / problem」这类泛词不算内容词，避免「the error」就把任何前提当成已知。
-_GENERIC_WORDS = {
-    "error", "problem", "issue", "fault", "warning", "message", "code", "task", "cycle", "time", "times", "again",
-    "still", "also", "when", "after", "before", "with", "without", "from", "into", "that", "this", "have", "has",
-    "been", "does", "did", "not", "any", "new", "run", "running", "perform", "performed", "try", "tried", "use", "used",
-    "please", "check", "whether", "confirm", "ensure", "make", "sure", "you", "your", "and", "the", "for", "are", "was",
-}
-
-
-def _stems(text: str | None) -> set[str]:
-    out = set()
-    for w in re.findall(r"[a-z][a-z\-]+", _norm(text)):
-        if w in _GENERIC_WORDS or w in _DEVICE_WORDS or w in _FILLER_WORDS or len(w) < 3:
-            continue
-        for suffix in ("ies", "ing", "ed", "es", "s"):
-            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
-                w = w[: -len(suffix)] + ("y" if suffix == "ies" else "")
-                break
-        out.add(w)
-    return out
-
-
-def _same(need: str, have: str) -> bool:
-    """词干相同或互为前缀（mopp ~ mop、charg ~ charging）；前提词太短时只认相同。"""
-    return need == have or (len(need) >= 4 and (need.startswith(have) or have.startswith(need)))
-
-
-def _covers(missing_fact: str, fact: dict[str, Any]) -> bool:
-    """事实说的是不是这个前提：前提的每个内容词都要在事实里出现。只共享一个词不算（T37「Slang in tank is in orde」
-    与「水箱显示的水量不准」只共享 tank，被当成前提已知，把讲 App 估算的 rv-0163 升级成可执行）。"""
-    need = _stems(missing_fact)
-    have = _stems(" ".join(str(fact.get(k) or "") for k in ("value", "subject", "quote")))
-    return bool(need) and all(any(_same(a, b) for b in have) for a in need)
-
-
-def precondition_status(missing_fact: str | None, facts: list[dict[str, Any]]) -> tuple[str, dict[str, Any] | None]:
-    """(unknown | negated | affirmed, 覆盖它的事实)。否定事实覆盖 → 前提不成立；
-    用户已做 / 已观察到（action_taken / observation）且肯定 → 前提已知成立；只有症状词面相近不算已知，仍要问。"""
-    if not missing_fact:
-        return "unknown", None
-    for f in facts:
-        if f.get("status", "active") != "active" or not _covers(missing_fact, f):
-            continue
-        if f.get("polarity") == "negated":
-            return "negated", f
-        if f.get("kind") in {"action_taken", "observation"} and f.get("polarity", "affirmed") == "affirmed":
-            return "affirmed", f
-    return "unknown", None
-
-
-# 步骤首句是「检查 / 核实某事」：它要确认的事实本身就是这一步的内容。「In multi-floor tasks, …」「When the robot does not
-# start from the station, …」开头的是场景说明，场景对不对仍是入口前提，不在此列。
-CHECK_LEAD = re.compile(
-    r"^\W*(?:please\s+|could\s+you\s+(?:please\s+)?)?(?:check|verify|inspect|ensure|confirm|make\s+sure|test)\b", re.IGNORECASE)
-
-
-def in_plan_check(plan: Plan, missing_fact: str | None) -> str | None:
-    """模型要先确认的「前提」若正是计划里某个检查步骤要查的事，返回该步 step_id（T29：rv-0254 第 1 步就是查门扣，
-    被当成入口前提先问一句，回答后再跳过这一步）。查得出的原因交给步骤卡按官方顺序查，不另起追问。"""
-    if not missing_fact:
+def plan_step_of(plan: Plan, step_id: str | None) -> str | None:
+    """模型说要确认的前提就是计划第一张卡本身（T29 rv-0254 第 1 步查门扣、T57 bp-0164 首卡问 App 版本）：由这张卡
+    按官方顺序查，不另起追问。只认第一张会发出的卡（跳过说明段）：前提落在后面某步时（2026-10-13 复测 T52：bp-0067
+    s3「确认充电盒自身有电」），前面的卡已默认它成立，照样先问。原先按「check / verify」句首与词干比对来认。"""
+    first = next((s for s in plan.steps if s.kind != "statement"), None)
+    if first is None or first.step_id != step_id or first.kind not in {"action", "question"} or first.condition:
         return None
-    library = get_plan_library()
-    for step in plan.steps:
-        evidence = library.evidence.get(step.evidence_key)
-        if step.kind not in {"action", "question"} or step.condition or evidence is None:
-            continue
-        lead = re.split(r"(?<=[.!?:;])\s|\n", evidence.snippet.strip(), maxsplit=1)[0]
-        if CHECK_LEAD.match(lead) and _covers(missing_fact, {"value": lead}):
-            return step.step_id
-    return None
+    return first.step_id
 
 
-def answered_precondition(h: dict[str, Any], answered: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """这个候选要确认的前提，客户是否已经答过：同一计划、同一问句或同一前提原话。"""
-    question = _norm(h.get("clarification_question"))
-    missing = h.get("missing_fact")
-    for item in answered:
-        if item.get("plan_id") != h.get("plan_id"):
-            continue
-        if (question and question == _norm(item.get("question"))) or (
-                missing and item.get("missing_fact") and _stems(missing) & _stems(item["missing_fact"])):
-            return item
-    return None
+def stated(quote: str | None, said: list[str]) -> bool:
+    """引文确实是客户原话的片段（容忍空白、引号形态与边缘一个词的错字，见 quoted）。"""
+    return bool(quote) and any(quoted(quote, text) for text in said)
+
+
+def asked_before(h: dict[str, Any], answered: list[dict[str, Any]]) -> bool:
+    """同一候选的同一句追问或同一前提原话已经问过、客户答过。只比相等，不比词义（原先比词干重叠）。"""
+    def same(a: str | None, b: str | None) -> bool:
+        return bool(a and b) and normalize(a).casefold() == normalize(b).casefold()
+
+    return any(item.get("plan_id") == h.get("plan_id")
+               and (same(h.get("clarification_question"), item.get("question")) or same(h.get("missing_fact"), item.get("missing_fact")))
+               for item in answered)
 
 
 CLARIFY_TEMPLATES = {
     "polarity_uncertain": 'You mentioned "{quote}". Which side or part has the problem, and what exactly is it doing?',
-    "timing_mismatch": "You said it happened {timing}. Is that right, and does the app show any warning at that moment?",
-    "subject_mismatch": "Is the problem with the {subject} itself (for example its own charging light or power input), or with how it works together with other parts?",
+    "object_conflict": "Is the problem with the {subject} itself (for example its own charging light or power input), or with how it works together with other parts?",
 }
 
 
 def filter_hypotheses(
     raw: list[dict[str, Any]], *, allowed: dict[str, Plan], evidence_ids: set[str], symptoms: set[str],
-    facts: list[dict[str, Any]] = (), error_codes: list[str] = (), answered: list[dict[str, Any]] = (), max_n: int,
+    facts: list[dict[str, Any]] = (), error_codes: list[str] = (), answered: list[dict[str, Any]] = (),
+    said: list[str] = (), max_n: int,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     """模型的假设先过服务端核对，再决定可执行 / 待澄清 / 丢弃。
 
-    返回 (kept, dropped, clarifications)。核对只用结构化事实（极性、对象、时机、错误码），
+    返回 (kept, dropped, clarifications)。意思由模型判断（conflict / plan_step / precondition_known），服务端只核对
+    模型给的东西真实存在：计划 id、证据 id、错误码、逐字引文出自 said（本问题的客户原话）、步骤 id 属于该计划。
     不信模型对 applicability 的自评：同型号、关键词相近都不等于适用（T50 / T52 / T61）。
     """
     kept: list[dict[str, Any]] = []
@@ -289,9 +198,12 @@ def filter_hypotheses(
     codes = {c.upper() for c in error_codes}
     # 唯一的「现象」只是哪部分正常（T50「the left one does work」）：模型不把它列进 supported_symptoms 时，
     # 会转而用 needs_confirmation 自拟追问，替客户假定另一侧的故障（T50 右侧吸力、B10 反转成左侧没吸力）。
-    # 没有任何确定现象与错误码时，每个候选都只能先问哪里有问题。
-    only_uncertain = None if codes or any(f.get("polarity", "affirmed") != "uncertain" for f in by_value.values()) \
-        else next(iter(by_value.values()), None)
+    # 没有任何确定现象与错误码时，每个候选都只能先问哪里有问题。理解阶段把这句记成观察而非现象时同样算
+    #（2026-10-13 deepseek-v4-pro：observation「the left one does work」uncertain，选方案以 0.9 判可执行发了 5 张卡）
+    stated_facts = [f for f in facts if f.get("kind") in {"symptom", "observation"} and f.get("status", "active") == "active"
+                    and f.get("source_kind", "user_report") == "user_report"]
+    only_uncertain = None if codes or not stated_facts or any(f.get("polarity", "affirmed") != "uncertain" for f in stated_facts) \
+        else stated_facts[0]
 
     def clarify(h, reason, question):
         ev = [e for e in (h.get("evidence_ids") or []) if e in evidence_ids]
@@ -299,6 +211,10 @@ def filter_hypotheses(
             return
         if codes and any(code.casefold() in question.casefold() for code in codes):
             return  # 不问用户已经告诉我们的错误码（T18）
+        if float(h.get("confidence", 0) or 0) < SWITCH_CONFIDENCE:
+            # 低于换方案门槛的候选，即使客户答「是」也不会被选中执行：问了只是把一个不相干的条目拿来盘问客户
+            #（T61 本轮复测：两个时机冲突候选丢弃后，0.25 的「重复清扫」条目问「历史里有没有重复路径」）
+            return
         clarifications.append({"plan_id": h["plan_id"], "question": question.strip(), "evidence_ids": ev,
                                "confidence": float(h.get("confidence", 0)), "reason": reason,
                                **({"missing_fact": h["missing_fact"]} if h.get("missing_fact") else {})})
@@ -328,43 +244,42 @@ def filter_hypotheses(
             dropped.append(f"polarity_uncertain:{pid}")
             clarify(h, "polarity_uncertain", CLARIFY_TEMPLATES["polarity_uncertain"].format(quote=uncertain.get("quote") or uncertain["value"]))
             continue
-        timed = next((f for f in covered_facts if f.get("timing") and _timing_conflicts(f["timing"], h.get("matched_timing"), plan.fault)), None)
-        if timed:
-            dropped.append(f"timing_mismatch:{pid}")
-            clarify(h, "timing_mismatch", CLARIFY_TEMPLATES["timing_mismatch"].format(timing=timed["timing"]))
-            continue
-        charging_status, charging_subject = check_charging_recipient(plan.fault, covered_facts, facts)
-        if charging_status in {"mismatch", "unknown"}:
-            reason = f"charging_recipient_{charging_status}"
-            dropped.append(f"{reason}:{pid}")
-            clarify(h, reason, charging_question(charging_subject))
-            continue
-        mismatched = next((f for f in covered_facts if f.get("subject") and h.get("matched_subject")
-                           and charging_status != "matched" and _subject_conflicts(f["subject"], h["matched_subject"])), None)
-        if mismatched:
-            dropped.append(f"subject_mismatch:{pid}")
-            clarify(h, "subject_mismatch", CLARIFY_TEMPLATES["subject_mismatch"].format(subject=mismatched["subject"]))
+        conflict = h.get("conflict") or None
+        if conflict:
+            # 模型判定候选讲的不是客户这件事（对象不同 / 方向相反 / 客户没说过）：否决只需模型自己认定，直接丢弃；
+            # 追问客户的部件则要引文核对出自原话，模型不能替客户添对象（T52 盒子自身不进电对 bp-0039 盒给泵充电、
+            # T61 提前启动对 rv-0551 无法启动、T53「充过电仍开不了机」对 bp-0127 充不进电）
+            kind = conflict.get("kind") or "object"
+            dropped.append(f"conflict_{kind}:{pid}")
+            subject = conflict.get("ask_about")
+            quote = conflict.get("customer_quote")
+            if kind == "object" and subject and stated(quote, said) and normalize(subject).casefold() in normalize(quote).casefold():
+                clarify(h, "object_conflict", CLARIFY_TEMPLATES["object_conflict"].format(subject=subject))
             continue
         if h.get("applicability") != "supported":
-            step_id = in_plan_check(plan, h.get("missing_fact")) if h.get("applicability") == "needs_confirmation" else None
+            step_id = plan_step_of(plan, h.get("plan_step")) if h.get("applicability") == "needs_confirmation" else None
+            known = h.get("precondition_known") or {}
+            heard = [*said, *(str(a.get("answer") or "") for a in answered)]
             if step_id and covered:
-                # 前提是计划自己的检查步骤：按 supported 继续，用户已说过的由 guide 的事实核对跳过该步；
+                # 前提是计划自己的某一步：按 supported 继续，由步骤卡按官方顺序查（客户已说过的由 guide 的事实核对处理）；
                 # 没有覆盖任何现象时仍按原路追问，不因此丢掉候选
                 dropped.append(f"precondition_in_plan:{pid}:{step_id}")
                 h = {**h, "applicability": "supported"}
             elif h.get("applicability") == "needs_confirmation":
-                known, fact = precondition_status(h.get("missing_fact"), facts)
-                if known == "negated":
-                    dropped.append(f"precondition_negated:{pid}")  # 用户已说没做过 / 没发生：不适用，也不再问
+                if known.get("answer") == "no" and stated(known.get("customer_quote"), heard):
+                    dropped.append(f"precondition_negated:{pid}")  # 客户原话已否定前提：不适用，也不再问（T41）
                     continue
-                reply = answered_precondition(h, answered)
-                if known == "affirmed":
-                    dropped.append(f"precondition_known:{pid}")  # 用户已说做过 / 观察到：前提成立，按 supported 继续
-                    h = {**h, "applicability": "supported", "rationale": f"前提已知：{(fact or {}).get('value', '')}"[:80]}
-                elif reply is not None:
-                    # 同一前提客户已经答过（dbc144：答了 yes，同一句又问一遍）：再问拿不到新信息。回答已作为
-                    # answered_preconditions 交给模型，模型看了回答仍确认不了前提成立，这条候选就不适用
+                if known.get("answer") == "yes" and stated(known.get("customer_quote"), heard):
+                    dropped.append(f"precondition_known:{pid}")  # 客户原话已说明前提成立：按 supported 继续
+                    h = {**h, "applicability": "supported", "rationale": f"前提已知：{known['customer_quote']}"[:80]}
+                elif asked_before(h, answered):
+                    # 同一候选的同一问题客户已经答过（dbc144：答了 yes，同一句又问一遍）：回答已作为 answered_preconditions
+                    # 交给模型，模型看了回答仍确认不了前提，这条候选就不适用，不再问第二次。换一种问法可以（答「不确定」后），
+                    # 追问总次数由澄清计数兜底
                     dropped.append(f"precondition_unconfirmed:{pid}")
+                    continue
+                elif unrelated_question(h, symptoms):
+                    dropped.append(f"clarify_unrelated:{pid}")
                     continue
                 else:
                     dropped.append(f"not_supported:{pid}")
@@ -414,13 +329,30 @@ INSTRUCTION = (
     "- 先判断 applicability：supported 必须是同一现象且必要前提已成立；前提未知用 needs_confirmation；现象矛盾用 not_applicable。\n"
     "- 入口前提是用户观察到的现象/操作条件，不是尚待检查的故障原因。步骤本来用于检查某个可能原因时，不要求用户先证明该原因。\n"
     "- needs_confirmation 必须填写 clarification_question：只问一个缺失的入口前提，用英文，不给操作指令；answered_preconditions 里客户已经回答的前提按回答判断 supported 或 not_applicable，不再问。\n"
-    "- 必须区分方向、时间和结果，例如提前发生与未能发生、始终离线与偶发离线不能仅凭共享关键词相互代用。\n"
     "- 文档有错误码而用户没有提供错误码，不是拒绝依据；用户现象和文档适用条件一致仍可 supported。\n"
     "- supported_symptoms 只能逐字选择给定的有效症状；不能把共同主题当作覆盖，不能声称一个方案解决所有并列问题。\n"
-    "- matched_subject / matched_timing 摘自候选标题或正文：该方案针对哪个部件、哪种时机；structured_facts 里用户的 subject / timing 与之不同层级或方向相反时不是 supported。\n"
-    "- action_taken 是用户已经做过的操作；候选只是重复这些动作则 not_applicable，否则在 rationale 里说明新增的检查点。\n"
+    "- action_taken 是用户已经做过的操作，只是背景：自述没有卡片反馈精确，候选与这些动作重叠不是拒绝依据，仍按现象判断。\n"
+    "- 候选讲的不是客户这件事时填 conflict，不要因为共享关键词就当成同一件事：\n"
+    "  object：针对的部件或受电方不同（客户说充电盒自身充不进电，候选讲盒给泵充电）；ask_about 填客户说的那个部件，"
+    "customer_quote 从 customer_original 逐字摘录客户那句话。"
+    "客户说的问题有先后因果（A 坏了所以 B 也不行，如「充电盒充不进电，所以泵也充不了」）时，只处理后果 B 的候选也是 object："
+    "源头 A 没解决，按 B 排查无效；ask_about 填源头 A 的部件，customer_quote 摘客户说 A 的那句；\n"
+    "  direction：时机或结果相反（客户说提前启动，候选讲无法启动；始终离线与偶发离线）；\n"
+    "  not_reported：候选讲的现象客户根本没说过（客户只说充过电仍开不了机，候选讲充不进电；客户只说左边能用）；"
+    "候选只是产品用法、规格或说明（充满要多久、怎么清洁、有没有某功能），客户报的却是故障，也填 not_reported——"
+    "只有客户问的正是这条说明时才可用。\n"
+    "  候选标了「前提」时，客户原话否定了这个前提（前提是充电盒本身能通电，客户说充电盒充不进电），填 object，"
+    "ask_about 填前提里那个部件，customer_quote 摘客户否定它的那句。\n"
+    "  只是同一类部件的不同叫法（water tray 与 dirty water tank）、客户说整机而候选讲其部件，不算冲突。\n"
     "- 候选标注了「小节」时，用户现象明确属于其中一个小节就把该小节标题逐字填进 matched_section；不确定留空，不要猜。\n"
     "- needs_confirmation 时同时填 missing_fact：要确认的那个前提在候选原文里的原话（如 perform a new mopping task）。\n"
+    "- needs_confirmation 时，前提正是计划第一步本身要检查或要问的事（第一步就是查门扣、第一张问题卡就是问 App 版本），"
+    "填 plan_step 为该步 step_id，不要另发追问；前提在后面某一步时不填（前面的步骤已默认它成立，要先问）。\n"
+    "- needs_confirmation 时，客户原话已经说过前提成立或不成立（「我们没跑过拖地」否定了「拖地后报错」），填 precondition_known："
+    "answer 填 yes / no，customer_quote 从 customer_original 或 answered_preconditions 的回答逐字摘录。\n"
+    "- needs_confirmation 时还要填 question_targets（这个追问在区分哪条有效症状，逐字）与 question_relation："
+    "前提是该症状的一种具体表现或发生条件（「不走直线」→ 是否反复清扫同一区域）填 narrows；"
+    "文档讲的是另一个问题（「清扫不记录」→ 地图是否准确）填 different_problem，这种不要发追问。\n"
     "- 没有任何计划能解释时输出空列表。只输出 JSON。"
 )
 
@@ -429,16 +361,37 @@ def active_facts(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [f for f in issue.get("facts", []) if f.get("status") == "active"]
 
 
+def active_symptoms(state: dict[str, Any], observations: list[str]) -> list[str]:
+    """模型可逐字选取的有效症状：现象事实 + 图片观察。一条现象事实都没抽到时（T40 本轮复测主轮：长邮件整段漏抽，
+    所有候选都因「没有覆盖任何有效症状」被丢弃，去问一个不相干条目的前提），用检索时的现象原文兜底，
+    即客户这封消息本身；它就是 described() 判定「已描述现象」、进入检索的依据。
+    抽到过现象事实（哪怕是否定或愿望，T60「I just want my hoover to clean」）就不兜底：那是模型读过后的判断，
+    原文兜底会把愿望重新当成现象。原文本身是愿望或评价时也不兜底。
+    同样没有现象事实时，客户自己说的肯定观察也可选：模型对「看到的状态」与「故障现象」的划分不稳定（2026-10-13
+    deepseek-v4-pro 把 T40「floor detergent level has barely moved」记成 observation，三个对症候选全被丢弃）。"""
+    symptoms = [str(s) for s in [*(state.get("symptoms") or []), *observations] if str(s).strip()]
+    query = str(state.get("query") or "").strip()
+    no_symptom_fact = not state.get("symptoms") and not any(f.get("kind") == "symptom" for f in active_facts(state))
+    if no_symptom_fact:
+        symptoms += [str(f.get("value")) for f in active_facts(state)
+                     if f.get("kind") == "observation" and f.get("polarity", "affirmed") == "affirmed"
+                     and f.get("source_kind", "user_report") == "user_report" and str(f.get("value") or "").strip()]
+    if no_symptom_fact and query and concrete({"quote": query}):
+        symptoms.append(query)
+    return list(dict.fromkeys(symptoms))
+
+
 def synthesis_messages(state, allowed, evidence, observations, max_hypotheses) -> list[tuple[str, str]]:
     """只构造本次可见候选；完整会话来源与预算由 prepare_messages 统一加入。"""
     plans_text = "\n".join(
-        f"- {p.plan_id}：{p.fault}（首步：{p.steps[0].title}）"
+        f"- {p.plan_id}：{p.fault}（步骤：{'；'.join(f'{s.step_id} {s.title}' for s in p.steps if s.kind in {'action', 'question'})}）"
+        + (f"（前提：{p.premise}）" if p.premise else "")
         + (f"（小节：{' / '.join(p.steps[0].options)}）" if p.steps[0].kind == "question" and p.steps[0].branches else "")
         for p in allowed
     )
     ev_text = "\n".join(render_evidence(e) for e in evidence)
     obs_text = "\n".join(observations) if observations else "（无图片观察）"
-    symptoms = list(dict.fromkeys(str(s) for s in [*(state.get("symptoms") or []), *observations] if str(s).strip()))
+    symptoms = active_symptoms(state, observations)
     facts = active_facts(state)
     error_codes = list(state.get("error_codes") or [])
     facts_text = "\n".join(
@@ -458,6 +411,9 @@ def synthesis_messages(state, allowed, evidence, observations, max_hypotheses) -
             ),
             kind="user_message",
         )
+        + "\n"
+        # 引文字段（conflict / precondition_known 的 customer_quote）只能从这里逐字摘录，服务端按同一份原话核对
+        + wrap_data("\n---\n".join(user_corpus(state)) or "（无）", kind="customer_original")
         + "\n"
         + wrap_data(obs_text, kind="image_observations")
         + "\n"
@@ -581,10 +537,11 @@ async def synthesize(
         raw,
         allowed={p.plan_id: p for p in visible_plans},
         evidence_ids={e["evidence_id"] for e in visible_evidence},
-        symptoms={str(s) for s in [*(state.get("symptoms") or []), *observations] if str(s).strip()},
+        symptoms=set(active_symptoms(state, observations)),
         facts=active_facts(state),
         error_codes=list(state.get("error_codes") or []),
         answered=list(state.get("precondition_answers") or []),
+        said=user_corpus(state),
         max_n=max_hypotheses,
     )
     dropped = budget_dropped + dropped

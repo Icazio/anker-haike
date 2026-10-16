@@ -1,55 +1,71 @@
 import { useState } from 'react';
 import { type OfficialTicket, listOfficialTickets } from '../api/officialTickets';
+import { CATEGORY_LABELS, PRODUCTS, type ProductInfo } from '../lib/products';
 import styles from './ChatPane.module.css';
 
 // 品类与 config/products.yaml 对齐：只收主办方资料包里的三类产品（扫地机 / 吸奶器 / SoloCam 摄像头）。
-// 点击发出的文字要能被 category_hint 的关键词认出；吸奶器与 SoloCam 品类下只有一款，品类即型号。
 export const PRODUCT_CATEGORIES = [
   { key: 'robot_vacuum', label: '扫地机器人', supported: true },
   { key: 'breast_pump', label: '吸奶器', supported: true },
   { key: 'security_cam', label: '安防摄像头', supported: true },
 ] as const;
 
-// 示例取自主办方真实工单（T18 荷兰语 App 报错、T55 英文 RMA、T1 物流、T45 经销商购买）。
+// 前三条节选自主办方工单：T18 App 报错（荷兰语原文改写成英文）、T55 吸奶器故障 + 订单号、T1 物流。
+// 第四条不是工单，是赛事细则「产品消歧」「情绪识别」两条示例合成的句子；S1 Pro 同时对应扫地机 T2080 与吸奶器 T8D04。
 export const STARTER_PROMPTS = [
   { text: 'Product Name: Omni E28\nProduct PN: T2352\nProblem Type: WARNING\nProblem Code: 3212-The mop is stuck.\nProblem Description: Rolling Mop Blockage. Please clean.', tag: 'App 报错' },
   { text: 'I have been using this breast pump for less than three weeks and the left pump will no longer suction. Order No: Anker016', tag: '故障 + 订单' },
   { text: 'The vacuum did not arrive. Only the replacement parts kit. Was the vacuum shipped? My order is Anker001', tag: '物流' },
-  { text: '我的 S1 Pro 不吸了，明天家里要来客人，急！', tag: '同名消歧' },
+  { text: '我的 S1 Pro 不吸了，明天家里要来客人，急！', tag: '赛题示例' },
 ] as const;
 
 type Props = { onPick: (text: string) => void; onLoadTicket?: (ticket: OfficialTicket) => void; disabled?: boolean };
 
-/** 首屏 intake：一句开场白 + 品类 chip + 示例。线上 Live Chat 的开场白要求「一条消息里同时给型号与问题」，这里照做。 */
+/** 首屏：选产品（可选）→ 带型号开场；也可以直接打字或载入示例。
+ *  点产品只往输入框填「型号 + PN」，客户补一句问题再发送；76% 的真实工单首条已带型号，所以不强制先选。 */
 export function ChatPane({ onPick, onLoadTicket, disabled }: Props) {
   const [tickets, setTickets] = useState<OfficialTicket[] | null>(null);
-  // 展开时才拉列表：首屏不多发请求
+  const [chosen, setChosen] = useState<string | null>(null);
   const loadList = () => {
     if (tickets === null) listOfficialTickets().then(setTickets).catch(() => setTickets([]));
   };
+  const pick = (p: ProductInfo) => {
+    setChosen(p.sku);
+    onPick(`我的 ${p.name}（${p.sku}）：`);
+  };
+  const groups = (Object.keys(CATEGORY_LABELS) as ProductInfo['category'][]).map((cat) => ({ cat, items: PRODUCTS.filter((p) => p.category === cat) }));
+
   return (
     <div className={styles.pane}>
-      <p className={styles.eyebrow}>ANKER eufy · 售后服务 · 真正听懂，真正解决</p>
-      <div className={styles.assistant}>
-        <span className={styles.avatar} aria-hidden="true">✦</span>
-        <div className={styles.bubble}>
-          <p>你好，我是 Anker 智能售后助手。说说设备型号和遇到的问题，App 里的错误码、订单号也可以直接贴进来，我会陪你一步步处理。支持中文与英文、荷兰语、德语、法语、西班牙语。</p>
-        </div>
+      <div className={styles.greeting}>
+        <h1>您好，这里是 eufy 售后服务</h1>
+        <p>感谢您的咨询。请告诉我们设备型号和遇到的问题，我们会先和您确认情况，再一步步引导您排查；需要换货、退款或查物流，也可以直接说。</p>
       </div>
 
-      <section className={styles.block} aria-labelledby="cat-title">
-        <h3 id="cat-title">也可以先选产品<span>选填</span></h3>
-        <ul className={styles.categories}>
-          {PRODUCT_CATEGORIES.map((c) => (
-            <li key={c.key}>
-              <button type="button" disabled={disabled} data-supported onClick={() => onPick(`我的${c.label}出问题了：`)}>{c.label}</button>
-            </li>
+      <section className={styles.block} aria-labelledby="product-wall-title">
+        <h2 id="product-wall-title">先选您的设备<span>可跳过，直接描述问题也可以</span></h2>
+        <div className={styles.wall}>
+          {groups.map(({ cat, items }) => (
+            <div key={cat} className={styles.group}>
+              <h3>{CATEGORY_LABELS[cat]}</h3>
+              <ul>
+                {items.map((p) => (
+                  <li key={p.sku}>
+                    <button type="button" className={styles.tile} data-selected={chosen === p.sku || undefined} disabled={disabled} onClick={() => pick(p)} aria-label={`${p.name} ${p.sku}`}>
+                      <img src={p.image} alt="" loading="lazy" />
+                      <span className={styles.tileName}>{p.short}</span>
+                      <span className={styles.tilePn}>{p.sku}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </ul>
+        </div>
       </section>
 
-      <details className={styles.examples} open>
-        <summary>不知道怎么说？看看真实工单示例</summary>
+      <details className={styles.examples}>
+        <summary>不知道怎么说？看看示例</summary>
         <ul className={styles.starters}>
           {STARTER_PROMPTS.map((s) => (
             <li key={s.text}>

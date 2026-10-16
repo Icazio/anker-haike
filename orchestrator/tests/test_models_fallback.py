@@ -43,6 +43,7 @@ lanes:
     reply.stream:         {chain: [a], stream: true}
     escalate.summary:     {chain: [a]}
     warranty.receipt_ocr: {chain: [b], needs_vision: true}
+    remedy.review:        {chain: [b]}
 retry: {same_model_max: 1, rate_limit_max: 1, chain_max: 3, sdk_max_retries: 0}
 concurrency: {max_in_flight: 50}
 """
@@ -117,11 +118,12 @@ def build(cfg, scripts: dict[str, list], *, env=None, clock=None, per_call_s: fl
     return router, fakes, sleeps
 
 
-async def test_timeout_then_same_model_retry_succeeds(cfg):
-    router, _fakes, sleeps = build(cfg, {"a": [TimeoutError(), OK]})
+async def test_timeout_moves_to_the_next_model_without_waiting(cfg):
+    """2026-10-13：主位 deepseek-v4-pro 并发时超时，同模型再等一次（9 s + 退避 + 9 s）吃光预算、轮不到兜底。"""
+    router, fakes, sleeps = build(cfg, {"a": [TimeoutError(), OK], "b": [OK]})
     res = await router.invoke("intake", MSGS, Out, budget_ms=10_000)
-    assert [a.outcome for a in res.attempts] == ["timeout", "ok"]
-    assert res.alias == "a" and sleeps == [1.25]  # 1 s + 0.5 × 0.5 抖动
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "timeout"), ("b", "ok")]
+    assert len(fakes["a"].calls) == 1 and sleeps == []
 
 
 async def test_429_twice_moves_to_next_model(cfg):
@@ -164,15 +166,24 @@ async def test_schema_error_sequence_then_timeout_mix(cfg):
 
 
 async def test_budget_exhausted_stops_without_trying_remaining(cfg):
+    """429 退避后剩余不足 1 s 再调一次：不再尝试任何模型，返回 budget exhausted。"""
     clock = FakeClock()
     router, fakes, sleeps = build(
-        cfg, {"a": [TimeoutError()], "b": [OK], "c": [OK]}, clock=clock, per_call_s=0.9
+        cfg, {"a": [rate_limited()], "b": [OK], "c": [OK]}, clock=clock, per_call_s=0.9
     )
     with pytest.raises(ModelInvokeError) as ei:
         await router.invoke("intake", MSGS, Out, budget_ms=1_500)
     assert ei.value.reason == "budget exhausted"
-    assert [(a.alias, a.outcome) for a in ei.value.attempts] == [("a", "timeout")]
+    assert [(a.alias, a.outcome) for a in ei.value.attempts] == [("a", "rate_limited")]
     assert fakes["b"].calls == [] and fakes["c"].calls == [] and sleeps == []
+
+
+async def test_timeout_uses_the_remaining_budget_on_the_next_model(cfg):
+    """超时直接换家：剩余预算交给下一家，而不是退避后放弃。"""
+    clock = FakeClock()
+    router, _fakes, _ = build(cfg, {"a": [TimeoutError()], "b": [OK]}, clock=clock, per_call_s=0.9)
+    res = await router.invoke("intake", MSGS, Out, budget_ms=1_500)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "timeout"), ("b", "ok")]
 
 
 async def test_budget_zero_returns_last_error_shape(cfg):
@@ -233,16 +244,56 @@ async def test_whole_chain_fails_reports_all_attempts(cfg):
     )
     with pytest.raises(ModelInvokeError) as ei:
         await router.invoke("intake", MSGS, Out, budget_ms=60_000)
-    assert len(ei.value.attempts) == 6  # 3 家 × (1 + same_model_max)
+    assert len(ei.value.attempts) == 5  # 超时直接换家，其余 (1 + same_model_max)
     assert [a.outcome for a in ei.value.attempts] == [
-        "timeout",
         "timeout",
         "rate_limited",
         "server_error",
         "schema_error",
         "schema_error",
     ]
-    assert len(sleeps) == 2  # a 一次、b 一次（429→1 s）、c 的 schema 重试不等待
+    assert len(sleeps) == 1  # 只有 b 的 429 退避；超时换家与 c 的 schema 重试不等待
+
+
+@pytest.fixture
+def cooldown_cfg(tmp_path):
+    p = tmp_path / "models.yaml"
+    p.write_text(CONFIG.replace("sdk_max_retries: 0}", "sdk_max_retries: 0, cooldown_s: 30}"), encoding="utf-8")
+    return load_models_config(p)
+
+
+async def test_full_timeout_moves_model_to_chain_end_across_tasks_until_cooldown_ends(cooldown_cfg):
+    """2026-10-15 官方 63 单 T58：intake 主位超时、备用接住后，同一轮 synthesize 主位再等满超时，备用只剩约 4 s。
+    超时的模型在冷却期内对所有任务排到链尾；冷却结束恢复原顺序，再成功一次清除冷却。"""
+    clock = FakeClock()
+    router, fakes, _ = build(cooldown_cfg, {"a": [TimeoutError(), OK, OK], "b": [OK, OK]}, clock=clock)
+    res = await router.invoke("intake", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "timeout"), ("b", "ok")]
+    clock.t += 10
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("b", "ok")]
+    clock.t += 30
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "ok")]
+    assert len(fakes["a"].calls) == 2
+
+
+async def test_cooling_model_is_still_tried_last(cooldown_cfg):
+    """冷却只调顺序不移除：排到前面的备用也失败时，冷却中的模型照样有机会。"""
+    router, _fakes, _ = build(cooldown_cfg, {"a": [server_error(), server_error(), OK], "b": [OK, TimeoutError()]})
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "server_error"), ("a", "server_error"), ("b", "ok")]
+    res = await router.invoke("diagnose.synthesize", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("b", "timeout"), ("a", "ok")]
+
+
+async def test_budget_truncated_timeout_does_not_cool_the_model(cooldown_cfg):
+    """只剩 2 s 时的超时是预算不够，不是模型慢：下一次照常先试它。"""
+    router, _fakes, _ = build(cooldown_cfg, {"a": [TimeoutError(), OK], "b": [OK]})
+    with pytest.raises(ModelInvokeError):
+        await router.invoke("disambiguate.clarify", MSGS, Out, budget_ms=2_000)
+    res = await router.invoke("intake", MSGS, Out, budget_ms=60_000)
+    assert [(a.alias, a.outcome) for a in res.attempts] == [("a", "ok")]
 
 
 def test_sdk_max_retries_is_zero_in_repo_config_and_instances():

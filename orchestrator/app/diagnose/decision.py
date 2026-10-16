@@ -210,7 +210,8 @@ COMPAT_RULE = {
     "safety_stop": "R4",
     "handoff_offer": "R2",
 }
-HANDOFF_RULE_BY_REASON = {"user_requested_human": "R3", "safety_risk": "R4", "guide_exhausted": "R1"}
+HANDOFF_RULE_BY_REASON = {"user_requested_human": "R3", "safety_risk": "R4", "guide_exhausted": "R1",
+                          "outcome_beyond_source": "R5"}
 # 主办方 SOP：排障后仍未解决 → 确认是否进入换货 / 退款。一条官方 Q&A 指南走完仍未解决就进入质保判断，
 # 不再换下一条相近的指南（实测 T55 / T29 会连走 3 条指南、7 步以上才停）。
 MAX_GUIDES = 1
@@ -276,7 +277,8 @@ def _first_open_step(plan, executed_src: set[str], executed_steps: set[tuple[str
 
 def replay_end(library, plan_id: str, state) -> str:
     """沿已回答的边重放计划，看它停在哪儿：handoff = 走到官方交售后结论段；question_exit = 选中了审核写成
-    EXHAUSTED 的选项（诊断树里原文没覆盖的那一支）；open = 其余（有未回答的步骤，或步骤走完）。"""
+    EXHAUSTED 的选项（诊断树里原文没覆盖的那一支）；source_gap = 走到原文缺后续说明的段落（客户什么也没做，
+    不算一条走完的指南，T40 rv-0371 缺链接后换到 rv-0073，第一张卡未解决就被说成「官方排查已完成」）；open = 其余。"""
     try:
         plan = library.get(plan_id)
     except KeyError:
@@ -288,6 +290,8 @@ def replay_end(library, plan_id: str, state) -> str:
         step = plan.step(step_id)
         if step.kind == "handoff":
             return "handoff"
+        if step.source_gap:
+            return "source_gap"
         record = answered.get(step.instruction_src)
         if record is None and step.kind != "statement":
             return "open"
@@ -335,13 +339,13 @@ def decide_next(state, *, library) -> NextAction:
     # 诊断树判定原文没覆盖的指南（rv-0341「其他声音」）不算走完一条：交给下一条候选指南完整排查（T36）。
     # 诊断树的一支直接得出官方交售后结论时，没有「未解决」也进质保判断（rv-0341「拆下滚刷后噪音消失」）。
     ends = {pid: replay_end(library, pid, state) for pid in exhausted}
-    counted = [pid for pid in exhausted if ends[pid] != "question_exit"]
-    # 客户原话说已经做过这条指南的步骤、问题仍在（fact_check 判 done 跳过），与点「未解决」是同一个事实：
-    # 指南走完仍未解决，按 SOP 进质保判断并说明理由（T27 走到「没有可用后续」，索凭证前没有任何理由）
-    done_by_customer = any(v.get("status") == "done" and v.get("skip")
-                           for pid in counted for v in (((state.get("step_checks") or {}).get(pid) or {}).get("steps") or {}).values())
+    counted = [pid for pid in exhausted if ends[pid] not in {"question_exit", "source_gap"}]
     if len(counted) >= MAX_GUIDES and (any(s.get("feedback") == "not_solved" for s in executed)
-                                       or done_by_customer or "handoff" in ends.values()):
+                                       or "handoff" in ends.values()):
+        # 卡上已说明客户要的结果资料不覆盖、未解决由同事核查（T34 要找回旧地图，资料只有查地图页与重建）：
+        # 兑现这句话，按资料缺口交人工，不当成硬件故障进质保收订单
+        if any(f"beyond_source:{pid}" in (state.get("displayed_knowledge_nodes") or []) for pid in counted):
+            return result("handoff_offer", "outcome_beyond_source")
         return result("handoff_offer", "guide_exhausted")
     if decision.get("primary_intent") == "complaint" and not decision.get("diagnostic_request"):
         return result("pause", "complaint_reduce_burden")

@@ -1,12 +1,12 @@
 """演示脚本（D6，2026-10-08 换成主办方真实工单）：录制与回放校验共用同一份步骤，保证键一致。
 
-主线 T55（吸奶器：同名消歧 → 官方 Q&A 排障 → 保内 → 补证据 → 换货单），分支 T8（补发）、T2（送达不补发 →
+主线 T55（吸奶器：同名消歧 → 官方 Q&A 排障 → 保内 → 补证据 → 换货单），分支 T8（补发）、T1（送达不补发 →
 承运商调查）、T29（过保委婉拒绝）、T45（经销商 + 烫伤 → 安全转人工）、T14（官方 Q&A 判硬件故障直进质保）、
 T13（荷兰语，官方未收录错误码 → 转人工）。首封消息就是工单原文，附件是工单原图。
 
 步骤类型：
 - {"ticket": 工单号}：发送该工单原文与附件
-- {"message": 文本, "purpose"?: fault|receipt, "image"?: 内置图片名}
+- {"message": 文本, "purpose"?: fault|receipt, "image"?: 内置图片名或 official:<主办方附件名>}
 - {"action": kind, "payload": {...}, "until"?: pending_kind, "while"?: pending_kind, "max"?: n, "optional"?: bool}
   action 从最近一次 awaiting_input 取 interrupt_id / card_id / version；带 until 时重复直到 pending 变为该种类，
   带 while 时只要 pending 仍是该种类就继续（最多 max 次）；optional 表示当前没有这个待办就跳过。
@@ -47,6 +47,9 @@ SCENARIOS: dict[str, dict[str, Any]] = {
             {"action": "skip_retake", "payload": {}, "while": "upload_retake"},
             {"action": "step_feedback", "payload": {"feedback": "not_solved"}, "max": 12, "while": "step_feedback"},
             {"message": "SN: T8D04121ABCD0001"},
+            # T55 原附件是订单截图，读图判为单据、不算故障证据；保内换货还缺故障照（2026-10-13 重录时卡在出方案前）。
+            # 补一张同品类主办方原图（吸奶器主机实物，与 63 单驱动器 FAULT_PHOTO_BY_LINE 相同）
+            {"message": "Here is a photo of the pump.", "image": "official:T48.jpg"},
             {"action": "confirm_proposal", "payload": {"option_id": "replace"}},
         ],
         "expect": ["step_card", "proposal_card", "execution_card", "case_changed"],
@@ -62,11 +65,13 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "expect": ["proposal_card", "execution_card", "case_changed"],
         "tools": ["logistics.query", "service_order.create"],
     },
-    "t2_delivered": {
-        "title": "T2 物流：两个包裹都显示送达 → 不补发，提交承运商调查单",
+    # 原为 T2：订单记录与客户说法相反（-2 记为主机、客户说是配件），10-09 起先告知差异请客户确认、不直接给调查单（I8），
+    # 不再适合演示「送达不补发」。T1 订单显示送达、客户说只收到配件包，无记录冲突（2026-10-13 重录）
+    "t1_delivered": {
+        "title": "T1 物流：订单显示送达、客户说只收到配件包 → 不补发，提交承运商调查单",
         "knowledge": False,
         "steps": [
-            {"ticket": "T2"},
+            {"ticket": "T1"},
             {"action": "confirm_proposal", "payload": {"option_id": "carrier_investigation"}},
         ],
         "expect": ["proposal_card", "execution_card"],

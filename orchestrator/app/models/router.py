@@ -5,7 +5,8 @@
 - 所有分支统一 Pydantic 校验；每次调用 tag=internal，metadata 含 task / session_id / lane / alias / method。
 
 降级（票 11，model-selection §3.6 / 08 §8）
-- 超时 / 429 / 5xx：同模型重试一次（退避 1 s + 抖动，429 走 1 / 2 / 4 s 指数），再失败换下一家。
+- 429 / 5xx：同模型重试一次（退避 1 s + 抖动，429 走 1 / 2 / 4 s 指数），再失败换下一家。
+- 结构化调用超时：直接换下一家（该模型此刻排队慢，同模型再等多半还慢，且会吃光预算、轮不到兜底）。
 - schema 校验失败：同模型带错误提示重试一次，再失败换下一家。
 - 拒答（stop_reason=refusal / content_filter / 厂商安全拦截）：不重试，直接换下一家。
 - 能力不匹配（需视觉而模型无视觉）与别名未配置：路由前跳过，记 skipped，不计入重试。
@@ -253,6 +254,21 @@ class ModelRouter:
         self.same_model_max = registry.cfg.retry.same_model_max
         self.rate_limit_max = registry.cfg.retry.rate_limit_max
         self.chain_max = registry.cfg.retry.chain_max
+        self.cooldown_s = registry.cfg.retry.cooldown_s
+        self._cooling_until: dict[str, float] = {}
+
+    def _ordered(self, chain: list[ResolvedModel]) -> list[ResolvedModel]:
+        """冷却中的模型排到链尾（只调顺序，不移除）。厂商过载是成片的：2026-10-15 回测里 intake 主位超时后，
+        同一轮 synthesize 的主位再等满超时，备用只剩约 4 s（T58）。"""
+        now = self._clock()
+        return sorted(chain, key=lambda r: self._cooling_until.get(r.alias, 0.0) > now)
+
+    def _note_outcome(self, alias: str, outcome: Outcome, full_timeout: bool) -> None:
+        # 被剩余预算截短的超时不算模型慢，不冷却
+        if self.cooldown_s and (outcome == "server_error" or outcome == "timeout" and full_timeout):
+            self._cooling_until[alias] = self._clock() + self.cooldown_s
+        elif outcome == "ok":
+            self._cooling_until.pop(alias, None)
 
     async def invoke(
         self,
@@ -332,7 +348,7 @@ class ModelRouter:
         def remaining_s() -> float:
             return deadline - self._clock()
 
-        for resolved in self.registry.chain(task, lane)[: self.chain_max]:
+        for resolved in self._ordered(self.registry.chain(task, lane))[: self.chain_max]:
             skip = self._skip_reason(resolved, need_vision)
             if skip:
                 attempts.append(
@@ -383,6 +399,7 @@ class ModelRouter:
                         input_budget,
                     )
                 )
+                self._note_outcome(resolved.alias, outcome, timeout_s >= resolved.spec.timeout_s)
                 if outcome == "ok":
                     parsed, raw_msg = result
                     return ModelResult(
@@ -398,8 +415,11 @@ class ModelRouter:
                 max_retries = (
                     self.rate_limit_max if outcome == "rate_limited" else self.same_model_max
                 )
-                if outcome not in RETRYABLE or retry_no >= max_retries:
-                    break  # 拒答 / 其他错误 / 同模型重试用尽 → 下一家
+                # 超时直接换下一家，不在同一模型上再等一次：超时多是该模型此刻排队慢，再等多半还慢，且 9 s + 退避 + 9 s
+                # 会吃光 12–15 s 的任务预算、轮不到兜底（2026-10-13 deepseek-v4-pro 主位，3 会话并发时 intake 4/17、
+                # synthesize 6/17 超时，T31 / T35 落到「暂时无法完成理解」）
+                if outcome not in RETRYABLE or outcome == "timeout" or retry_no >= max_retries:
+                    break  # 拒答 / 超时 / 其他错误 / 同模型重试用尽 → 下一家
                 if outcome == "schema_error":
                     msgs = [
                         *msgs,

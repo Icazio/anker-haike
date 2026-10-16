@@ -1,0 +1,704 @@
+- id: T1
+  title: 只收到配件，没有收到吸尘器
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 订单记录待核
+  judgment: 先报告两个包裹的记录，再提出承运商调查，符合当前资料下的权限边界。两个包裹都用了同一SKU，不能据此独立证明客户已收到主机；应保留客户未收货陈述。当前只提出调查方案，尚未提交调查。
+  session_id: a89eb81f0fbc4c8bb3c4e418b79a22d2
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 系统先为体验致歉。订单Anker001：Fedex运单Anker1234567于2026-09-21送达；Amazon Logistic运单Anker1234567-1于2026-09-23送达，两项均显示E235311B。系统称按售后政策，记录已送达时不能直接补发；如实际未收到，可提交承运商调查，由同事核查。展示“提交承运商调查申请”方案，等待确认。
+- id: T2
+  title: 收到的包裹与订单记录对不上
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 订单记录待核
+  judgment: 回答明确指出“-2记录为主机、客户却说是配件”，同时保留两种说法，没有替官方数据消除冲突。需要人工核对箱标和实际物品；不能把此案当作已解决或丢件确认。
+  session_id: 75dd6cdf3067449983d16ca6c372b16b
+  stop_reason: done
+  turns_zh:
+  - 订单Anker002：ANPOST的Anker1234567-2在2026-09-21送达，记录SKU为T2080GA1；UPS的Anker1234567-3在2026-09-24送达，记录SKU为T29C2001。系统说明“-2”记录的是主机，与客户称收到配件不符；两边陈述均已保留，请确认各包裹装了什么，可提供箱标供同事与承运商核查。
+- id: T3
+  title: 询问购买的X10什么时候寄出
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 订单资料已经显示送达，回答正确展示了这一变化。后续调查须客户确认；“何时寄出”无需直接理解为要求补发，因此补发拒绝话术可以简化。
+  session_id: 8eb64fee5f0b4f18b9b4f9a219e59a24
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 订单Anker003：Royal Mail运单Anker1234567-4于2026-09-25送达，SKU为T2351V11-F。系统说明按当前售后政策，已送达记录不能直接补发；若实际未收到，可提交承运商调查，并展示等待确认的调查方案。
+- id: T4
+  title: 承诺1至3个工作日却迟迟没到
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 订单记录待核
+  judgment: 承接不满并给出订单记录和调查入口，没有虚构承运商已处理。原客户时间与静态订单的送达状态不同，报告只能确认资料内结果，不能验证实时物流。
+  session_id: 95d4b488013448c791ab1f9d3355e852
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 系统先为体验致歉。订单Anker004：Australia Post的Anker1234567-5于2026-09-20送达，包含T2353T11、T29YQA20。系统称按政策不能直接补发，若实际没收到可提交承运商调查，展示待确认方案。
+- id: T5
+  title: 查询Anker005配送进度
+  business_verdict: 符合，有非阻断瑕疵
+  language_issue: false
+  official_factor: null
+  judgment: 物流与补发申请路径合理；重复订单标题和空更新时间是非阻断表达问题。补测没有重复。根因是额外的更新时间字段请求与缺字段模板拼接。
+  session_id: 534761ef63ff4c19976969d5712eaa89
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 订单Anker005：FedEx运单Anker1234567-6在途，预计2026-09-30送达，SKU为T2353112；USPS运单Anker1234567-7于2026-09-15送达，SKU为T291HA11。随后重复“订单Anker005”，并写“最后更新时间：尚无确认记录”。接着表示已超过预计日期，可申请补发，提交后由同事安排；展示补发申请卡，等待确认。
+- id: T6
+  title: 荷兰语客户说上周订的机器人仍未到
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: null
+  judgment: 业务路径可接受，显示已送达记录并等待调查确认。但客户用荷兰语，系统全文英语，是实际语言缺陷。
+  session_id: d9a5447442d94f79a72085ddf77692f7
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 系统先致歉。订单Anker006：DHL NL运单Anker1234567-8于2026-09-20送达，含T2353G11、T290QAR0。系统称按政策不能直接补发；若实际没收到，可提交承运商调查。展示待确认的调查方案。
+- id: T7
+  title: 查不到物流，但没给订单号
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 原文没有实际号码，追问订单号或运单号是必要信息收集，不是检索失败。
+  session_id: 94de71948a0a445f8cba068f286f5222
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 系统先为体验致歉。请提供订单号或运单号，我来查询。
+- id: T8
+  title: 包裹被退回寄件人
+  business_verdict: 符合，有非阻断瑕疵
+  language_issue: false
+  official_factor: null
+  judgment: 退回后提出待确认补发合理；重复订单标题和空更新时间属于表达问题，补测未复现。
+  session_id: c9b6a24469d848ed8f07c66550c1ed6e
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 系统先为体验致歉。订单Anker007：USPS运单Anker1234567-9已退回寄件人，SKU为T2292111、T290Y000。随后重复订单标题，写“最后更新时间：尚无确认记录”。接着表示可以申请补发，提交后由同事安排；展示补发申请卡，等待确认。
+- id: T9
+  title: 询问发货，并要求没发就先别发
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 正确把暂停或改订单置于物流查询之前，并说明自己没有拦截权限。也回答了主机预售日期，没有因为转人工漏掉配送诉求。内部移交不等于仓库已停发。
+  session_id: 486290c39c114a0abefa4358789af285
+  stop_reason: awaiting_human
+  turns_zh:
+  - 系统致歉，说明按“修改订单→配送状态”处理。它不能自行修改或暂停订单，已交同事，订单可能仍在处理。随后报告：T2292111主机预售、尚未发货，原预计2026-10-20发出；US YANWEN运单Anker1234567-10的T290Y000于2026-09-12送达。是否暂停或取消，由处理请求的同事决定。
+- id: T10
+  title: C10没收到，记录却已送达
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 订单记录待核
+  judgment: 回答分列两个包裹的状态并提出调查。静态资料中的另一个SKU与客户本次主诉不同，应由人工核对，不能仅凭全单已送达否定客户。
+  session_id: 315de3db539148b7bdb9c6fab4f7e57d
+  stop_reason: awaiting_confirm_proposal
+  turns_zh:
+  - 订单Anker009：USPS运单Anker1234567-11的T2292111于2026-09-25送达；Amazon Logistics运单Anker1234567-12的T2351111于2026-08-27送达。系统称已送达时不能直接补发，若实际未收到，可提交承运商调查，并给出待确认方案。
+- id: T11
+  title: S1 Pro加清水报EB1L
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 采用对应错误码的rv-0481，逐步检查水路并在统一未解决反馈后收售后材料。执行链完整；本测试未实际检查水管或更新固件，不能证明硬件故障或真实修复率。
+  session_id: 8e49e2709c664e759ded62cabc69edd5
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 从基站取出清水箱，检查出水孔密封圈是否安装正确；用手电照水箱管路，看内部管子是否损坏。卡片附密封圈和水管示意图。
+  - 加清水至最高水位线，并确保水箱牢固放入基站。
+  - 检查机器人进水口是否有杂物或堵塞，用纸巾或棉签清理；附进水口示意图。
+  - 报错后把机器人移离基站，检查基站注水口橡胶塞处有无水，并看胶塞是否损坏或缺失；附图。
+  - 将固件更新到7.0.143或更高版本。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T12
+  title: E25缺清水后变成只吸尘
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 选用rv-0021补水、重新发起拖地的步骤，方向正确。可再解释这是缺水保护行为，不能把系统提示本身当成已经确认硬件损坏。当前未作硬件断言。
+  session_id: 898a84216ac34172a2cf1fba1955b419
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 检查基站清水箱；若空了就加水并重新开始清洁。如果机器人在与基站同一楼层启动，加水并新建拖地任务后仍出现问题，联系支持。卡片回显“清水不足转只吸尘”的描述，说明如已经按相同步骤检查且仍异常，可选未解决。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T13
+  title: E25的5116通信错误没有对应条目
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: 缺直接答案
+  judgment: 内部状态为code_miss，即当前知识没有对应错误码；不借相似代码强行维修而转人工合理。需要官方补知识；英语回复荷兰语客户另算语言问题。
+  session_id: f85fbd8d2d2846c1b11a3a40c2e237c0
+  stop_reason: awaiting_human
+  turns_zh:
+  - 未能确认针对这个问题的官方排障指引，已把问题和支持资料提交同事审核；等待期间可继续补充信息。
+- id: T14
+  title: E28墙面传感器报4090
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 系统按错误码官方条目进入硬件售后，而不是从照片红灯猜故障。照片只能确认机器人、基站和红灯可见，不能独立证明传感器损坏；售后诊断仍需审核。
+  session_id: ec5ec362ad334c8bbe277dfb58ed9b25
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 根据这个错误码的官方指引，系统将其按硬件故障处理，下一步是售后审核，不继续排障；是否保修取决于后续核查。请提供订单号；其他卖家购买的请上传包含卖家、购买国家和日期的凭证。
+- id: T15
+  title: S1 Pro基站集尘通道堵塞
+  business_verdict: 符合，有非阻断瑕疵
+  language_issue: false
+  official_factor: 操作条件待核
+  judgment: 按rv-0428执行到售后，业务路径与资料一致；拆盖卡缺操作条件，且英文高风险动作未被中文词表拦截。记录为约束缺陷与官方资料待核。
+  session_id: 1eedb607cb644067a845c4e66d1cce33
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 取下清水箱，打开尘袋盖，确认尘袋已正确安装；取出尘袋看集尘口是否堵塞，有堵塞就手动清理。附尘袋及集尘口图。
+  - 取下机器人的磁吸盖和尘盒，查看尘盒是否满、入口是否被异物堵住；如有则清理。附尘盒与滤网图。
+  - 检查基站集尘入口有无异物，发现后清理。附图。
+  - 取下基站清水箱和污水箱，翻转基站，拧下透明盖上的两颗螺丝，移开白色胶塞，查看集尘通道是否堵塞。附底部通道图。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T16
+  title: 尘盒和滤网已装好，却仍报未安装
+  business_verdict: 符合，有非阻断瑕疵
+  language_issue: false
+  official_factor: null
+  judgment: 错误码方案正确；客户“已装好且干净”与设备“未安装”被合并为不确定事实，首卡未承接已有检查。重复检查不自动等于业务失败，但事实表达要修。
+  session_id: 82f6bd6481f94f6aae496992cc1a79e7
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 取出集尘盒、打开盖子，检查是否装有滤网；没装则装好再试。附安装图。
+  - 如果滤网已正确安装，进一步查看图示位置有没有磁铁。附磁铁位置图。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T17
+  title: E28便携清洁机位置异常
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 对应rv-0498，先检查微动开关和放置，再查供电，步骤与对象一致。卡片保留收好软管、防夹电源线和避免顶墙提示。
+  session_id: 92bfe96398934f53ae0d504428ae86cb
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 提起便携深度清洁机，按基站微动开关，看是否能正常压下、回弹；放回设备，用手按污水箱保证到位。注意收好软管，避免夹电源线或放置时碰墙；附取放视频。卡片回显原故障描述。
+  - 检查基站电源插头是否插牢，供电松动可能被误判为清洁机放置不到位。卡片仍提醒收好软管、防夹电源线、避免碰墙，并附电源图。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T18
+  title: 新E28已撕保护贴，仍报拖布堵塞
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: null
+  judgment: 去保护贴不等于已检查滚筒缠绕及安装，发rv-0147合理。英语卡片和结尾不符合客户语言。
+  session_id: 3872f6d543ee47bb9caeb7ac7182f642
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 取出污水盒，检查滚筒是否缠着绳线、数据线、塑料袋、头发等，清理后确保能转动。安装时听到咔嗒声说明已装到位，参考安装视频。开始清洁前先整理电线，防止再次卡住。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T19
+  title: X10清水不足，需要客户确认检查结果
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 查密封圈后问“完好但仍报错/已坏/未查”，没有把未解决反馈自动当成密封圈完好，分支边界正确。原文没有这一事实，测试到问题卡停止。
+  session_id: 7e57f41b06f64617b1616495c8b80b18
+  stop_reason: awaiting_question
+  turns_zh:
+  - 检查清水箱部件；有水先倒出，查看出水口密封圈是否装好、有无损伤，变形或破损则提供照片。卡片说明照片另行上传，不影响先回答该卡；并回显缺水描述。
+  - 请选检查结果：①密封圈和水箱部件看起来正常，重装后仍报错；②密封圈变形或损坏；③还没检查。说明只有相关部件、基站密封圈和安装均正常而仍报错时，才按资料判断基站硬件问题。
+- id: T20
+  title: 定位失败的排障建议被直接标成结束
+  business_verdict: 不符合
+  language_issue: true
+  official_factor: null
+  judgment: 不符合。重建地图是操作，却被编译成说明并直接结束，没有等待结果；两次复现。首次还把照片中“未见机器人”错写为“基站缺失”，补测未复现这项视觉错误。
+  session_id: 69db26e964c44a158fe7b3a173ade057
+  stop_reason: done
+  turns_zh:
+  - 出现这个提示，可能是家庭环境或基站附近环境变化较大，与已有地图差异造成定位失败。请重新建图并开始新任务，确认提示是否消失。
+- id: T21
+  title: 激光传感器反复报堵，清洁重启无效
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: null
+  judgment: 回显已清洁重启的事实，追加具体的保护膜与雷达孔检查，避免了简单反复重启。重复部分可优化，当前核心流程合理；语言仍错误。
+  session_id: eb10e56734c84f69970f8d0da11bb12b
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 如果顶面保护膜翘起妨碍雷达，请确认已去掉保护膜。卡片回显反复激光堵塞及已清洁重启，说明若已经逐项按要求检查且仍异常，可以选未解决。附保护膜图。
+  - 清除挡住雷达的异物，附图。
+  - 用棉签等柔软材料擦拭雷达发射、接收孔，附图。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T22
+  title: X10轮子未着地
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: null
+  judgment: 匹配rv-0106；台阶卡住与平地仍报错两个条件写得清楚，未把荷兰账号国家当购买国家。英语输出单独记问题。
+  session_id: 95e7a20447b9456ea66fc895c3ea1ecd
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 如果经常卡在楼梯边缘或家具上触发提示，建议在App里设禁入区。
+  - 如果在平地仍报错，尝试重启机器人，看是否恢复。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T23
+  title: S1 Pro电池异常E41
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 对应rv-0138，给固件更新和重启，再收售后材料。当前没有电池损伤、冒烟等具体风险描述，不能凭错误名称直接认定安全事故。
+  session_id: f473dbaecf99457d83d148b9fec8a797
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 在App内把机器人固件更新到最新版本。
+  - 重启机器人，看能否正常工作。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T24
+  title: X10基站清水泵报6013
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 对应rv-0273，断电等待10秒再通电，随后确认和售后流转。等待时长完整保留，没有不匹配的其他型号操作。
+  session_id: 7b749efbc6a54c508bc5f9141127153f
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 拔掉基站电源线，等10秒后重新插上，再启动清洁任务，观察是否继续报错。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T25
+  title: S1 Pro的TrueAI传感器报E53
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 对应rv-0451，清洁指定传感器、再重启，方向准确。测试只验证收到未解决后收材料，不判断传感器实际损坏。
+  session_id: b3def28bf7344ccba03d6bc9ae2682e6
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 检查3D MATRIX EYE传感器是否有污物，用干净软布擦净，附位置图。
+  - 重启机器人，查看对应错误是否消失。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T26
+  title: S1 Pro清水水位异常，需问是否加第三方液体
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 操作条件待核
+  judgment: 对应rv-0063，走到第三方清洁液事实问题即停，正确。原资料要求翻转摇晃机器人，具体操作适用条件和安全说明应由官方复核，不把该做法说成系统自行发明。
+  session_id: 6dba4d38f25a4c64b5abf1b4b0142fca
+  stop_reason: awaiting_question
+  turns_zh:
+  - 把机器人移离基站，取下机器人污水盒，将机器人竖向翻转360度并摇动，然后回基站看是否恢复；附拆污水盒及翻转示意图。
+  - 检查注水接口附近的回充传感器镜片是否凸起或损坏，附位置图。
+  - 是否曾把第三方消毒剂或清洁液直接加进基站清水箱？选项是“是”“否”“不确定”。
+- id: T27
+  title: 滚筒已清洁，仍反复异响且无法启动
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 卡片明确承接已清洁、重复异响和不能启动，按对应代码最后复核后进入售后。安装时一次咔嗒声与运行中反复异响不同，系统没有直接说客户的反复异响正常；可进一步把区别讲清楚。
+  session_id: 0563b50ff5c94465bf518398de79578e
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 先为体验致歉。取出污水盒，检查绳线、电线、塑料袋、头发等缠绕并清理，确保滚筒转动；参考视频，安装时咔嗒声表示到位。开工前收好线缆。卡片回显反复异响、不能启动，以及已试建议且滚筒区域干净；已按相同方式做过仍异常可选未解决。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T28
+  title: 德语客户报滚刷2111
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: null
+  judgment: 对应rv-0256，先重启，无效再收售后资料，路径合理。给德语客户英语内容属于语言问题。
+  session_id: 98b68c6f2d514ac79553a8ef4758fa52
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 请重启机器人，查看错误是否消失。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T29
+  title: 托盘不排水，清理和管路检查都做过
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 首步查水箱扣锁是客户尚未给出的不同事实；之后检查密封也相关。系统记录已做检查，未把它们一概视为所有步骤完成。保修按当前日期及订单字段已过期；此为赛题业务口径，不延伸为法律判断。
+  session_id: 877a247198b344f297377742b3308e49
+  stop_reason: done
+  turns_zh:
+  - 检查污水箱放上基站后扣锁是否扣紧，附视频。卡片回显已清托盘、管路未夹、连接件未压下、污水箱空；已按要求检查过仍异常可选未解决。
+  - 检查基站清洁托盘格栅是否被泥沙或异物堵塞，并清理托盘；附图及视频。
+  - 若仍抽不出污水，用手压住污水箱盖，再在App发起洗拖布。如果这时抽水正常，资料认为密封圈异常；查看是否局部塌陷，如有则把凹陷处向外拉至与其他位置齐平。附按盖、拉密封圈及前后对比图。
+  - 已查订单Anker011保修截止2025-11-30，以2026-10-13计算已过期。系统称不能免费换货或退款；可按手册维护，或咨询购买配件。
+- id: T30
+  title: 刚换边刷仍报E4
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 本轮识别对象与原图相符，按rv-0443检查缠绕后再启动。换新边刷不保证没有缠绕或安装问题，因此这一复核不是错误。已换刷事实出现在卡片上下文。
+  session_id: 6ef60d131ace4dd2b3cc2b8ba89f855a
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 取下机器人污水盒，翻转机器人，拆下边刷查看是否有异物缠绕；附图。回显E4和两天前换过边刷，说明已按要求检查仍异常可选未解决。
+  - 再按启动/暂停按钮，测试机器人是否正常。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T31
+  title: 基站不充电，本轮正常完成四步排障
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 本轮正常使用rv-0363，4步未解决后收售后凭证；恢复出厂有删地图提醒。旧轮模型失败被写成知识缺口未重现，但未注入超时，不能称异常恢复分支全部通过。
+  session_id: 7015b7cb124344c3a0fff86e5258a2da
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 检查基站是否通电，屏幕及水箱内指示灯是否正常亮起。首卡承接“在基站不充电、电量极低、已擦过电连接触点”；部分检查可能重复，若确已按同样方式做过仍异常可选未解决。
+  - 如果基站未通电，尝试其他插座，检查基站背面的电源线是否接牢；松动可能使基站无法供电。
+  - 擦拭机器人和基站的充电针脚，确保无污物。
+  - 长按Wi-Fi指示灯旁红色按钮恢复出厂，把机器人放在基站并确保充电针脚对准，等待5分钟。注意：恢复出厂可能删除保存的地图；长按红色功能按钮超过5秒会删除地图，需要重新绘制全屋地图。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T32
+  title: 反复重装水箱后仍报取出和装入
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 临时方案条件待核
+  judgment: 跳过已做的重装步骤，进入rv-0061的官方临时胶带方案，末尾未承诺换货。胶带方案来自资料；官方应维护部件定位和临时使用条件，不能仅因用了胶带就判模型乱修。
+  session_id: 50d07951172e4acea72578483fd79519
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 说明水箱检测传感器可能有轻微错位，可尝试临时办法：在机器人本体后侧右边贴一小块普通透明胶带，使污水盒检测传感器固定在正确位置，参考示意图。卡片回显每5分钟反复播报、已两次重装，并说明重复检查的处理方式。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T33
+  title: S1 Pro陀螺仪E5A
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: rv-0439要求先重启；系统执行后收到未解决再进入售后材料收集，合理。
+  session_id: 2cdada346e5542f2be14b557be9c0b69
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 重启机器人，看看能否恢复。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T34
+  title: 维修后旧地图丢失，历史里却还看得见
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 缺直接答案
+  judgment: 系统明确承认无法证明旧地图能恢复，最后交人工，没有承诺“重新建图等于恢复旧图”。现有rv-0312仅支持地图页与重建检查；缺的是维修后恢复旧图及历史记录关系的正式口径。强制重建步骤可改成可选，避免偏离客户目标。
+  session_id: ad615dd8afea4bd09ae0423eead25309
+  stop_reason: awaiting_human
+  turns_zh:
+  - 系统致歉并要求查看地图管理页有无对应地图。说明理解客户想拿回旧地图，但没找到维修后恢复或历史仍显示的官方说明，不能确认能恢复；以下只检查地图页与重建，如仍需要原图本身可选未解决交同事。回显地图丢失、历史可见却不能用的描述。
+  - 重启机器人，尝试重新绘制房屋地图，查看是否仍丢图。
+  - 说明长按红色功能键超过5秒会删除地图，此时需重新绘制房屋地图。接着明确：已有指导只涵盖刚才步骤，未覆盖客户真正诉求，已提交问题和支持资料给同事审核；可继续补充信息。
+- id: T35
+  title: 低电回充后自动继续清洁
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 这是功能机制说明，原文未说回充失败或无法续扫。解释正常行为比硬开维修流程更合适。
+  session_id: 002f0fe6adb34766af2a849ea062d8c2
+  stop_reason: done
+  turns_zh:
+  - 机器人低电且当前任务未完成时，会回基站充电；估计电量足以完成剩余任务后，会离站继续清洁。
+- id: T36
+  title: 已换滤网和刷子仍有巨大噪声
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: null
+  judgment: 没把客户担心当成已确认电机损坏。询问拆下滚刷及盖后噪声是否消失，是继续定位所需的新事实；测试不能代答。资料包无原文外链对应附件，本轮未测那张外部图片。语言为英语。
+  session_id: d931a458a33c49ab847cedaa6c427447
+  stop_reason: awaiting_question
+  turns_zh:
+  - 系统致歉，回显已换滤网、刷子并清洁但仍很吵。请参考所附官方异响文章，拆下滚刷和盖后声音是否消失？选项：声音消失；仍响且像啁啾声；仍响但为其他声音。选择实际观察或简述，不要求猜故障。
+- id: T37
+  title: 水箱明明满着，却提示加水
+  business_verdict: 符合当前节点
+  language_issue: true
+  official_factor: 特殊情境需深化
+  judgment: 系统承认水箱已满，没有改写为空箱；建议重启拖地后不行就转售后，范围有限但可接受。资料对“满水误报”的进一步排查较弱，应补型号对应检测流程。语言问题独立存在。
+  session_id: ec379e5b96e4423eabc028be4c40a2ff
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 检查基站清水箱，空了才加水并重启清洁；若与基站同一楼层启动，补水并新建拖地后仍异常则联系支持。上下文专门说明“你已说水箱满”，如果确实满且重启后仍提示，选未解决；并回显软管、橡胶件正常。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T38
+  title: 反复洗拖布仍报水不足，附了发票
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 购买凭证不等于密封圈检查结果。走rv-0023后等待客户确认部件状态合理；本轮尚未到最终保修判断，不能据发票把售后流程写成已完成。
+  session_id: 5398e06e27ef4ef19143f04bc59a320f
+  stop_reason: awaiting_question
+  turns_zh:
+  - 要求检查清水箱，先倒出水，查看出水口密封圈安装和损伤；变形/破损则提供照片。回显反复洗拖布仍报错。照片可另行上传，不影响该卡反馈。
+  - 请选：密封圈及水箱部件完好、重装后仍报错；密封圈变形或破损；还未检查。说明只有相关部件和安装均正常仍报错时，资料才指向基站硬件问题。
+- id: T39
+  title: X10离线，先问是否发生在升级后
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 首问固件升级时间关系与候选适用条件有关，原文没有给出答案，停下合理。尚不能说系统已排除路由器、频段或硬件问题，也不能因没发卡就判失败。
+  session_id: 8f849e7cef4f4d9692e9aada0905daf5
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 机器人是在固件升级后离线的吗？
+- id: T40
+  title: 清洁液不减少，被误当成不出清水
+  business_verdict: 不符合
+  language_issue: false
+  official_factor: null
+  judgment: 不符合。客户问清洁剂，系统两次都选清水条目；正确rv-0073已召回。根因是对象语义选择错误及依赖模型自报冲突的校验。
+  session_id: abeb8a88ab9640589cbfdfea05910b50
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 展示产品选择卡，要求在候选中确认具体产品。
+  - 要求按“不出清水”检查：拖布湿说明机器人工作正常；拖地时滚筒拖布和指示灯应亮，瓷砖地可看水痕；清洁后仍干可能是清水泵故障。建议App进入设置、S1 Pro、活动日志上传、复制设备信息，并附技术资料收集文章。回显清洁液液位不变，但并未按清洁液检查。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T41
+  title: 没有拖地却报烘干失败，还在等替换件
+  business_verdict: 不符合
+  language_issue: false
+  official_factor: 特殊情境待核
+  judgment: 不符合。两项故障和配送任务均识别到了，但本轮只落实一部分，未交代未覆盖问题；补测改成零动作转售后，仍用“排障已完成”。不是物流意图完全丢失。
+  session_id: 395689d295a2457dbf291d742ae7d036
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 说明按“设备排障→配送状态”处理。给出E28注水异常指南：若便携深度清洁机底部漏水，提起放回并按压使注水口贴合，勿紧靠墙造成顶起；若无漏水或基站底部漏水，更新固件并新建拖地任务确认。若不想升级，仍可按保修内硬件问题走保修服务。提醒检查基站周边、底部和托盘积水并及时清理；附取放视频。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T42
+  title: 塑料件脱落漏水，读图把几个物体混到一起
+  business_verdict: 不符合
+  language_issue: false
+  official_factor: null
+  judgment: 客户可见售后路径合理，内部图片证据不符合。两次把手持脱落件与机身底部细节混为一体；按关键证据口径计入不符合。
+  session_id: 2040a6f66dd04522803115abeede4438
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 根据客户描述的损坏，系统称这不是排障能修复的问题，下一步是售后审核；保修要另查。请提供订单号，其他卖家购买则上传含卖家、购买国家、购买日期的凭证。
+- id: T43
+  title: 西班牙语客户说机器人离线
+  business_verdict: 不符合
+  language_issue: true
+  official_factor: null
+  judgment: 不符合。第4段重启和重新配网被编译成说明，未经反馈就称排障完成；另有链接删除留下<>。补测只追问离线含义，未到该缺陷节点；语种问题单记。
+  session_id: 683da5c54a904a1d9057c09ab2d5fb1d
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 确认Wi-Fi为2.4GHz，机器人不能连5GHz；若当前是5GHz请切到2.4GHz，提供频段说明外链，正文有残留“<>”。提示大房屋覆盖不足可能导致清洁中离线，回到信号好处会自动重连并显示路径。
+  - 检查Wi-Fi密码，可从手机设置复制，或试手机热点确认能否连接；只支持用户名/密码方式，不支持需要门户网页认证的网络。保留网络覆盖说明。
+  - 让机器人、路由器和手机靠近，确保网络信号好。保留网络覆盖说明。
+  - 若仍无法连接，建议重启路由器和设备，再重新配对网络。随后称官方排障已完成仍未解决，进入售后审核；请提供订单号，或包含卖家、购买国家、日期的凭证以查保修。
+- id: T44
+  title: 充电盒针脚卡住或损坏，希望换货
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 原文已有物理损坏和换货诉求，直接收保修资料合理，无需强行让客户继续反复充电。没有承诺换货批准。
+  session_id: 1580be458550401f94e348c7e75a7693
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 系统为体验致歉。核查保修需要订单资料：请给订单号；从其他卖家购买则上传包含卖家名称、购买国家及日期的凭证。
+- id: T45
+  title: 吸奶器不能充电，发热部位曾烫伤客户
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 安全处置优先，先停用停充并移交人工，未先要求继续排障或先审核保险渠道。凭证仅支持购买信息，不能证明伤情或原因；本次没有完成真实赔付或换货。
+  session_id: b2025bed282846889f9e5f2e5b47e4f2
+  stop_reason: awaiting_human
+  turns_zh:
+  - 为了安全，请停止使用设备，也不要给它充电。已把问题及支持资料提交同事审核；等待时可继续补充信息。
+- id: T46
+  title: 新吸奶器电机异响，先分连续和间歇
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 先问连续或间歇噪声是合理的新事实，截图只能证明购买，不能替客户回答噪声。当前未执行后续分支，不评价未发生的诊断。
+  session_id: 39a1d0a4b67d426fa5e5f180353dacbf
+  stop_reason: awaiting_question
+  turns_zh:
+  - 为定位问题，请说明噪声是持续不断还是间歇出现。选项：“持续”“间歇”。
+- id: T47
+  title: 查的是替换泵头，系统只查到整机订单
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 配件独立记录待核
+  judgment: 没用整机运单冒充配件运单，明确当前记录只含T8D04121，要求单独订单或案件号，符合证据范围。标done不等于配件已经送达。
+  session_id: fb72ba22291c4f0d8c69ac9aac1dcb48
+  stop_reason: done
+  turns_zh:
+  - Anker010的Amazon Logistics运单Anker1234567-13于2025-12-07送达，记录商品T8D04121。没有看到T8D02181-80的独立发货；若配件来自另一订单或售后更换，请提供那个订单号或案件号继续查。
+- id: T48
+  title: 绿灯含义待核，本轮没有推断常亮
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 灯态资料待核
+  judgment: 首次业务回答可接受：先确认产品，承认绿灯资料不足，问常亮或闪烁，没有把单张照片当常亮证据。裂纹被记录。补测多写“手持”这一不实场景细节，另记轻微视觉残余；不覆盖主轮结果。
+  session_id: f693069e3d7c4aa1ac8831fba003a713
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 这是什么产品？请给产品类别和型号，也可提供铭牌型号，然后查询该问题。
+  - 照片显示中央电源键上方有一颗绿灯点亮，左侧竖排三颗黄灯亮起，左边充电触点附近外壳可见裂纹，需要核实。S1 Pro吸奶器T8D04的当前官方说明涉及电量红灯、充电和蓝牙配对的白灯或交替灯，没有说明绿灯含义。请查产品手册或Anker eufy App，并补充绿灯是常亮还是闪烁、何时出现，以便核实。
+- id: T49
+  title: 保险共同支付的泵无法开机，希望更换
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 先收购买资料以核保，没把“保险购买”自动等同于授权经销商，也没许诺立刻换新。设备故障作为后续任务保留，当前等待材料合理。
+  session_id: 318e964bfcab410a8895feaf81f9c393
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 按“更换申请→设备排障”处理。核保需要订单资料，请给订单号；其他卖家购买请上传包含卖家、购买国家及日期的凭证。
+- id: T50
+  title: 客户只说左边能用，不能反译成不能用
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 本轮原样引用“左边确实能用”，追问哪里有问题及具体表现，没有反转成左侧故障，也没有直接发维修步骤。
+  session_id: 5c7b467bd10a4fab9b4df622da6ab812
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 你提到“左边那个确实能用”。是哪一侧或哪个部件有问题，具体表现是什么？
+- id: T51
+  title: 泵充过电仍中途关机，订单已过保
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 正文适用关系待核
+  judgment: 过保判断和停机指南主题可接受。主轮bp-0111带配件及蓝牙检查，原文适用关系需官方核实；补测bp-0018更集中。不能把源文里的蓝牙说成模型编造。
+  session_id: 2bbe503ac78347c9a326e66012c6c8ef
+  stop_reason: done
+  turns_zh:
+  - 先按“更换请求→设备排障”处理。订单Anker014保修至2026-07-30，系统按2026-10-13日期判断已过保，不能免费更换或退款；可按手册保养或咨询购买配件，仍可继续排障。首卡要求确认设备充满电。上下文列出可能原因：电量不足或放电异常、内部气泵接触不好、硬件故障、软件错误；并承接已充电、续航差、使用中关机，说明重复检查可反馈未解决。
+  - 尝试不同充电方式：直接充电或使用充电盒。
+  - 长按电源键12秒复位，再同时长按电源键和加号键约5秒恢复出厂设置。
+  - 检查配件安装：确认原文称为“speaker cover”的盖件、硅胶垫和阀正确安装；检查密封圈是否损坏、老化或被异物阻挡。该盖件具体名称需官方确认。
+  - 检查蓝牙是否已正确启用、没有被禁用。
+  - 案件已结束，但问题没有解决；没有提交新的服务申请。
+- id: T52
+  title: 充电盒自身不充电，本轮先确认源头
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 充电对象资料组织
+  judgment: 首次围绕充电盒自身通电追问，补测承认无法确认适用指引后转人工，均未重现“盒不充电却排查泵受电”的旧错误。当前节点可接受，两次路径不同，不能认定完全稳定。
+  session_id: 9e40ba86b3bd4f9d8a49e6caab0b825b
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 充电盒本身接上充电器后是否有电，或是否显示任何指示灯？
+- id: T53
+  title: 现在过保，但客户称保内就已经坏了
+  business_verdict: 符合，有非阻断瑕疵
+  language_issue: false
+  official_factor: 政策例外待核
+  judgment: 无法开机小节及过保默认规则可接受；未专门承接“保内已坏、过保才申报”，后来问到货按钮损坏，相关性弱。需保留故障时间区间并说明未知的例外口径，不能擅自批准或替客户断言到货一定正常。
+  session_id: efb3892058a44b619975ad1c59ddf382
+  stop_reason: awaiting_question
+  turns_zh:
+  - 按“更换申请→设备排障”处理。订单Anker015保修至2025-12-13，以2026-10-13计算过期，不能免费换货或退款，可按手册维护/咨询配件，但仍能继续检查。首卡要求长按电源键12秒复位，再看能否开机；回显单侧停工、反复充电也开不了机。
+  - 确认充电盒内部指示灯及吸奶器指示灯都点亮。
+  - 换一个充电盒给吸奶器充电。
+  - 确保吸奶器与充电盒接触良好。
+  - 尝试磁吸充电线充电。
+  - 电源键是否收到产品时就损坏？选项“是，到货就坏”“否”。资料说明出厂按钮损坏可能与运输有关。
+- id: T54
+  title: S1 Pro无吸力
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 部件术语待核
+  judgment: 按bp-0125检查密封件、组装、佩戴、强度和电机，再收售后材料，业务方向合理。条目最后出现“软管或泵罩”等宽泛术语，型号是否真有对应部件需官方核实；不能把资料原文问题全部归为模型幻觉。
+  session_id: 291e7ff48a0d45b086459a43c7a89c3c
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 检查鸭嘴阀和隔膜有无裂纹、缺口、孔洞、撕裂；损坏则停用该部件并购买替换件。
+  - 检查组装正确，鸭嘴阀、喇叭罩通道、隔膜、泵主机四部分密封良好。
+  - 调整佩戴，使乳头位于喇叭罩通道中心，不折叠、不受压，泵与胸部密封并能感到明显吸力。
+  - 不同喇叭罩或内衬尺寸影响舒适度和吸力，尝试适合自身的尺寸。
+  - 把吸力调至自己舒适范围内的最高档。
+  - 同时长按电源键与加号键约5秒恢复出厂设置，再试；仍有问题进入下一步。
+  - 取下主机头，让吸气口对着手掌，启动后测试有无吸力。有明显吸力则资料认为主机正常，可能是其他部件，如“软管或吸奶器罩”；没有吸力则还需排查。这里保留资料原说法，部件名称未替官方纠正。
+  - 官方排障已完成，但问题仍未解决，下一步进入售后审核；是否保修需继续核查。请提供订单号；其他卖家购买则上传含卖家、购买国家和购买日期的凭证。
+- id: T55
+  title: 左泵咔嗒响但无吸力，附购买截图
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 部件术语待核
+  judgment: 按点击声但无吸力的专门条目bp-0102执行，保留隔膜已检查事实。订单在保，但仍需要故障照片/视频和有效序列号；购买截图不能替代故障证据，等待合理。条目里的软管等称谓应由官方核对。
+  session_id: dbb383d2ea75441f9d0c42412bc9319e
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 系统致歉，要求同时按电源键和加号键约5秒恢复出厂设置，恢复后再试，无效进入下一步。卡片回显左边咔嗒响无吸力、隔膜在位且一直手洗。
+  - 取下主机头，吸气口对手掌，启动测试吸力；有明显吸力则资料认为主机正常，可能是其他部件（原文举软管或泵罩），无吸力则需继续排查。
+  - 检查鸭嘴阀、隔膜的裂纹、缺口、孔洞和撕裂；损坏则停用并更换。确认鸭嘴阀、喇叭罩通道、隔膜、主机装配密封。
+  - 已查Anker016保修至2027-04-01。在提交更换申请之前，还需故障照片或视频、产品序列号SN；请上传媒体并回复其他信息。
+- id: T56
+  title: 摄像头老离线，客户已经很生气
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: 按键表述待核
+  judgment: 先给少量基础检查，连续未解决后允许选人工或继续，避免无休止加步骤。第二卡“按住摄像头2秒”没有明确按钮，是源资料表达缺陷，应核实后改成准确部位。
+  session_id: 5560d6383e794421bc28b59ca9108a8a
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 系统为困扰致歉。检查摄像头电池，电量低则充电。
+  - 检查是否关机：短按再松开SYNC键；灯不亮时，在摄像头设置里开机，或按原文“按住摄像头2秒”开机。此处未自行补出原文没有明确的按键名称。
+  - 理解已花费很多时间；可以现在为支持团队准备摘要，请回复“human agent（人工客服）”；想继续下一步官方检查，则回复“continue（继续）”。
+- id: T57
+  title: 多个摄像头不录像，先收App版本
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 本轮正确给出App版本问题卡，没有收到版本就停下等待；不能把客户怀疑升级等同于已确认升级导致故障。
+  session_id: d847d64aa8a341d9aeaaf9c5866e67e4
+  stop_reason: awaiting_question
+  turns_zh:
+  - 系统先致歉。你使用哪个版本的Anker eufy App？可在App“设置→关于/应用信息”查看，请回复版本信息。这是问题卡，没有“已解决/未解决”动作可替代版本号。
+- id: T58
+  title: 只表达愤怒，没有具体故障
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 不凭愤怒程度编造故障，也不立即许诺赔偿；请补现象或转人工是正确边界。
+  session_id: 9ca72fc8011147e19bccde967ce935f2
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 为设备问题致歉。请描述设备具体表现或App中的错误，我会查官方指引；若更愿意由人帮助，可以为支持团队准备摘要。
+- id: T59
+  title: 两个S340不稳定，想换成便宜的C20摄像头
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 识别换货请求并先收购买资料，没有直接答应跨型号置换。这里C20是摄像头，不是Omni C20扫地机器人；本轮没有跨产品线给排障。
+  session_id: fdf0cc69bb2343fb9270f0f37a500a6b
+  stop_reason: awaiting_upload_receipt
+  turns_zh:
+  - 系统为体验致歉。核查保修需要订单详情，请提供订单号；其他卖家购买则上传含卖家名称、购买国家、日期的凭证。
+- id: T60
+  title: 骂App难用，只想让机器清洁
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 不能据这句话判定配网、地图或电机故障，先收现象合理。没有向客户反复强调情绪或说教。
+  session_id: 4f192f74066b4b8a92dc82c5f643081e
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 为设备问题致歉。请描述它的具体表现或App报错，我会查官方指引；若想由人工帮忙，可为支持团队准备摘要。
+- id: T61
+  title: 提前两小时启动，却被追问为什么没启动
+  business_verdict: 不符合
+  language_issue: false
+  official_factor: 特殊情境待核
+  judgment: 不符合。提前两小时启动和无历史记录被保留，但两次追问都来自“低电导致计划无法启动”候选。动作守卫没放行方案，追问守卫仍放行了不相干问题。
+  session_id: b83cbd7c09d74e828c050520519d7fe3
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 系统先致歉，然后问：计划清洁失败时，机器人是否提示低电量？
+- id: T62
+  title: 清洁路线不直，先问是否重复覆盖
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: “不直”不等于重复清同一区域，系统先问而未直接当成地图故障，合理。还需路径截图、场景和是否绕障等事实，不能凭客户比较判断机器硬件坏。
+  session_id: 2e6522b12d344b60acb9a96b69d25f46
+  stop_reason: awaiting_free_text_or_no_action
+  turns_zh:
+  - 系统为体验致歉。机器人是否反复清洁同一个区域，或者清洁路线相互重叠？
+- id: T63
+  title: 滚刷盖卡扣坏，找不到配件
+  business_verdict: 符合当前节点
+  language_issue: false
+  official_factor: null
+  judgment: 识别购买配件并保留设备问题后续任务；没有库存或下单能力时交人工正确。尚缺具体型号，人工仍需补齐，当前并未查到库存或真的发货。
+  session_id: 319bd6a829a34e7e9e9049c8470db499
+  stop_reason: awaiting_human
+  turns_zh:
+  - 系统为困扰致歉，说明按“配件购买→设备排障”处理。这里不能查询配件库存或创建配件订单，已把滚刷保护盖需求交给能核查的同事。

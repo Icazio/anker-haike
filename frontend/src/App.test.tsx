@@ -16,12 +16,17 @@ describe('chat shell wired to the session API (票 06 集成)', () => {
     sessionStorage.clear();
   });
 
-  it('shows the five-stage progress bar and starters in idle state', () => {
+  it('shows the five-stage progress bar, the product wall and the workflow legend in idle state', () => {
     render(<App />);
-    const steps = screen.getAllByRole('listitem').filter((li) => li.closest('[aria-label="处理进度"]'));
+    const steps = screen.getAllByRole('listitem').filter((li) => li.closest('ol[aria-label="处理进度"]'));
     expect(steps).toHaveLength(5);
-    for (const label of ['扫地机器人', '吸奶器']) expect(screen.getByRole('button', { name: new RegExp(label) })).toBeVisible();
-    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+    // 8 款产品带官网图与 PN；点击只预填输入框，不直接发送
+    const pump = screen.getByRole('button', { name: 'eufy Wearable Breast Pump S1 Pro T8D04' });
+    expect(pump.querySelector('img')).toHaveAttribute('src', '/products/T8D04.png');
+    fireEvent.click(pump);
+    expect(screen.getByLabelText('描述你的问题')).toHaveValue('我的 eufy Wearable Breast Pump S1 Pro（T8D04）：');
+    expect(screen.getByRole('list', { name: '角色说明' })).toHaveTextContent('Leader');
+    expect(screen.queryByRole('button', { name: '请求人工' })).toBeNull();
   });
 
   it('sends a message: creates a session, streams events, shows the bubble and returns to idle', async () => {
@@ -95,7 +100,6 @@ describe('chat shell wired to the session API (票 06 集成)', () => {
     render(<App />);
     fireEvent.change(screen.getByLabelText('描述你的问题'), { target: { value: 'S1 Pro 不吸了' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    // 用完整候选名，避免命中欢迎区的「扫地机器人」品类按钮（发送前仍显示）
     const choice = await screen.findByRole('button', { name: /eufy S1 Pro 扫地机器人/ });
     expect(screen.getByText('本期不支持')).toBeVisible();
     await waitFor(() => expect(choice).toBeEnabled());

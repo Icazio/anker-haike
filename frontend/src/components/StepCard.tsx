@@ -57,7 +57,7 @@ export function StepCard({ item, active, disabled, onReply, onHover }: Props) {
         )}
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder="或用几句话描述" aria-label="短答" disabled={off} />
         <div className={styles.feedbackButtons}>
-          <button type="button" data-answer="text" disabled={off || !text.trim()} onClick={() => answer({ option: null, text: text.trim(), unavailable: false })}>提交回答</button>
+          <button type="button" data-answer="text" data-primary disabled={off || !text.trim()} onClick={() => answer({ option: null, text: text.trim(), unavailable: false })}>提交回答</button>
         </div>
       </div>
     );
@@ -67,7 +67,7 @@ export function StepCard({ item, active, disabled, onReply, onHover }: Props) {
         <p className={styles.expected}><span>怎么提供</span>直接在下方输入框附上图片或视频链接发送；没有的话点「暂时没有」。</p>
         <input value={text} onChange={(e) => setText(e.target.value)} placeholder="可补充说明（选填）" aria-label="材料说明" disabled={off} />
         <div className={styles.feedbackButtons}>
-          <button type="button" data-answer="text" disabled={off || !text.trim()} onClick={() => answer({ option: null, text: text.trim(), unavailable: false })}>提交说明</button>
+          <button type="button" data-answer="text" data-primary disabled={off || !text.trim()} onClick={() => answer({ option: null, text: text.trim(), unavailable: false })}>提交说明</button>
           <button type="button" data-answer="unavailable" disabled={off} onClick={() => answer({ option: null, text: null, unavailable: true })}>暂时没有</button>
         </div>
       </div>
@@ -75,7 +75,7 @@ export function StepCard({ item, active, disabled, onReply, onHover }: Props) {
   } else if (kind === 'statement') {
     controls = (
       <div className={styles.feedbackButtons}>
-        <button type="button" data-answer="ack" disabled={off} onClick={() => onReply({})}>知道了</button>
+        <button type="button" data-answer="ack" data-primary disabled={off} onClick={() => onReply({})}>知道了</button>
       </div>
     );
   } else {
@@ -84,7 +84,7 @@ export function StepCard({ item, active, disabled, onReply, onHover }: Props) {
         <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="可补充说明（选填）" aria-label="补充说明" disabled={off} />
         <div className={styles.feedbackButtons}>
           {(Object.keys(LABEL) as Feedback[]).map((k) => (
-            <button key={k} type="button" data-feedback={k} disabled={off} onClick={() => feedback(k)}>{LABEL[k]}</button>
+            <button key={k} type="button" data-feedback={k} data-primary={k === 'solved' || undefined} disabled={off} onClick={() => feedback(k)}>{LABEL[k]}</button>
           ))}
         </div>
       </div>

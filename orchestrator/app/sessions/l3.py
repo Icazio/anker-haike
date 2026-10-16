@@ -16,6 +16,7 @@ from datetime import date
 
 from haike_contracts.common import WarrantyDecision
 
+from app.actions import review as review_mod
 from app.actions.gate import EVIDENCE_LABELS, AuthorizationGate, missing_evidence
 from app.actions.runtime import require_services
 from app.actions.store import ExecutionBusy, ExecutionNeedsReview
@@ -35,9 +36,18 @@ from app.conversation.effects import writer
 from app.conversation.quotes import quoted
 from app.conversation.reduce import stable_id
 from app.conversation.reply import acknowledge_current_turn
-from app.conversation.tasks import NOT_EXECUTABLE, REMEDY_INTENTS, settle
+from app.conversation.tasks import (
+    LABELS,
+    NOT_EXECUTABLE,
+    REMEDY_INTENTS,
+    carry_over,
+    next_task,
+    settle,
+    task_business,
+)
 from app.emotion.policy import complaint_flagged
 from app.escalation.summary import build_summary
+from app.models.runtime import get_model_router
 from app.official.message import parse_message
 from app.official.models import pn_of
 from app.sessions import evidence as evidence_mod
@@ -341,14 +351,20 @@ HARDWARE_BASIS = {
 }
 
 
-def hardware_basis(state) -> str | None:
-    """为什么这单进了质保判断。没有明确来路时返回 None，不编理由。"""
+def hardware_basis_key(state) -> str | None:
+    """进质保判断的来路（HARDWARE_BASIS 的键）。也是独立审查里「系统给出换货」的依据。"""
     outcome = state.get("diagnose_outcome") or {}
     if outcome.get("mode") == "warranty":
-        return HARDWARE_BASIS.get(outcome.get("reason"))
+        return outcome.get("reason") if outcome.get("reason") in HARDWARE_BASIS else None
     if (state.get("next_action") or {}).get("reason") == "guide_exhausted":
-        return HARDWARE_BASIS["guide_exhausted"]
+        return "guide_exhausted"
     return None
+
+
+def hardware_basis(state) -> str | None:
+    """为什么这单进了质保判断。没有明确来路时返回 None，不编理由。"""
+    key = hardware_basis_key(state)
+    return HARDWARE_BASIS[key] if key else None
 
 
 def stated_dealer(state) -> WarrantyDecision | None:
@@ -525,20 +541,33 @@ async def authorize(state):
     old = await services.executor.store.get(key)
     if old and old["status"] == "succeeded":
         return {"l3_route": "execute", "execution_key": key, "gate_result": old["gate_result"]}
+    order = await services.backend.get_order(state["case_order_no"]) if state.get("case_order_no") else None
     logistics_ok = False
-    if option["type"] in {"reship", "carrier_investigation"} and state.get("case_order_no"):
-        order = await services.backend.get_order(state["case_order_no"])
+    if option["type"] in {"reship", "carrier_investigation"} and order is not None:
         verdict = logistics.verdict(order, as_of(state))
         logistics_ok = verdict == ("reship_eligible" if option["type"] == "reship" else "delivered")
+    evidence = evidence_mod.collect(state)
+    router = get_model_router()
+    human_approved = case["status"] == "approved"
+    if router is not None and option["type"] in review_mod.REVIEWED_KINDS and not human_approved:
+        # 审查要等模型（最长 15 s）：进度先推到办理，客户端不停在「确认处理方案」
+        writer()({"type": "progress", "stage": "execute"})
+    review = await review_mod.review(
+        review_case(state, option, order, evidence), router,
+        human_approved=human_approved, session_id=state["session_id"],
+    )
+    if review.event is not None:
+        await services.cases.record_review(state["case_id"], review.event)
     gate = AuthorizationGate().check(
         kind=option["type"],
         warranty=warranty_of(state),
         logistics_ok=logistics_ok,
-        evidence=evidence_mod.collect(state),
+        evidence=evidence,
         risk_cases=state.get("risk_cases") or [],
         allowed_operations=(state.get("turn_decision") or {}).get("allowed_operations", False),
         user_confirmed=proposal.get("user_confirmed", False),
         case_status=case["status"],
+        review=review.check,
         execution_status=old["status"] if old else None,
     )
     await services.cases.transition(
@@ -546,6 +575,25 @@ async def authorize(state):
         gate_result=gate.model_dump(), chosen_option_id=option["option_id"], proposal=proposal,
     )
     return {"gate_result": gate.model_dump(), "execution_key": key, "l3_route": "execute" if gate.passed else "await_human"}
+
+
+def review_case(state, option, order, evidence) -> review_mod.ReviewCase:
+    """独立审查的输入：客户原话与订单行给审查模型，Worker 的声明只进快照与门控（见 app/actions/review.py）。"""
+    texts = [e.get("text", "") for e in state.get("history") or []
+             if e.get("role") == "user" and e.get("issue_id") == state.get("active_issue_id")]
+    if state.get("entry") == "message":
+        texts.append(state.get("text", ""))
+    return review_mod.ReviewCase(
+        kind=option["type"],
+        sku=(state.get("product_confirmed") or {}).get("sku"),
+        order_no=order.order_no if order else None,
+        order_lines=tuple((line.sku, line.description) for line in order.lines) if order else (),
+        customer_texts=tuple(dict.fromkeys(t for t in texts if t and t.strip())),
+        basis=hardware_basis_key(state),
+        requested_remedy=state.get("requested_remedy"),
+        warranty=state.get("warranty"),
+        evidence=evidence,
+    )
 
 
 async def execute(state):
@@ -805,7 +853,9 @@ async def consult(state):
             )
             return {
                 "consult_intent": intent, "consult_attempts": attempts,
-                "stage": state.get("stage", "consult") if state.get("pending_card") else "consult",
+                # 转人工后才推进到的查询（T41）缺单号：阶段仍是等人工，不能被追问改成 consult
+                "stage": state.get("stage", "consult")
+                if state.get("pending_card") or state.get("stage") == "awaiting_human" else "consult",
                 "l3_route": "commit_issue" if attempts < 3 else "summarize",
                 "escalate_reason": None if attempts < 3 else "R7",
             }
@@ -856,7 +906,9 @@ async def consult(state):
         if case:
             case_update["case_status"] = case["status"]
             view["fields"]["case_status"] = {"value": case["status"], "source": "case"}
-    propose_logistics = bool(offer) and not state.get("pending_card")
+    # 案件已在人工队列（转人工后才推进到这项查询，T41）：只答物流事实，不另开补发 / 调查方案 ——
+    # 同一案件不能同时等两份审批；包裹状态由 advance_tasks 并进交接摘要（T9 同一分支）
+    propose_logistics = bool(offer) and not state.get("pending_card") and state.get("stage") != "awaiting_human"
     answer = render_answer(request, view)
     if logistics_note:
         answer = logistics_note.rsplit("\n", 1)[0] if propose_logistics else logistics_note
@@ -1137,8 +1189,6 @@ async def vision_conflict(state):
 
 
 async def advance_tasks(state):
-    from app.conversation.tasks import LABELS, next_task, task_business
-
     completed = state.get("completed_task_intent") or "report_problem"
     business = BusinessContext.restore(state)
     decision = state.get("turn_decision") or {}
@@ -1199,6 +1249,17 @@ async def advance_tasks(state):
             }
         )
     else:
+        holder = next((t["intent"] for t in tasks if t["status"] == "waiting_human" and not t.get("carried_by")), None)
+        tasks, carried = carry_over(tasks, holder) if waiting and holder else (tasks, [])
+        if carried:
+            # 推进不了的诉求不能悬空：客户被告知过处理顺序，这里说明它们也交给了同一位同事，交接摘要随之更新
+            update["task_queue"] = tasks
+            labels = ", ".join(LABELS[t["intent"]] for t in carried)
+            say(state, f"I've also added your other request ({labels}) to the same case, "
+                       "so the colleague can handle it together.")
+            if state.get("case_id"):
+                row = await require_services().cases.store.get(state["case_id"])
+                await _record_handoff({**state, "task_queue": tasks}, row)
         update["l3_route"] = "await_input" if state.get("pending_card") else "commit_issue"
         if (
             state.get("stage") == "done"

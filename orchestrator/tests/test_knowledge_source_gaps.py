@@ -11,6 +11,7 @@ from app.rules import RulesService
 from app.settings import REPO_ROOT
 from tests.conversation_runtime import conversation as conversation_fixture
 from tests.fake_qa import QAHitAdapter
+from tests.test_conversation_l3 import act
 
 conversation = conversation_fixture
 
@@ -66,18 +67,43 @@ async def test_http_incomplete_official_source_is_not_marked_answered(conversati
     assert not any(e["type"] == "step_card" for e in events)
 
 
-async def test_source_gap_falls_back_to_the_candidate_awaiting_its_precondition(conversation):
-    """T40：synthesize 把缺后续说明的 rv-0371 判可执行，对症的 rv-0073（检查清洁液瓶安装）判待确认。
-    原先只要有可执行方案，待确认候选的追问就整个丢掉；rv-0371 碰到缺失内容又直接交人工，rv-0073 从没用上。
-    缺失内容照旧如实告知，然后先按 rv-0073 的前提问一次，不交人工。"""
+async def test_source_gap_switches_silently_to_the_complete_candidate(conversation):
+    """官方 63 单 T40（Codex 2026-10-12 20:25 主轮）：synthesize 把缺链接的 rv-0371 判可执行、rv-0073 判待确认「瓶子装好没」，
+    客户先听到「官方资料缺后续说明」，再收到一句无卡片的自由文本追问。rv-0073 首步就是查清洁液瓶（前提即计划内检查，
+    按可执行处理），rv-0371 碰到缺口按耗尽、静默换到 rv-0073 出卡（Fable D3）；缺口只记内部轨迹。"""
     set_knowledge_adapter(QAHitAdapter("rv-0371", "rv-0073"))
-    question = "Is the cleaning solution bottle installed on the robot?"
+    question = "Is the cleaning solution bottle installed correctly in your S1 Pro?"
     conversation.models["diagnose.synthesize"].script = [{"hypotheses": [
         {"plan_id": "qa_rv_0371", "confidence": 0.72, "evidence_ids": ["chunk-rv-0371"],
          "applicability": "supported", "supported_symptoms": ["cleaning solution stays at 660ml"]},
         {"plan_id": "qa_rv_0073", "confidence": 0.6, "evidence_ids": ["chunk-rv-0073"],
          "applicability": "needs_confirmation", "supported_symptoms": ["cleaning solution stays at 660ml"],
-         "clarification_question": question, "missing_fact": "cleaning solution bottle installed"},
+         "clarification_question": question, "missing_fact": "the cleaning solution bottle is installed correctly",
+         "plan_step": "s1"},
+    ]}]
+    events = await conversation.send("Product PN: T2080\nProblem Description: cleaning solution stays at 660ml", {
+        "primary_intent": "report_problem", "device_relation": "current",
+        "facts": [{"value": "cleaning solution stays at 660ml", "quote": "cleaning solution stays at 660ml"}],
+    })
+    state = await conversation.state()
+    text = "".join(e.get("delta", "") for e in events)
+    assert "does not include them or a link" not in text and question not in text
+    card = next(e for e in events if e["type"] == "step_card")["step"]
+    assert (card["plan_id"], card["step_id"]) == ("qa_rv_0073", "s1")
+    assert not state.get("escalate_reason")
+    assert any(t["event"] == "knowledge_source_gap" and t.get("plan_id") == "qa_rv_0371" for t in state["guide_trace"])
+
+
+async def test_source_gap_with_only_a_precondition_candidate_still_asks(conversation):
+    """待确认候选的前提不是它自己的步骤时（这里是「是否用过第三方清洁液」），仍如实告知缺口后先问一次，不交人工。"""
+    set_knowledge_adapter(QAHitAdapter("rv-0371", "rv-0073"))
+    question = "Have you used a third-party cleaning solution?"
+    conversation.models["diagnose.synthesize"].script = [{"hypotheses": [
+        {"plan_id": "qa_rv_0371", "confidence": 0.72, "evidence_ids": ["chunk-rv-0371"],
+         "applicability": "supported", "supported_symptoms": ["cleaning solution stays at 660ml"]},
+        {"plan_id": "qa_rv_0073", "confidence": 0.6, "evidence_ids": ["chunk-rv-0073"],
+         "applicability": "needs_confirmation", "supported_symptoms": ["cleaning solution stays at 660ml"],
+         "clarification_question": question, "missing_fact": "third-party cleaning solution used"},
     ]}]
     events = await conversation.send("Product PN: T2080\nProblem Description: cleaning solution stays at 660ml", {
         "primary_intent": "report_problem", "device_relation": "current",
@@ -88,4 +114,26 @@ async def test_source_gap_falls_back_to_the_candidate_awaiting_its_precondition(
     assert "does not include them or a link" in text and question in text
     assert not state.get("escalate_reason") and state["stage"] != "awaiting_human"
     assert (state["diagnose_outcome"] or {}).get("plan_id") == "qa_rv_0073"
-    assert any(t["event"] == "knowledge_source_gap" and t.get("fallback") == "qa_rv_0073" for t in state["guide_trace"])
+
+
+async def test_gap_plan_does_not_count_as_a_finished_guide(conversation):
+    """T40 本轮复测 repeat-2：rv-0371 与 rv-0073 都判可执行、rv-0371 排第一。缺链接的 rv-0371 按耗尽换到 rv-0073 后，
+    它被计入「已走完一条指南」，rv-0073 第一张卡点未解决就说「官方排查已完成」进质保，文章确认卡没发出来。
+    原文缺口的计划客户什么也没做，不算走完。"""
+    set_knowledge_adapter(QAHitAdapter("rv-0371", "rv-0073"))
+    conversation.models["diagnose.synthesize"].script = [{"hypotheses": [
+        {"plan_id": "qa_rv_0371", "confidence": 0.9, "evidence_ids": ["chunk-rv-0371"],
+         "applicability": "supported", "supported_symptoms": ["cleaning solution stays at 660ml"]},
+        {"plan_id": "qa_rv_0073", "confidence": 0.85, "evidence_ids": ["chunk-rv-0073"],
+         "applicability": "supported", "supported_symptoms": ["cleaning solution stays at 660ml"]},
+    ]}]
+    events = await conversation.send("Product PN: T2080\nProblem Description: cleaning solution stays at 660ml", {
+        "primary_intent": "report_problem", "device_relation": "current",
+        "facts": [{"value": "cleaning solution stays at 660ml", "quote": "cleaning solution stays at 660ml"}],
+    })
+    first = next(e for e in events if e["type"] == "step_card")["step"]
+    assert (first["plan_id"], first["step_id"]) == ("qa_rv_0073", "s1")
+    events = conversation.check(await act(conversation.client, conversation.sid, "step_feedback", {"feedback": "not_solved"}))
+    second = next(e for e in events if e["type"] == "step_card")["step"]
+    assert (second["plan_id"], second["step_id"], second["kind"]) == ("qa_rv_0073", "s1b", "question")
+    assert second["media"] and "official troubleshooting for this issue is complete" not in "".join(e.get("delta", "") for e in events)

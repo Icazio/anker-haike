@@ -49,7 +49,7 @@ async def test_failed_model_never_authorizes_a_plan(conversation):
 
 async def test_final_context_budget_drops_tail_candidates_and_their_evidence(conversation, monkeypatch):
     config = context_budget.conversation_config().model_copy(update={
-        "input_budgets": {"diagnose.synthesize": 4000},
+        "input_budgets": {"diagnose.synthesize": 6000},  # 输出 schema 约 1.7k、提示约 2k token；仍远小于 UNIQUE_TAIL 尾段
     })
     monkeypatch.setattr(context_budget, "conversation_config", lambda: config)
     model = conversation.models["diagnose.synthesize"]
@@ -231,63 +231,34 @@ async def test_new_human_request_or_safety_risk_reopens_closed_case(monkeypatch,
     assert next(e for e in events if e["type"] == "escalation_summary")["handoff_status"] == "requested"
 
 
-@pytest.mark.parametrize("plan_id", ["qa_bp_0067", "qa_bp_0039"])
-@pytest.mark.parametrize("matched_subject", [None, "charging case", "pump in the charging case", "charging case is not charging the pumps"])
-def test_official_charging_relation_cannot_be_overridden_by_model(plan_id, matched_subject):
-    facts = [{"kind": "symptom", "status": "active", "value": "will not charge", "subject": "charging case",
-              "quote": "My charging case will not charge", "polarity": "affirmed"}]
+B11_SAID = "My charging case will not charge therefore I cannot charge my pump motors. I am an exclusive pumper"
+
+
+@pytest.mark.parametrize("plan_id", ["qa_bp_0067", "qa_bp_0039", "qa_bp_0122"])
+def test_failed_power_source_is_asked_before_the_pump_guide(plan_id):
+    """B11 / T52：盒子自身不进电，泵充不上只是下游。模型判定对象冲突并引客户原话，追问盒子自身的状态，不发泵受电指南。"""
+    conflict = {"kind": "object", "customer_quote": "My charging case will not charge",
+                "candidate_quote": "not charging the pump", "ask_about": "charging case"}
     kept, dropped, clarifications = filter_hypotheses([
         {"plan_id": plan_id, "confidence": 0.9, "evidence_ids": ["e1"], "applicability": "supported",
-         "supported_symptoms": ["will not charge"], "matched_subject": matched_subject},
-    ], allowed={plan_id: LIBRARY.get(plan_id)}, evidence_ids={"e1"}, symptoms={"will not charge"}, facts=facts, max_n=3)
-    assert kept == [] and f"charging_recipient_mismatch:{plan_id}" in dropped
-    assert "charging case" in clarifications[0]["question"]
-    assert "pump" not in clarifications[0]["question"]
-
-
-def test_downstream_charging_symptom_does_not_hide_failed_power_source():
-    facts = [
-        {"kind": "symptom", "status": "active", "value": "charging case will not charge", "subject": "charging case",
-         "quote": "My charging case will not charge therefore I cannot charge my pump motors", "polarity": "affirmed"},
-        {"kind": "symptom", "status": "active", "value": "cannot charge pump motors", "subject": "pump motors",
-         "quote": "cannot charge my pump motors", "polarity": "affirmed"},
-    ]
-    plan = LIBRARY.get("qa_bp_0039")
-    kept, _, clarifications = filter_hypotheses([
-        {"plan_id": plan.plan_id, "confidence": 0.9, "evidence_ids": ["e1"], "applicability": "supported",
-         "supported_symptoms": [facts[1]["value"]], "matched_subject": "pump motors"},
-    ], allowed={plan.plan_id: plan}, evidence_ids={"e1"}, symptoms={fact["value"] for fact in facts}, facts=facts, max_n=3)
-    assert kept == []
+         "supported_symptoms": ["cannot charge pump motors"], "conflict": conflict},
+    ], allowed={plan_id: LIBRARY.get(plan_id)}, evidence_ids={"e1"}, symptoms={"cannot charge pump motors"},
+        facts=[], said=[B11_SAID], max_n=3)
+    assert kept == [] and f"conflict_object:{plan_id}" in dropped
     assert "charging case" in clarifications[0]["question"] and "pump" not in clarifications[0]["question"]
 
 
 @pytest.mark.parametrize("plan_id", ["qa_bp_0067", "qa_bp_0039"])
 def test_internal_device_charging_still_matches_official_plan(plan_id):
+    """泵在盒里充不上：模型不报冲突，泵受电条目照常可执行。"""
     symptom = "The pumps are not charging in the case"
     kept, dropped, _ = filter_hypotheses([
         {"plan_id": plan_id, "confidence": 0.9, "evidence_ids": ["e1"], "applicability": "supported",
-         "supported_symptoms": [symptom], "matched_subject": "pump motors"},
+         "supported_symptoms": [symptom]},
     ], allowed={plan_id: LIBRARY.get(plan_id)}, evidence_ids={"e1"}, symptoms={symptom}, facts=[
         {"kind": "symptom", "status": "active", "value": symptom, "quote": symptom, "subject": "pump motors"},
-    ], max_n=3)
+    ], said=[symptom], max_n=3)
     assert [item["plan_id"] for item in kept] == [plan_id], dropped
-
-
-@pytest.mark.parametrize(("title", "symptom", "expected"), [
-    ("My charging case is not charging the earbuds", "My charging case will not charge", False),
-    ("My earbuds are not charging in the case", "My earbuds are not charging in the case", True),
-    ("The dock will not charge the robot", "The base station will not charge", False),
-    ("The dock will not charge the robot", "The robot will not charge in the dock", True),
-])
-def test_charging_guard_uses_relationship_instead_of_case_ids(title, symptom, expected):
-    plan = LIBRARY.get("qa_bp_0067").model_copy(update={"plan_id": "unseen_plan", "fault": title})
-    kept, _, _ = filter_hypotheses([
-        {"plan_id": plan.plan_id, "confidence": 0.9, "evidence_ids": ["e1"], "applicability": "supported",
-         "supported_symptoms": [symptom]},
-    ], allowed={plan.plan_id: plan}, evidence_ids={"e1"}, symptoms={symptom}, facts=[
-        {"kind": "symptom", "status": "active", "value": symptom, "quote": symptom},
-    ], max_n=3)
-    assert bool(kept) is expected
 
 
 def test_symptom_question_is_category_neutral():
@@ -296,13 +267,13 @@ def test_symptom_question_is_category_neutral():
     assert "code" in text and "doing" in text
 
 
-def test_unknown_charging_object_requires_clarification():
-    plan = LIBRARY.get("qa_bp_0067")
+def test_not_reported_conflict_drops_without_asking():
+    """T53：客户只说充过电仍开不了机，候选讲充不进电。模型判定客户没说过这个现象：丢弃，不追问「哪个部件充不了电」。"""
+    plan = LIBRARY.get("qa_bp_0127")
     kept, dropped, clarifications = filter_hypotheses([
-        {"plan_id": plan.plan_id, "confidence": 0.9, "evidence_ids": ["e1"], "applicability": "supported",
-         "supported_symptoms": ["it will not charge"], "matched_subject": "pump"},
-    ], allowed={plan.plan_id: plan}, evidence_ids={"e1"}, symptoms={"it will not charge"}, facts=[
-        {"kind": "symptom", "status": "active", "value": "it will not charge", "quote": "it will not charge"},
-    ], max_n=3)
-    assert not kept and "charging_recipient_unknown:qa_bp_0067" in dropped
-    assert clarifications[0]["question"].startswith("Which part")
+        {"plan_id": plan.plan_id, "confidence": 0.62, "evidence_ids": ["e1"], "applicability": "supported",
+         "supported_symptoms": ["One side of the pump stoped working"],
+         "conflict": {"kind": "not_reported", "candidate_quote": "charging case not charging one side"}},
+    ], allowed={plan.plan_id: plan}, evidence_ids={"e1"}, symptoms={"One side of the pump stoped working"}, facts=[],
+        said=["One side of the pump stoped working. I tried to charge it over and over again but it stoped turning on."], max_n=3)
+    assert kept == [] and clarifications == [] and "conflict_not_reported:qa_bp_0127" in dropped

@@ -113,6 +113,8 @@ REPORT_TEXT = "X10 Pro Omni不吸了，滚刷缠了头发"
 @pytest.fixture
 async def conversation(mem_runtime):
     tasks = (*KNOWN_TASKS, *OPTIONAL_TASKS)
+    # 每个 task 一个空脚本假模型。走到换货 / 退款提交的测试要给 models["remedy.review"] 写脚本：
+    # 审查调用失败按设计转人工（app/actions/review.py），不会提交服务单。
     models = {task: FakeChatModel(name_for_trace=task) for task in tasks}
     models["diagnose.synthesize"].script = [
         {

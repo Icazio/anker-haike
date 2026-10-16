@@ -38,6 +38,7 @@ lanes:
     reply.stream:         {chain: [m_json], stream: true}
     escalate.summary:     {chain: [m_json]}
     warranty.receipt_ocr: {chain: [m_json], needs_vision: true}
+    remedy.review:        {chain: [m_native]}
 """
 ALL_KEYS = {"K_NATIVE": "x", "K_JSON": "x", "K_TOOLS": "x", "K_OVER": "x"}
 

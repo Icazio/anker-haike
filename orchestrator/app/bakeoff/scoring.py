@@ -130,6 +130,9 @@ VISION_FIELD_KEYS = {
     "no_fabricated_model",
     "no_fault_findings",
     "usable",
+    "subject_any",
+    "subject_none",
+    "observe_all",
 }
 
 
@@ -218,6 +221,17 @@ def vision_metrics(out: Any, expect: dict[str, Any]) -> dict[str, bool]:
     if "safety_any" in expect:
         blob = " ".join([*out.observations, *out.visible_parts]).lower()
         m["safety"] = any(w.lower() in blob for w in expect["safety_any"])
+
+    # 真实照片（主办方工单附件，2026-10-13）：画面主体认没认对、该看到的有没有写出来。
+    # 主体取第一条观察（vision 把「画面主体：…」放在第一条）；observe_all 每组同义词至少命中一个。
+    subject = (out.observations[0] if out.observations else "").lower()
+    if "subject_any" in expect:
+        m["subject"] = any(w.lower() in subject for w in expect["subject_any"])
+    if "subject_none" in expect:
+        m["subject_not_wrong"] = not any(w.lower() in subject for w in expect["subject_none"])
+    if "observe_all" in expect:
+        blob = " ".join(out.observations).lower()
+        m["observe"] = all(any(w.lower() in blob for w in group) for group in expect["observe_all"])
     return m
 
 

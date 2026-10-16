@@ -106,7 +106,7 @@ analytics-stats: ## 打印各事实表行数与结果分布
 retention-purge: ## 按分类 TTL 清理一轮（会话 24 h / 追踪 7 d）并打印统计：make retention-purge [HOURS=24]
 	cd orchestrator && uv run --env-file ../.env haike-retention purge $(if $(HOURS),--session-hours $(HOURS),)
 
-session-delete: ## 删除某会话全部数据（投影 / 事件 / 动作 / 图片 / checkpoint）：make session-delete SID=<session_id>
+session-delete: ## 删除某会话全部数据（投影 / 事件 / 动作 / 图片 / checkpoint / 观测台事实）：make session-delete SID=<session_id>
 	cd orchestrator && uv run --env-file ../.env haike-retention delete $(SID)
 
 db-backup: ## 立即备份 haike + WeKnora 两库到 pg-backups 卷

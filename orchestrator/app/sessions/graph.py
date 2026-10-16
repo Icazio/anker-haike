@@ -32,7 +32,7 @@ from app.conversation.product_questions import answer_product_question, handles_
 from app.conversation.quotes import quoted
 from app.conversation.reply import acknowledge_current_turn, offer_human_after_stream, say_text
 from app.conversation.request_constraints import ground_additional_queries
-from app.conversation.tasks import REMEDY_INTENTS
+from app.conversation.tasks import REMEDY_INTENTS, reopen_waiting
 from app.diagnose import (
     build_query,
     get_retrieval_config,
@@ -44,10 +44,10 @@ from app.diagnose.decision import missing_for_retrieval, retry_after_handoff
 from app.diagnose.grade import apply_assessment, grade_hits
 from app.diagnose.localization import part_categories, signature_matches
 from app.diagnose.query import category_label, product_term
-from app.diagnose.vision import observe_images
+from app.diagnose.vision import VISION_BUDGET_MS, VISION_RESERVE_MS, observe_images
 from app.emotion.policy import complaint_flagged, evaluate_emotion
 from app.escalation.polish import polish_summary
-from app.escalation.summary import build_summary, reassurance_text
+from app.escalation.summary import build_summary, r5_boundary, reassurance_text
 from app.guide import GUIDE_BUDGET_MS, apply_feedback, exhaust_plan, prepare_step
 from app.guide.fact_check import check_plan_facts
 from app.images.runtime import current_image_store
@@ -132,6 +132,7 @@ class SessionState(TypedDict, total=False):
     session_id: str
     run_id: str  # 当前 run，由运行器随输入写入，用户消息据此归入 timeline 对应位置
     at: str  # 本 run 收到消息的时间（ISO），用于 timeline user_message.at
+    deadline_ms: int  # 本 run 的截止（runner.run_deadline_ms：文本轮 25 s，带图回合 45 s）
     text: str
     stage: str
     substage: str | None
@@ -187,7 +188,9 @@ class SessionState(TypedDict, total=False):
     # 票 32：诊断。retrieval_trace 用 reducer 追加（读图节点与检索写不同字段，不覆盖）；
     # plans_ranked [{plan_id, version, confidence, evidence_ids, source}]；rewrite_used 为本 run 是否已用掉补检索名额
     retrieval_trace: Annotated[list[dict[str, Any]], operator.add]
-    image_observations: Annotated[list[str], operator.add]
+    # 最近一次读图的观察（随 issue 投影存取）。不用累加 reducer：每轮 reduce_turn 都把 issue 投影写回，
+    # 累加会让同一组观察一轮复制一份（2026-10-13 复测 T30 状态里 6 条观察变成 24 条，旧观察混进补检索词与 synthesize）
+    image_observations: list[str]
     # 票 30：读图结果。visible_parts 累积；vision_status 为最近一次读图状态（ok / skipped / no_vision / failed）
     visible_parts: list[str]
     vision_status: str | None
@@ -210,7 +213,7 @@ class SessionState(TypedDict, total=False):
     # _verify 为 apply_action(step_feedback) 的本 run 判定（瞬态：done / next / escalate）
     steps_executed: list[dict[str, Any]]
     step_attempts: list[dict]
-    # 计划步骤与用户原话的核对结果 {plan_id: {issue_revision, steps: {step_id: {status, quote, skip?}}}}（app/guide/fact_check.py）
+    # 条件步骤与用户原话的核对结果 {plan_id: {issue_revision, steps: {step_id: {status, quote, skip?}}}}（app/guide/fact_check.py）
     step_checks: dict[str, Any]
     precondition_answers: list[dict]  # 客户答过的候选前提追问（synthesize 不再重复问）
     fallback_clarification: dict | None  # 选中可执行方案时旁边待确认的候选追问：方案走不下去时先问它
@@ -419,6 +422,8 @@ async def vision(state: SessionState) -> SessionState:
         # 用户文字只用于代码层的图文冲突比对，不进视觉调用（阶段 2）
         text=state.get("text", ""),
         symptoms=[str(s) for s in state.get("symptoms") or []],
+        # 单次读图上限与本 run 剩余时间取小，后面的理解 / 检索 / 选方案留 VISION_RESERVE_MS
+        budget_ms=max(1000, min(VISION_BUDGET_MS, _remaining_ms(state) - VISION_RESERVE_MS)),
     )
     update: SessionState = {
         "stage": "diagnose",
@@ -1164,8 +1169,7 @@ async def understand(state: SessionState) -> SessionState:
     business_order_no = None
     if get_services() is not None and state.get("entry") == "message" and (
         meaning.primary_intent in REMEDY_INTENTS
-        or (state.get("requested_remedy") and (state.get("stage") == "context" or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"})
-            and meaning.primary_intent in {"supplement", "unknown", "answer_pending"})
+        or (_collecting_order_details(state) and meaning.primary_intent in {"supplement", "unknown", "answer_pending"})
     ):
         from app.conversation.business import BusinessContext
 
@@ -1268,8 +1272,11 @@ async def understand(state: SessionState) -> SessionState:
                 if context_sources.get(key) != "receipt":
                     context_values[key], context_sources[key] = value, "user"
         update.update(service_context=context_values, context_sources=context_sources)
-        if state.get("awaiting_evidence") and state.get("case_id") and (reported or _new_fault_images(state)):
-            # 补齐 SOP 证据的回复：回到质保 / 方案节点重新核对，缺什么再问什么。
+        uploaded = [ref for e in state.get("history", []) if e.get("entry_id") == state.get("input_id")
+                    for ref in ((e.get("payload") or {}).get("images") or []) if ref.get("purpose", "fault") == "fault"]
+        if state.get("awaiting_evidence") and state.get("case_id") and (reported or uploaded or _new_fault_images(state)):
+            # 补齐 SOP 证据的回复：回到质保 / 方案节点重新核对，缺什么再问什么。本轮刚上传的图此时还没并进 image_refs
+            #（本节点末尾才追加），要直接看本轮输入（2026-10-13 T55 5 次里 2 次补照片被当成新故障重走诊断、转了人工）
             update["turn_decision"]["evidence_supplied"] = True
     if context.get("source") != "validated_action":
         update["model_trace"] = [
@@ -1473,6 +1480,18 @@ def _troubleshoot_before_remedy(state: SessionState, intent: str) -> bool:
     )
 
 
+def _collecting_order_details(state: SessionState) -> bool:
+    """售后办理正在等订单号或凭证。
+
+    办理有两条来路：客户提了换货 / 退款（requested_remedy），或排障未解决后进了订单质保判断（已开 case，
+    requested_remedy 为空）。只认前者时，后者的客户只发订单号会落进 dialogue、回排障暂停话术（2026-10-16 c5b71a9e）。
+    """
+    return bool(state.get("requested_remedy") or state.get("case_id")) and (
+        state.get("stage") == "context"
+        or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"}
+    )
+
+
 def route_after_close(state: SessionState) -> str:
     from app.actions.runtime import get_services
     return "advance_tasks" if get_services() is not None else "commit_issue"
@@ -1537,7 +1556,7 @@ def route_entry(state: SessionState) -> str:
             return "service_context"
         if decision.get("evidence_supplied"):
             return "propose"
-        if state.get("requested_remedy") and (state.get("stage") == "context" or (state.get("pending_card") or {}).get("kind") in {"upload_receipt", "confirm_receipt"}) and intent in {"supplement", "unknown", "answer_pending"}:
+        if _collecting_order_details(state) and intent in {"supplement", "unknown", "answer_pending"}:
             return "service_context"
         if state.get("human_request_info") and intent in {"supplement","correct","answer_pending"}:
             return "service_context"
@@ -1674,9 +1693,14 @@ def retrieval_query(state: SessionState) -> str:
     return build_query(dict(state))
 
 
-def _remaining_ms(state: SessionState) -> int:
-    """run 剩余预算：消息到达时间 + 文本轮 deadline（08 §8）。"""
+def _deadline_ms(state: SessionState) -> int:
     from app.sessions.runner import DEFAULT_DEADLINE_MS
+
+    return int(state.get("deadline_ms") or DEFAULT_DEADLINE_MS)
+
+
+def _remaining_ms(state: SessionState) -> int:
+    """run 剩余预算：消息到达时间 + 本 run 的截止（08 §8；带图回合放宽，见 runner.run_deadline_ms）。"""
 
     at = state.get("at")
     try:
@@ -1686,7 +1710,7 @@ def _remaining_ms(state: SessionState) -> int:
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
     elapsed = (datetime.now(UTC) - started).total_seconds() * 1000
-    return int(DEFAULT_DEADLINE_MS - elapsed)
+    return int(_deadline_ms(state) - elapsed)
 
 
 async def _search_round(
@@ -1990,7 +2014,7 @@ async def retrieve(state: SessionState) -> SessionState:
             max_chars=rcfg.retrieval.context_chars, item_chars=rcfg.retrieval.item_chars,
         )
         round_evidence = {h.evidence_id: h.as_internal_item() for h in selection.hits}
-        plans = await _synthesize_step(state, round_evidence, lane, rcfg)
+        plans = await _synthesize_step({**state, "query": query}, round_evidence, lane, rcfg)
         synth_trace = plans.pop("retrieval_trace", [])
         plans.update(
             _diagnose_outcome(
@@ -2001,6 +2025,7 @@ async def retrieve(state: SessionState) -> SessionState:
                 clarifications=plans.pop("clarifications", []),
                 previous_outcome=state.get("diagnose_outcome"),
                 state=state,
+                synthesis_failed=plans.pop("synthesis_failed"),
             )
         )
         return {
@@ -2101,7 +2126,9 @@ async def retrieve(state: SessionState) -> SessionState:
     requested_statuses = [
         per_kb_status[kb] for kb, count in allowed_counts.items() if count > 0
     ]
-    can_search = bool(requested_statuses) and all(s in ("ok", "no_match") for s in requested_statuses)
+    # 回放结果（replay）与 ok 同为有效检索：只认 ok 时回放跳过图片补检索，候选与录制时不同，录制包对不上
+    #（2026-10-13 t55_main 连续重录仍 replay_miss）
+    can_search = bool(requested_statuses) and all(s in ("ok", "no_match", "replay") for s in requested_statuses)
     # 图片和文本共享名额；真实服务故障/空范围不靠语义补查恢复。
     if (
         observations
@@ -2276,14 +2303,17 @@ async def retrieve(state: SessionState) -> SessionState:
     })
     for it in exact_evidence:
         evidence.setdefault(it["evidence_id"], {k: v for k, v in it.items() if k != "knowledge_title"})
-    plans = await _synthesize_step(state, round_evidence, lane, rcfg)
+    plans = await _synthesize_step({**state, "query": query}, round_evidence, lane, rcfg)
     trace += plans.pop("retrieval_trace", [])
+    synthesis_failed = plans.pop("synthesis_failed")
     # 首批无法支持操作时，给被预算裁掉的候选一次机会；单次上下文预算保持不变。
     # 不重试已读片段，不重新查询知识库，也不把 needs_confirmation 当成 supported。
     # 首批已有待确认的追问（needs_confirmation）就先问，不补查：补查只看得到被裁掉的几条、没有首批作对照，
     # 容易把勉强沾边的候选判成适用并顶掉首批的追问（T36：首批 rv-0341 待确认 0.62，补查把「集尘时异响」rv-0315 判适用）。
+    # 首批是模型调用失败时也不补查：剩余预算只够同一个失败的模型再超时一次（2026-10-15 回测 T53 / T54 / T57 第二次 1–2 s 超时）。
     omitted = [hit for hit in candidates if selection.excluded.get(hit.evidence_id) in {"item_limit", "char_limit"}]
-    if not plans.get("plans_ranked") and not plans.get("clarifications") and omitted and get_model_router() is not None:
+    if (not synthesis_failed and not plans.get("plans_ranked") and not plans.get("clarifications") and omitted
+            and get_model_router() is not None):
         if _remaining_ms(state) >= rcfg.retrieval.min_remaining_for_second_round_ms:
             recovery = pack_hits(
                 omitted, max_items=rcfg.retrieval.final_k,
@@ -2294,9 +2324,11 @@ async def retrieve(state: SessionState) -> SessionState:
                           "excluded": recovery.excluded, "context_chars": recovery.chars,
                           "session_id": session_id, "run_id": run_id})
             if extra_evidence:
-                extra = await _synthesize_step({**state, "model_trace": plans.get("model_trace", [])}, extra_evidence, lane, rcfg)
+                extra = await _synthesize_step({**state, "query": query, "model_trace": plans.get("model_trace", [])}, extra_evidence, lane, rcfg)
                 trace += extra.pop("retrieval_trace", [])
-                # 恢复调用失败时不能把检索顺序降级结果升级成可执行方案。
+                # 恢复调用失败时不能把检索顺序降级结果升级成可执行方案。被裁掉的候选没判完，同样是运行故障，
+                # 不能报「资料没覆盖」（2026-10-15 T53：补查超时后走 R5，撞上已关闭的过保案件说「case is closed」）
+                synthesis_failed = extra.pop("synthesis_failed")
                 extra["plans_ranked"] = [plan for plan in extra["plans_ranked"] if plan.get("source") == "synthesize"]
                 round_evidence.update(extra_evidence)
                 if extra.get("plans_ranked") or not plans.get("clarifications"):
@@ -2315,6 +2347,7 @@ async def retrieve(state: SessionState) -> SessionState:
             clarifications=plans.pop("clarifications", []),
             previous_outcome=state.get("diagnose_outcome"),
             state=state,
+            synthesis_failed=synthesis_failed,
         )
     )
     return {
@@ -2363,7 +2396,9 @@ async def _synthesize_step(
         session_id=state.get("session_id"),
         lane=lane,
     )
-    update: dict[str, Any] = {"plans_ranked": out["plans_ranked"], "clarifications": out.get("clarifications", [])}
+    update: dict[str, Any] = {"plans_ranked": out["plans_ranked"], "clarifications": out.get("clarifications", []),
+                              # 模型调用失败（超时 / schema 重试耗尽）不是「候选都不适用」，由调用方 pop 后单独出口
+                              "synthesis_failed": str(out["degraded"] or "").startswith("model:")}
     if out["model_trace"]:
         update["model_trace"] = [*state.get("model_trace", []), out["model_trace"]]
     if out["dropped"] or out["degraded"]:
@@ -2411,8 +2446,16 @@ def _diagnose_outcome(
     exhausted_plans: list[str] = (),
     clarifications: list[dict] = (), previous_outcome: dict | None = None,
     state: SessionState | None = None,
+    synthesis_failed: bool = False,
 ) -> dict[str, Any]:
     """经过适用性核验或精确码核实的方案进入 guide；无可执行方案先澄清或交接。"""
+    if synthesis_failed and not plans_ranked:
+        # 选方案的模型调用失败：不知道候选适不适用，既不能说「资料没覆盖」（R5 knowledge_gap，T57 补测），
+        # 也不能当作已办结推进下一项（T53 首轮「Next up」后紧接「case is closed」）。问题保持打开，下一条消息重新检索。
+        return {
+            "diagnose_outcome": {"mode": "unavailable", "reason": "synthesize_failed", "knowledge_status": knowledge_status},
+            "escalate_reason": None, "plan_cursor": None,
+        }
     clarifications = [candidate for candidate in clarifications if candidate["plan_id"] not in exhausted_plans]
     previous = previous_outcome or {}
     attempts = previous.get("attempts", 0) if previous.get("mode") == "clarify" else 0
@@ -2556,10 +2599,46 @@ def route_after_retrieve(state: SessionState) -> str:
         return "escalate"
     if (state.get("_decision") or {}).get("outcome") == "model_card":
         return "prepare_card"
-    if (state.get("diagnose_outcome") or {}).get("mode") == "clarify":
+    mode = (state.get("diagnose_outcome") or {}).get("mode")
+    if mode == "clarify":
         return "clarify"
+    if mode == "unavailable":
+        return "diagnose_unavailable"
     # Only guide may publish operations, after evidence and pre-step policy checks.
     return "guide" if state.get("plan_cursor") else "reply"
+
+
+DIAGNOSE_UNAVAILABLE_TEXT = (
+    "I couldn't load the troubleshooting steps just now because of a temporary system problem. "
+    "This is not a finding about your device. Your description is saved and this issue stays open; "
+    "send any message (for example \"try again\") and I'll check the official guidance again, "
+    "or ask for a colleague if you'd rather not wait."
+)
+
+
+async def diagnose_unavailable(state: SessionState) -> SessionState:
+    """选方案模型调用失败（运行故障）：如实说明暂时给不出步骤，不交人工、不结案、不推进下一项任务。
+    retrieve 不留下 plans_ranked，下一条消息经 _after_product 重新检索与选方案。"""
+    writer = get_stream_writer()
+    log.warning(
+        "diagnose unavailable session=%s run=%s", state.get("session_id"), state.get("run_id"),
+        extra={"event": "runtime_fault", "task": "diagnose.synthesize",
+               "session_id": state.get("session_id"), "run_id": state.get("run_id")},
+    )
+    message_id = uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{state.get('session_id')}:{state.get('run_id')}:diagnose_unavailable"
+    ).hex
+    text = acknowledge_current_turn(dict(state), DIAGNOSE_UNAVAILABLE_TEXT)
+    writer({"type": "message_start", "message_id": message_id})
+    writer({"type": "message", "message_id": message_id, "delta": text})
+    writer({"type": "message_end", "message_id": message_id, "status": "completed"})
+    return {
+        "stage": "diagnose",
+        "visible_messages": [
+            *(state.get("visible_messages") or []),
+            {"message_id": message_id, "kind": "reply", "text": text, "model_tier": None},
+        ],
+    }
 
 
 async def guide(state: SessionState) -> SessionState:
@@ -2623,11 +2702,14 @@ async def guide(state: SessionState) -> SessionState:
             )
             # 隐式确认（阶段 4）：本轮读图有结果且还没回显过时，在首张步骤卡上附一句「我看到了什么」。
             # 只回显一次 —— 每张步骤卡都重复一遍会变成噪音。
+            # 方案由客户报的错误码精确命中时，照片没有参与选路：回显它只有认错的风险（T30 前景机器人被写成基站，
+            # 客户看到「base station dirty」），没有让客户纠正的价值（Fable 2026-10-12）。读图结果仍进内部记录与安全检查。
             from app.diagnose.localization import echo_findings
 
+            exact_route = (work.get("plan_cursor") or {}).get("source") == "exact_code"
             seen = (
                 echo_findings(state.get("fault_localization"))
-                if state.get("vision_status") == "ok" and not state.get("vision_echoed")
+                if state.get("vision_status") == "ok" and not state.get("vision_echoed") and not exact_route
                 else None
             )
             payload = {"step": prep.step, **({"seen": seen} if seen else {})}
@@ -2680,11 +2762,25 @@ async def guide(state: SessionState) -> SessionState:
                     state["case_id"], input_id=state["input_id"], quote=state.get("text") or "")
                 get_stream_writer()(case_event(row, issue_id=state["active_issue_id"], reason="客户补充信息后找到官方排查步骤"))
                 update.update(case_status=row["status"], escalate_reason=None,
-                              task_queue=[{**t, "status": "active"} if t.get("status") == "waiting_human" else t
-                                          for t in state.get("task_queue", [])])
+                              task_queue=reopen_waiting(state.get("task_queue", [])))
             return update
         if prep.outcome == "blocked":
             return {**update, **_apply_next_action(work)}
+        if prep.outcome == "source_gap":
+            # 原文缺后续说明的条目没有可执行内容：按耗尽处理，同型号同症状另有可执行候选时静默换过去（Fable D3 2026-10-12：
+            # T40 rv-0371 缺链接，同批 rv-0073 首步就是查清洁液瓶、文章链接完整）；缺口只记内部轨迹，交给知识维护。
+            # 没有可换的才向客户说明缺口（下面的 explanation）并走后备追问或交人工。
+            cursor = work.get("plan_cursor") or {}
+            gap = {"event": "knowledge_source_gap", "plan_id": cursor.get("plan_id")}
+            out = exhaust_plan(work, cursor.get("plan_id", ""))
+            switched = _apply_next_action({**work, "plan_cursor": None, "counters": out.counters,
+                                           "exhausted_plans": out.exhausted_plans})
+            if (switched.get("_verify") or {}).get("outcome") == "next":
+                trace += [gap, *switched.pop("guide_trace", [])]
+                work.update(switched, counters=out.counters, exhausted_plans=out.exhausted_plans)
+                update.update(counters=out.counters, exhausted_plans=out.exhausted_plans,
+                              next_action=switched.get("next_action"), plan_cursor=switched.get("plan_cursor"))
+                continue
         if prep.explanation:
             message_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{state['input_id']}:knowledge-explanation").hex
             say_text(dict(state), writer, message_id, prep.explanation)
@@ -2841,9 +2937,7 @@ async def close(state: SessionState) -> SessionState:
 
 def _elapsed_ms(state: SessionState) -> int:
     """本 run 已耗时（card_ready_ms 口径，04 §2）：消息 / 动作到达时间 → 现在。"""
-    from app.sessions.runner import DEFAULT_DEADLINE_MS
-
-    return max(0, DEFAULT_DEADLINE_MS - _remaining_ms(state))
+    return max(0, _deadline_ms(state) - _remaining_ms(state))
 
 
 async def escalate(state: SessionState) -> SessionState:
@@ -3011,9 +3105,14 @@ async def summarize(state: SessionState) -> SessionState:
             handoff_status = "prepared"
         case_update = {"case_id": row["case_id"], "case_status": row["status"]}
         if row["status"] == "awaiting_approval":
-            case_update.update(stage="awaiting_human", pending_card=None,
-                               task_queue=[{**task, "status": "waiting_human"} if task.get("status") == "active" else task
-                                           for task in state.get("task_queue", [])])
+            queue = [{**task, "status": "waiting_human"} if task.get("status") == "active" else task
+                     for task in state.get("task_queue", [])]
+            case_update.update(stage="awaiting_human", pending_card=None, task_queue=queue)
+            held = next((t["intent"] for t in state.get("task_queue", []) if t.get("status") == "active"), None)
+            if not state.get("summary_refresh") and held and any(t.get("status") == "pending" for t in queue):
+                # 排在后面的诉求回到任务队列：查询照常推进（T41 的配件物流），推进不了的并入本次交接（T49 / T59）。
+                # 以前这里固定 commit_issue，后面的诉求永远 pending，客户和人工都看不到下文。
+                case_update.update(completed_task_intent=held, task_outcome="waiting_human", l3_route="advance_tasks")
         writer(case_event(row, issue_id=state["active_issue_id"], reason=summary.reason.text))
     text = reassurance_text(reason, dict(state))
     if handoff_status == "requested" and state.get("case_status") == "awaiting_approval":
@@ -3023,7 +3122,7 @@ async def summarize(state: SessionState) -> SessionState:
     elif handoff_status == "requested":
         text = (
             ("For your safety, please stop using the device and do not charge it. " if reason == "R4" else
-             "I couldn't confirm official troubleshooting guidance for this issue. " if reason == "R5" else "")
+             r5_boundary(state) if reason == "R5" else "")
             + "I've submitted the issue and supporting information for review by a colleague. You can add information here while waiting."
         )
     text = acknowledge_current_turn({**state, **case_update}, text)
@@ -3337,8 +3436,11 @@ def build_graph(checkpointer: BaseCheckpointSaver | None) -> CompiledStateGraph:
     )
     g.add_conditional_edges(
         "retrieve", route_after_retrieve,
-        {"reply": "reply", "guide": "guide", "escalate": "escalate", "clarify": "clarify", "prepare_card": "prepare_card"}
+        {"reply": "reply", "guide": "guide", "escalate": "escalate", "clarify": "clarify", "prepare_card": "prepare_card",
+         "diagnose_unavailable": "diagnose_unavailable"}
     )
+    g.add_node("diagnose_unavailable", durable_node(diagnose_unavailable))
+    g.add_edge("diagnose_unavailable", "commit_issue")
     g.add_conditional_edges("reply", route_after_reply, {"guide": "guide", "end": "commit_issue"})
     g.add_conditional_edges(
         "guide", route_after_guide,

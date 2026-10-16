@@ -216,6 +216,21 @@ async def test_in_warranty_replacement_collects_sop_evidence_then_submits(l3_run
         assert len(l3_runtime.cases.store.ratings) == 1
 
 
+async def test_photo_reply_classified_as_supplement_goes_back_to_the_proposal(l3_runtime, monkeypatch):
+    """2026-10-13 T55 真实复测 2/5：补照片那一轮被理解成 supplement，本轮上传的图还没并进 image_refs，
+    证据检查没看到它，照片被当成新故障重走读图与选方案，最后转了人工。本轮上传的故障图要算作补齐证据。"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        sid, rows = await replacement_ready(client, monkeypatch)
+        assert "a photo or video of the fault" in said(rows)
+        interpret_as(monkeypatch, {"Here are photos of the problem.": TurnInterpretation(primary_intent="supplement")})
+        rows = events(await send(client, sid, "Here are photos of the problem.", images=1))
+        assert "serial number (SN)" in said(rows) and "a photo or video of the fault" not in said(rows)
+        assert not any(e["type"] in {"escalation_summary", "step_card"} for e in rows)
+        state = await state_of(sid)
+        assert state["awaiting_evidence"] == ["serial_number"]
+        assert state["turn_decision"]["evidence_supplied"] is True
+
+
 async def test_out_of_warranty_is_declined_politely(l3_runtime, monkeypatch):
     """T29：订单 Anker011 质保至 2025-11-30 → 告知过保并委婉拒绝，不提交服务单。"""
     interpret_as(monkeypatch, {"污水盘不排水，订单 Anker011，申请换货": REPLACE})
@@ -471,6 +486,39 @@ async def test_b15_accepting_expiry_and_asking_to_troubleshoot_does_not_reopen_t
     case = await l3_runtime.cases.store.get(state["case_id"])
     assert case["status"] == "closed_unresolved" and not case.get("reopened_count")
     assert state["stage"] != "done"
+
+
+async def test_t53_synthesis_failure_after_expiry_keeps_troubleshooting_open(l3_runtime, monkeypatch, conversation):
+    """2026-10-15 官方 63 单首轮 T53：过保拒绝后推进排障，选方案超时，同一段回复先说「Next up: device troubleshooting」
+    紧接着「This case is closed」。模型故障时如实说明暂时给不出步骤，排障任务保留，下一条消息重试。"""
+    text = "I need help with possibly a replacement for my breast pump. It won't hold the battery and keeps cutting off. Order Anker014"
+    follow = "try again"
+    interpret_as(monkeypatch, {
+        text: TurnInterpretation(
+            primary_intent="replacement_request", secondary_intents=["report_problem"], device_relation="current",
+            facts=[{"value": "won't hold the battery, keeps cutting off", "quote": "It won't hold the battery and keeps cutting off"}]),
+        follow: TurnInterpretation(primary_intent="supplement", device_relation="current"),
+    })
+    set_knowledge_adapter(QAHitAdapter("bp-0043"))
+    conversation.models["diagnose.synthesize"].script = [RuntimeError("test provider timeout"), {"hypotheses": [{
+        "plan_id": "qa_bp_0043", "confidence": 0.9, "evidence_ids": ["chunk-bp-0043"],
+        "applicability": "supported", "supported_symptoms": ["won't hold the battery, keeps cutting off"],
+    }]}]
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            sid = (await client.post("/sessions")).json()["session_id"]
+            rows = events(await send(client, sid, text))
+            state = await state_of(sid)
+            reply = said(rows)
+            assert "warranty has expired" in reply and "temporary system problem" in reply
+            assert "case is closed" not in reply
+            assert not any(e["type"] in {"step_card", "escalation_summary"} for e in rows)
+            assert state["stage"] == "diagnose"
+            assert [t["status"] for t in state["task_queue"] if t["intent"] == "report_problem"] == ["active"]
+            rows = events(await send(client, sid, follow))
+            assert any(e["type"] == "step_card" for e in rows), [e["type"] for e in rows]
+    finally:
+        set_knowledge_adapter(None)
 
 
 async def test_handoff_after_closed_case_records_without_requeue(l3_runtime, monkeypatch):

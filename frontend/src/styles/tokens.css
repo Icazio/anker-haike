@@ -1,57 +1,71 @@
 :root {
   color-scheme: light dark;
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --page: #f6f8f7;
+  /* Avenir Next 在 macOS 自带（演示机），中文落到苹方；不加载网络字体，现场断网也不变形 */
+  font-family: "Avenir Next", Avenir, "PingFang SC", "HarmonyOS Sans SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  --page: #eef2f5;
   --surface: #ffffff;
-  --subtle: #f1f5f3;
-  --text: #1d3532;
-  --muted: #657872;
-  --border: #dde6e2;
-  --accent: #08786c;
-  --accent-soft: #e8f4ee;
+  --subtle: #f4f7f9;
+  --text: #14232c;
+  --muted: #5d6e78;
+  --border: #dce3e8;
+  /* 品牌蓝取 Anker 青蓝的深色档，白底文字对比度 ≥ 4.5 */
+  --accent: #0077b6;
+  --accent-soft: #e3f1fa;
   --on-accent: #ffffff;
-  --ok: #13815a;
-  --warning: #a76408;
-  --danger: #bb4539;
-  --danger-soft: #fdf3ee;
-  --shadow: 0 12px 44px #203e3405;
-  --art-shadow: #dce7e1;
-  --art-line: #c3d5cc;
-  --art-bg: #e2f0e8;
+  --ok: #15803d;
+  --warning: #a16207;
+  --danger: #b42318;
+  --danger-soft: #fdf0ee;
+  --shadow: 0 1px 2px #14232c0f, 0 8px 24px #14232c0a;
+  --art-shadow: #dce3e8;
+  --art-line: #c5d2db;
+  --art-bg: #e3f1fa;
   --art-body: #ffffff;
-  --art-body-side: #e7eee9;
-  --art-stroke: #89a498;
-  /* 「当前待办」专用色：品牌绿已承担品牌 / 成功 / 选中，待办要一眼区分 */
-  --task: #0b5fb8;
-  --task-soft: #e9f1fc;
-  --user-bubble: #e6eef8;
+  --art-body-side: #e9eff3;
+  --art-stroke: #8aa0ad;
+  /* 「当前待办」专用色：品牌蓝已承担品牌 / 选中，待客户操作的卡用琥珀色一眼区分 */
+  --task: #b4530a;
+  --task-soft: #fdf1e4;
+  --user-bubble: #dcebf7;
+  /* 工作流角色色：Leader / Worker / 审查 / 人工各一色，面板里用来串起每轮的接力 */
+  --role-leader: #4338ca;
+  --role-worker: #0369a1;
+  --role-review: #15803d;
+  --role-human: #7e22ce;
+  --role-quiet: #8193a0;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --page: #111b19;
-    --surface: #192522;
-    --subtle: #1f2e29;
-    --text: #e6efea;
-    --muted: #a4b9af;
-    --border: #31463d;
-    --accent: #7ddac0;
-    --accent-soft: #213c32;
-    --on-accent: #132b23;
-    --ok: #76d3a9;
-    --warning: #ecc077;
-    --danger: #f69488;
-    --danger-soft: #352822;
-    --shadow: 0 12px 44px #0000000d;
-    --art-shadow: #0c1511;
-    --art-line: #38584a;
-    --art-bg: #213c30;
-    --art-body: #2e493d;
-    --art-body-side: #20382d;
-    --art-stroke: #6c9380;
-    --task: #8ab8f0;
-    --task-soft: #1b2b40;
-    --user-bubble: #22334a;
+    --page: #0f171d;
+    --surface: #17222a;
+    --subtle: #1d2a33;
+    --text: #e4ecf1;
+    --muted: #9fb0bb;
+    --border: #2c3b46;
+    --accent: #5cb8ea;
+    --accent-soft: #15324a;
+    --on-accent: #0d2233;
+    --ok: #6fd39b;
+    --warning: #e8c06a;
+    --danger: #f39b8f;
+    --danger-soft: #3a2420;
+    --shadow: 0 1px 2px #0006, 0 8px 24px #0004;
+    --art-shadow: #0b1216;
+    --art-line: #34505f;
+    --art-bg: #15324a;
+    --art-body: #26404f;
+    --art-body-side: #1b3140;
+    --art-stroke: #6f93a8;
+    --task: #f0a45d;
+    --task-soft: #3a2614;
+    --user-bubble: #1e3a52;
+    --role-leader: #a5b4fc;
+    --role-worker: #7cc4ef;
+    --role-review: #6fd39b;
+    --role-human: #d8b4fe;
+    --role-quiet: #7d909c;
   }
 }

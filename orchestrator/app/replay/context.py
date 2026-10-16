@@ -41,8 +41,13 @@ REFERENCE_FIELDS = frozenset(
         "effect_id",
         "action_id",  # 前端 / 脚本每次生成的 uuid
         "execution_id",
+        # 图片 id 由会话 / 输入 id 派生（stage_image 的 uuid5），录制与回放不同；同一张图在一次回放里仍对应同一个别名
+        "image_id",
+        "image_ids",
     }
 )
+# 事件序号：回放时少了录制里的 ping、读图重试等事件，序号整体错位；它只表示先后，不是业务内容
+ORDER_FIELDS = frozenset({"seq"})
 CLOCK_FIELDS = frozenset(
     {
         "now",
@@ -70,6 +75,8 @@ def _walk(value, replace, *, key="", clocks=False):
         return replace(value)
     if clocks and key in CLOCK_FIELDS and value is not None:
         return {"recorded_clock": True}
+    if clocks and key in ORDER_FIELDS and value is not None:
+        return {"recorded_order": True}
     return value
 
 

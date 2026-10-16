@@ -169,7 +169,8 @@ async def test_vision_chain_failure_does_not_break_run(mem_runtime, img_store, t
     assert not any(e["type"] in {"error", "step_card"} for e in events)
     st = await _state(sid)
     assert st["vision_status"] == "failed" and st["image_observations"] == []
-    assert st.get("escalate_reason") == "R5" and "retrieve" in [
+    # 同一个假模型也让 synthesize 失败：按运行故障说明，不报 R5（2026-10-15 官方 63 单 T57）
+    assert not st.get("escalate_reason") and st["diagnose_outcome"]["mode"] == "unavailable" and "retrieve" in [
         e.get("substage") for e in events if e["type"] == "progress"
     ]
     assert any(
@@ -397,3 +398,61 @@ async def test_photo_contradicting_the_text_asks_before_diagnosing(
     said = " ".join(e.get("delta", "") for e in events if e["type"] == "message")
     assert "don't quite match" in said and "roller brush" in said, f"应当把差异说给用户听：{said!r}"
 
+
+
+async def test_exact_error_code_route_does_not_echo_the_photo(mem_runtime, img_store, l3_services, tmp_path):
+    """官方 63 单 T30（Codex 2026-10-12 20:25 与本轮复测）：E4 错误码精确命中 rv-0443，照片没有参与选路；读图把前景
+    机器人写成基站，首卡却回显「From the photo I can see: base station dirty」。错误码选路时不回显，读图仍进内部记录。"""
+    router, _ = _router(
+        tmp_path,
+        CONFIG,
+        [
+            {**INTAKE_OK, "product_hints": ["S1 Pro"]},
+            {"observations": ["黑色扫地机器人基站", "外壳污渍"], "visible_parts": ["基站"],
+             "findings": [{"part": "基站", "phenomenon": "污渍", "evidence": "外壳污渍"}]},
+        ],
+    )
+    set_model_router(router)
+    text = ("Product Name: S1 Pro\nProduct PN: T2080A\nProblem Type: ERROR\nProblem Code: 21037332-E4: Side brush abnormal, task ended.\n"
+            "Problem Description: E4: Side brush abnormal, task ended.\nProblem Upload Images: []")
+    async with _client() as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        events = await _send_bytes(client, sid, text, [_real_png()])
+    cards = [e for e in events if e["type"] == "step_card"]
+    assert cards and cards[0]["step"]["plan_id"] == "qa_rv_0443"
+    assert not cards[0].get("seen")
+    state = await _state(sid)
+    assert state["image_observations"][:2] == ["黑色扫地机器人基站", "外壳污渍"]
+
+
+async def test_image_observations_do_not_pile_up_across_turns(mem_runtime, img_store, l3_services, tmp_path):
+    """2026-10-13 复测：image_observations 用累加 reducer，每轮 reduce_turn 写回 issue 投影时同一组观察复制一份
+    （T30 6 条变 24 条），旧观察混进补检索词与 synthesize。只保留最近一次读图。"""
+    router, _ = _router(
+        tmp_path,
+        CONFIG,
+        [INTAKE_OK, {"observations": ["滚刷缠绕大量毛发"], "visible_parts": ["滚刷"]}, BRUSH_HYPOTHESIS, INTAKE_OK],
+    )
+    set_model_router(router)
+    async with _client() as client:
+        sid = (await client.post("/sessions")).json()["session_id"]
+        await _send_bytes(client, sid, "eufy X10 Pro Omni 不吸了", [_real_png()])
+        first = (await _state(sid))["image_observations"]
+        snapshot = (await client.get(f"/sessions/{sid}")).json()
+        await client.post(f"/sessions/{sid}/messages", data={
+            "input_id": "follow-up", "expected_version": str(snapshot["version"]), "text": "还是不行"})
+    assert first == ["滚刷缠绕大量毛发"]
+    assert (await _state(sid))["image_observations"] == first
+
+
+def test_image_turns_get_a_longer_run_deadline():
+    """2026-10-13：读图主位 qwen3.8-max 单次 10–18 s，文本轮 25 s 放不下读图之后的理解 / 检索 / 选方案。
+    只有本轮消息带图才用带图回合的截止；读图预算不超过本 run 剩余时间减去后续流程的预留。"""
+    from app.sessions.graph import _deadline_ms
+    from app.sessions.runner import DEFAULT_DEADLINE_MS, IMAGE_DEADLINE_MS, run_deadline_ms
+
+    assert run_deadline_ms({"kind": "message", "text": "hi", "image_ids": []}) == DEFAULT_DEADLINE_MS
+    assert run_deadline_ms({"kind": "message", "text": "", "image_ids": ["img"]}) == IMAGE_DEADLINE_MS
+    assert run_deadline_ms({"kind": "step_feedback", "image_ids": ["img"]}) == DEFAULT_DEADLINE_MS
+    assert run_deadline_ms({"kind": "message", "image_ids": ["img"]}, 200) == IMAGE_DEADLINE_MS
+    assert _deadline_ms({}) == DEFAULT_DEADLINE_MS and _deadline_ms({"deadline_ms": IMAGE_DEADLINE_MS}) == IMAGE_DEADLINE_MS

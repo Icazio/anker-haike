@@ -35,6 +35,7 @@ MINIMAL = textwrap.dedent(
         reply.stream:         {chain: [deepseek], stream: true}
         escalate.summary:     {chain: [deepseek]}
         warranty.receipt_ocr: {chain: [sonnet], needs_vision: true}
+        remedy.review:        {chain: [sonnet]}
       overseas:
         intake:               {chain: [sonnet]}
         disambiguate.clarify: {chain: [sonnet]}
@@ -44,6 +45,7 @@ MINIMAL = textwrap.dedent(
         reply.stream:         {chain: [sonnet], stream: true}
         escalate.summary:     {chain: [sonnet]}
         warranty.receipt_ocr: {chain: [sonnet], needs_vision: true}
+        remedy.review:        {chain: [deepseek]}
     """
 )
 
@@ -135,6 +137,11 @@ def test_invalid_yaml_reports_line(tmp_path):
         (
             lambda d: d["providers"]["deepseek"].pop("api_key_env"),
             "providers.deepseek.api_key_env: Field required",
+        ),
+        (
+            # 独立审查不能落回被审结论的厂商（intake 首位 deepseek）
+            lambda d: d["lanes"]["domestic"]["remedy.review"]["chain"].append("deepseek"),
+            "lanes.domestic.remedy.review.chain: 'deepseek' shares provider 'deepseek' with the reviewed tasks",
         ),
     ],
 )

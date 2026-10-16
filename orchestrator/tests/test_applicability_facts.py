@@ -68,41 +68,60 @@ def test_uncertain_polarity_forces_clarification():
     assert clar and "Which side or part" in clar[0]["question"] and "the left one does work" in clar[0]["question"]
 
 
-def test_timing_direction_mismatch_is_not_supported():
-    """T61：「提前两小时启动」对「无法按时启动（7051）」是方向矛盾。"""
-    facts = [{"kind": "symptom", "value": "starts 2 hours before schedule", "quote": "going off 2 hours before",
-              "subject": "schedule", "polarity": "affirmed", "timing": "2 hours before", "status": "active"}]
+T52_SAID = "My charging case will not charge therefore I cannot charge my pump motors."
+
+
+def test_uncertain_observation_alone_also_forces_clarification():
+    """2026-10-13 deepseek-v4-pro：「the left one does work」被记成 observation 而非 symptom，选方案以 0.9 判可执行发了 5 张卡。
+    唯一的客户陈述只是哪部分正常，不论记成现象还是观察，都先问哪一侧、什么问题。"""
+    facts = [{"kind": "observation", "value": "the left one does work", "quote": "the left one does work",
+              "polarity": "uncertain", "status": "active"}]
     kept, dropped, clar = filter_hypotheses(
-        [_hyp("qa_rv_0522", supported_symptoms=["starts 2 hours before schedule"], matched_timing="failed to start")],
+        [_hyp("qa_bp_0020", supported_symptoms=["I have a S1 pump, the left one does work"])], allowed=_allowed("qa_bp_0020"),
+        evidence_ids={"e1"}, symptoms={"I have a S1 pump, the left one does work"}, facts=facts, error_codes=[], max_n=3,
+    )
+    assert kept == [] and "polarity_uncertain:qa_bp_0020" in dropped
+    assert "Which side or part" in clar[0]["question"]
+
+
+def test_direction_conflict_drops_without_asking():
+    """T61：「提前两小时启动」对「无法按时启动（7051）」方向相反。候选不对不是信息不足，不追问「你说的是提前吗」
+    （重复客户原话，Fable D1）。是否相反由模型判断（conflict），原先是 before / early 对 failed to start 的词表。"""
+    conflict = {"kind": "direction", "customer_quote": "going off 2 hours before", "candidate_quote": "failed to start scheduled cleaning"}
+    kept, dropped, clar = filter_hypotheses(
+        [_hyp("qa_rv_0522", supported_symptoms=["starts 2 hours before schedule"], conflict=conflict)],
         allowed=_allowed("qa_rv_0522"), evidence_ids={"e1"}, symptoms={"starts 2 hours before schedule"},
-        facts=facts, error_codes=[], max_n=3,
+        facts=[], error_codes=[], said=["omni c20 isn't following my schedule, it's going off 2 hours before"], max_n=3,
     )
-    assert kept == [] and "timing_mismatch:qa_rv_0522" in dropped
-    assert "2 hours before" in clar[0]["question"]
+    assert kept == [] and clar == [] and "conflict_direction:qa_rv_0522" in dropped
 
 
-def test_subject_level_mismatch_asks_about_the_part_itself():
-    """T52：用户说的是盒子自身充不进电，候选讲的是泵在盒子里充不上电。"""
-    facts = [{"kind": "symptom", "value": "charging case will not charge", "quote": "My charging case will not charge",
-              "subject": "charging case", "polarity": "affirmed", "status": "active"}]
+def test_object_conflict_asks_about_the_customers_part():
+    """T52：客户说盒子自身充不进电，候选讲泵在盒子里充不上电。追问盒子自身的状态。"""
+    conflict = {"kind": "object", "customer_quote": "My charging case will not charge", "candidate_quote": "not charging in the case",
+                "ask_about": "charging case"}
     kept, dropped, clar = filter_hypotheses(
-        [_hyp("qa_bp_0067", supported_symptoms=["charging case will not charge"], matched_subject="pump in the case")],
+        [_hyp("qa_bp_0067", supported_symptoms=["charging case will not charge"], conflict=conflict)],
         allowed=_allowed("qa_bp_0067"), evidence_ids={"e1"}, symptoms={"charging case will not charge"},
-        facts=facts, error_codes=[], max_n=3,
+        facts=[], error_codes=[], said=[T52_SAID], max_n=3,
     )
-    assert kept == [] and "charging_recipient_mismatch:qa_bp_0067" in dropped
+    assert kept == [] and "conflict_object:qa_bp_0067" in dropped
     assert "charging case itself" in clar[0]["question"]
 
 
-def test_matching_model_subject_cannot_override_official_recipient():
-    facts = [{"kind": "symptom", "value": "charging case will not charge", "quote": "x",
-              "subject": "charging case", "polarity": "affirmed", "status": "active"}]
-    kept, dropped, _ = filter_hypotheses(
-        [_hyp("qa_bp_0067", supported_symptoms=["charging case will not charge"], matched_subject="charging case")],
+@pytest.mark.parametrize("conflict", [
+    # 客户原话里没有这句：模型不能替客户添对象
+    {"kind": "object", "customer_quote": "my charging hub is broken", "candidate_quote": "x", "ask_about": "charging hub"},
+    # 引文是真的，但追问的部件不在引文里
+    {"kind": "object", "customer_quote": "My charging case will not charge", "candidate_quote": "x", "ask_about": "pump hub"},
+])
+def test_object_conflict_without_grounded_quote_drops_without_asking(conflict):
+    kept, dropped, clar = filter_hypotheses(
+        [_hyp("qa_bp_0067", supported_symptoms=["charging case will not charge"], conflict=conflict)],
         allowed=_allowed("qa_bp_0067"), evidence_ids={"e1"}, symptoms={"charging case will not charge"},
-        facts=facts, error_codes=[], max_n=3,
+        facts=[], error_codes=[], said=[T52_SAID], max_n=3,
     )
-    assert kept == [] and "charging_recipient_mismatch:qa_bp_0067" in dropped
+    assert kept == [] and clar == [] and "conflict_object:qa_bp_0067" in dropped
 
 
 def test_different_code_same_model_is_not_applicable():
@@ -185,78 +204,3 @@ async def test_no_match_with_a_real_symptom_still_hands_off(conversation):
         "facts": [{"value": "spins in circles and never docks", "quote": "keeps spinning in circles and never docks"}],
     })
     assert any(e["type"] == "escalation_summary" for e in events)
-
-
-# ---- 复测 2026-10-09 17:13 回归：设备级主语不算对象冲突（T55 / T36 / T62）----
-
-def test_device_level_subject_does_not_conflict_with_a_part():
-    """用户说「my X10 / the pump / stofzuiger」时 subject 是整机或品类词，候选讲具体部件不算层级冲突。"""
-    facts = [{"kind": "symptom", "value": "clicks but does not suction", "quote": "x",
-              "subject": "left pump", "polarity": "affirmed", "status": "active"}]
-    kept, dropped, _ = filter_hypotheses(
-        [_hyp("qa_bp_0102", supported_symptoms=["clicks but does not suction"], matched_subject="motor")],
-        allowed=_allowed("qa_bp_0102"), evidence_ids={"e1"}, symptoms={"clicks but does not suction"},
-        facts=facts, error_codes=[], max_n=3,
-    )
-    assert [k["plan_id"] for k in kept] == ["qa_bp_0102"] and dropped == []
-
-
-@pytest.mark.parametrize("subject", ["stofzuiger", "eufy omni c 20", "X10 Pro Omni", "the robot", "my pump", "left one"])
-def test_whole_device_subjects_are_ignored(subject):
-    facts = [{"kind": "symptom", "value": "loud noise", "quote": "x", "subject": subject, "polarity": "affirmed", "status": "active"}]
-    kept, _, _ = filter_hypotheses(
-        [_hyp("qa_rv_0341", supported_symptoms=["loud noise"], matched_subject="roller brush and cover")],
-        allowed=_allowed("qa_rv_0341"), evidence_ids={"e1"}, symptoms={"loud noise"},
-        facts=facts, error_codes=[], max_n=3,
-    )
-    assert [k["plan_id"] for k in kept] == ["qa_rv_0341"]
-
-
-def test_part_level_subject_still_conflicts():
-    facts = [{"kind": "symptom", "value": "charging case will not charge", "quote": "x",
-              "subject": "charging case", "polarity": "affirmed", "status": "active"}]
-    kept, dropped, _ = filter_hypotheses(
-        [_hyp("qa_bp_0067", supported_symptoms=["charging case will not charge"], matched_subject="pump hub")],
-        allowed=_allowed("qa_bp_0067"), evidence_ids={"e1"}, symptoms={"charging case will not charge"},
-        facts=facts, error_codes=[], max_n=3,
-    )
-    assert kept == [] and "charging_recipient_mismatch:qa_bp_0067" in dropped
-
-
-def test_same_head_noun_is_not_a_subject_conflict():
-    """T29 复跑：用户说 Water tray，候选讲 cleaning tray / dirty water tank；同一类部件的不同叫法不是对象冲突。"""
-    facts = [{"kind": "symptom", "value": "Water tray will not empty", "quote": "x",
-              "subject": "Water tray", "polarity": "affirmed", "status": "active"}]
-    kept, dropped, _ = filter_hypotheses(
-        [_hyp("qa_rv_0270", supported_symptoms=["Water tray will not empty"], matched_subject="cleaning tray")],
-        allowed=_allowed("qa_rv_0270"), evidence_ids={"e1"}, symptoms={"Water tray will not empty"},
-        facts=facts, error_codes=[], max_n=3,
-    )
-    assert [k["plan_id"] for k in kept] == ["qa_rv_0270"] and dropped == []
-
-
-@pytest.mark.parametrize(("subject", "candidate"), [
-    ("Eufy S1 pro breast pump", "duckbill valve and diaphragm"),   # 产品名含 pump，仍是整机（T54）
-    ("floor detergent", "cleaning solution bottle"),               # 耗材对它的容器 / 液位（T40）
-    ("floor detergent", "clean water tank / clean water level"),
-    ("app", "robot"),                                              # App 侧现象对机器人：不是部件层级
-])
-def test_product_names_and_consumables_do_not_conflict(subject, candidate):
-    facts = [{"kind": "symptom", "value": "x", "quote": "x", "subject": subject, "polarity": "affirmed", "status": "active"}]
-    kept, dropped, _ = filter_hypotheses(
-        [_hyp("qa_rv_0341", supported_symptoms=["x"], matched_subject=candidate)],
-        allowed=_allowed("qa_rv_0341"), evidence_ids={"e1"}, symptoms={"x"}, facts=facts, error_codes=[], max_n=3,
-    )
-    assert [k["plan_id"] for k in kept] == ["qa_rv_0341"], dropped
-
-
-def test_container_synonyms_are_not_a_subject_conflict():
-    """T29 第二批复测：「Water tray」对「dirty water tank」是同一类容器的不同叫法，不是对象不同。"""
-    facts = [{"kind": "symptom", "value": "Water tray will not empty", "quote": "x",
-              "subject": "Water tray", "polarity": "affirmed", "status": "active"}]
-    kept, dropped, _ = filter_hypotheses(
-        [_hyp("qa_rv_0254", supported_symptoms=["Water tray will not empty"], matched_subject="dirty water tank")],
-        allowed=_allowed("qa_rv_0254"), evidence_ids={"e1"}, symptoms={"Water tray will not empty"},
-        facts=facts, error_codes=[], max_n=3,
-    )
-    assert [k["plan_id"] for k in kept] == ["qa_rv_0254"], dropped

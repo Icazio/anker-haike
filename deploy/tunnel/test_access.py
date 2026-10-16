@@ -1,6 +1,7 @@
-"""通过真实 Caddy 请求验证认证边界，使用临时凭据和无数据的响应器。"""
+"""通过真实 Caddy 验证临时免登录、身份转发与压缩，不接触应用数据。"""
 
 import base64
+import gzip
 import json
 import re
 import secrets
@@ -21,34 +22,8 @@ class AccessTest(unittest.TestCase):
         cls.addClassCleanup(cls.directory.cleanup)
         task_dir = Path(cls.directory.name)
         cls.passwords = {name: secrets.token_hex(16) for name in ("viewer", "admin")}
-        env = ["PUBLIC_IP=127.0.0.1"]
-        for name, prefix in (("viewer", "BASIC_AUTH"), ("admin", "ADMIN_AUTH")):
-            hashed = subprocess.run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "-i",
-                    "--network",
-                    "none",
-                    "caddy:2.11.7-alpine",
-                    "caddy",
-                    "hash-password",
-                ],
-                input=cls.passwords[name] + "\n",
-                text=True,
-                capture_output=True,
-                check=True,
-            ).stdout.strip()
-            env.extend(
-                [
-                    f"{prefix}_USER={name}",
-                    f"{prefix}_HASH={hashed}",
-                    f"{prefix}_PASSWORD={cls.passwords[name]}",
-                ]
-            )
         env_file = task_dir / ".env"
-        env_file.write_text("\n".join(env) + "\n")
+        env_file.write_text("PUBLIC_IP=127.0.0.1\n")
         env_file.chmod(0o600)
         adapted = subprocess.run(
             [
@@ -98,14 +73,26 @@ class AccessTest(unittest.TestCase):
             "protocols": ["h1"],
             "routes": [
                 {
+                    "match": [{"path": ["/stream"]}],
                     "handle": [
                         {
                             "handler": "static_response",
+                            "headers": {"Content-Type": ["text/event-stream"]},
+                            "body": "data: " + "haike" * 2500 + "\n\n",
+                        }
+                    ],
+                },
+                {
+                    "handle": [
+                        {
+                            "handler": "static_response",
+                            "headers": {"Content-Type": ["application/json"]},
                             "body": json.dumps(
                                 {
                                     "identity": "{http.request.header.X-Authenticated-User}",
                                     "authorization": "{http.request.header.Authorization}",
                                     "host": "{http.request.hostport}",
+                                    "padding": "haike" * 2500,
                                 }
                             ),
                         }
@@ -122,9 +109,11 @@ class AccessTest(unittest.TestCase):
             "IFS= read -r identity\n"
             "IFS= read -r path\n"
             "IFS= read -r method\n"
+            "IFS= read -r encoding\n"
             'if [ "$method" = POST ]; then set -- --post-data="{}"; else set --; fi\n'
             'wget -S -O - "$@" --header "Authorization: $authorization" '
-            '--header "X-Authenticated-User: $identity" "http://127.0.0.1:18444$path"\n'
+            '--header "X-Authenticated-User: $identity" --header "Accept-Encoding: $encoding" '
+            '"http://127.0.0.1:18444$path"\n'
         )
         cls.container = "haike-access-" + secrets.token_hex(4)
         subprocess.run(
@@ -159,7 +148,7 @@ class AccessTest(unittest.TestCase):
         for attempt in range(30):
             try:
                 last_status = cls.request("/", None)[0]
-                if last_status == 401:
+                if last_status in (200, 401):
                     return
             except (OSError, TimeoutError):
                 pass
@@ -179,31 +168,30 @@ class AccessTest(unittest.TestCase):
         raise RuntimeError(f"Local Caddy did not become ready; last HTTP status={last_status}")
 
     @classmethod
-    def request(cls, path, account, *, spoof=None, method="GET"):
+    def request(cls, path, account, *, spoof=None, method="GET", encoding=""):
         authorization = ""
         if account:
             encoded = base64.b64encode(f"{account}:{cls.passwords[account]}".encode()).decode()
             authorization = "Basic " + encoded
         result = subprocess.run(
             ["docker", "exec", "-i", cls.container, "sh", "/etc/caddy/request.sh"],
-            input=f"{authorization}\n{spoof or ''}\n{path}\n{method}\n",
-            text=True,
+            input=f"{authorization}\n{spoof or ''}\n{path}\n{method}\n{encoding}\n".encode(),
             capture_output=True,
             timeout=5,
             check=False,
         )
-        statuses = re.findall(r"HTTP/\S+ (\d+)", result.stderr)
+        statuses = re.findall(r"HTTP/\S+ (\d+)", result.stderr.decode(errors="replace"))
         if not statuses:
             raise OSError("No HTTP response from isolated Caddy")
         return int(statuses[-1]), result.stdout
 
-    def test_unauthenticated_requests_are_denied(self):
+    def test_customer_and_admin_pages_allow_anonymous_access(self):
         for path in ("/", "/admin", "/admin/", "/admin/api/graph"):
             with self.subTest(path=path):
                 status, _ = self.request(path, None)
-                self.assertEqual(status, 401)
+                self.assertEqual(status, 200)
 
-    def test_viewer_cannot_reach_admin_even_with_spoofed_identity(self):
+    def test_admin_paths_override_spoofed_identity(self):
         for path in (
             "/admin",
             "/admin/",
@@ -215,10 +203,12 @@ class AccessTest(unittest.TestCase):
             "//admin/api/graph",
         ):
             with self.subTest(path=path):
-                self.assertEqual(self.request(path, "viewer", spoof="admin")[0], 401)
+                status, body = self.request(path, None, spoof="forged-user")
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)["identity"], "public-demo")
 
     def test_public_requests_remove_identity_and_password(self):
-        for account in ("viewer", "admin"):
+        for account in (None, "viewer", "admin"):
             for path in ("/", "/health", "/src/admin/main.tsx"):
                 with self.subTest(account=account, path=path):
                     status, body = self.request(path, account, spoof="admin")
@@ -228,17 +218,30 @@ class AccessTest(unittest.TestCase):
                     self.assertFalse(bool(data["authorization"]))
                     self.assertEqual(data["host"], "127.0.0.1:5173")
 
-    def test_admin_requests_use_authenticated_identity(self):
-        for method in ("GET", "POST"):
-            with self.subTest(method=method):
-                status, body = self.request(
-                    "/admin/api/echo", "admin", spoof="forged-user", method=method
-                )
-                self.assertEqual(status, 200)
-                data = json.loads(body)
-                self.assertEqual(data["identity"], "admin")
-                self.assertFalse(bool(data["authorization"]))
-                self.assertEqual(data["host"], "127.0.0.1:5173")
+    def test_admin_requests_use_shared_demo_identity(self):
+        for account in (None, "viewer", "admin"):
+            for method in ("GET", "POST"):
+                with self.subTest(account=account, method=method):
+                    status, body = self.request(
+                        "/admin/api/echo", account, spoof="forged-user", method=method
+                    )
+                    self.assertEqual(status, 200)
+                    data = json.loads(body)
+                    self.assertEqual(data["identity"], "public-demo")
+                    self.assertFalse(bool(data["authorization"]))
+                    self.assertEqual(data["host"], "127.0.0.1:5173")
+
+    def test_json_compression_preserves_response_and_reduces_download(self):
+        plain_status, plain = self.request("/admin/api/echo", None)
+        status, compressed = self.request("/admin/api/echo", None, encoding="gzip")
+        self.assertEqual((plain_status, status), (200, 200))
+        self.assertTrue(gzip.decompress(compressed) == plain, "Compression changed JSON data")
+        self.assertLess(len(compressed), len(plain) // 5)
+
+    def test_event_stream_is_forwarded_without_compression(self):
+        status, body = self.request("/stream", None, encoding="gzip")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, ("data: " + "haike" * 2500 + "\n\n").encode())
 
 
 if __name__ == "__main__":

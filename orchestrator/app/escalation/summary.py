@@ -63,6 +63,7 @@ def _user_texts(state: dict[str, Any]) -> list[str]:
 NEXT_ACTION_TEXT = {
     "no_supported_followup": "{steps}，现有资料没有进一步可执行的排查操作",
     "knowledge_coverage_missing": "当前资料没有适用于该现象的排查路径",
+    "outcome_beyond_source": "{steps}；客户要的结果超出官方资料覆盖（资料只有通用排查），需人工核查",
 }
 
 MISSING_LABELS = {"product": "型号", "symptoms": "具体现象"}
@@ -424,7 +425,26 @@ DEFAULT_REASSURANCE = "I've put together a record of this issue so a support col
 CUSTOMER_BOUNDARY = {
     "no_supported_followup": "The official troubleshooting steps for this issue have all been tried",
     "knowledge_coverage_missing": "I couldn't find official guidance that covers this issue",
+    "outcome_beyond_source": "The official guidance only covers the steps you tried, not what you asked for",
 }
+
+
+def r5_boundary(state: dict[str, Any]) -> str:
+    """知识缺口交人工时对客户说明没覆盖的是哪几件事（客户原话）。T61「提前两小时启动」「清扫没有记录」两个问题，
+    只说「这个问题」时客户不知道第二件有没有被记下（Fable D1 2026-10-12）。"""
+    if ((state.get("next_action") or {}).get("reason")) == "outcome_beyond_source":
+        return CUSTOMER_BOUNDARY["outcome_beyond_source"] + ". "
+    issue = (state.get("issues") or {}).get(state.get("active_issue_id"), {})
+    quotes = list(dict.fromkeys(
+        (f.get("quote") or f.get("value") or "").strip() for f in issue.get("facts", [])
+        if f.get("status") == "active" and f.get("kind") == "symptom" and f.get("polarity", "affirmed") == "affirmed"
+        and f.get("source_kind", "user_report") == "user_report"))
+    quotes = [q for q in quotes if q]
+    if len(quotes) < 2:
+        return "I couldn't confirm official troubleshooting guidance for this issue. "
+    said = "; ".join(f'"{q}"' for q in quotes)
+    return (f"I couldn't confirm official troubleshooting guidance for these issues: {said}. "
+            "Each of them is kept in the record for our colleague. ")
 
 
 def reassurance_text(reason: str, state: dict[str, Any] | None = None) -> str:

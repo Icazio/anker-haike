@@ -16,12 +16,45 @@ const summary: EscalationSummary = {
 };
 
 describe('SummaryCard 的真实结束原因（design §3.5）', () => {
-  it('展示真实原因文字，规则码只是附注；prepared 不显示成已接入', () => {
+  it('展示真实原因文字；prepared 不显示成已接入', () => {
     const { container } = render(<SummaryCard summary={summary} handoffStatus="prepared" />);
     expect(container.querySelector('[data-kind="end-reason"]')).toHaveTextContent('现有资料没有进一步可执行的排查操作');
-    expect(container.querySelector('[data-kind="end-reason"]')).toHaveTextContent('no_supported_followup');
     expect(container.querySelector('[data-kind="handoff-status"]')).toHaveTextContent('已整理记录，尚未接入人工');
     expect(summaryToText(summary)).toContain('放回基站观察充电（已操作，仍有问题）');
+  });
+
+  it('规则码与 cause 只在观测台（internal）显示，客户页不出现内部编号', () => {
+    const { container, rerender } = render(<SummaryCard summary={summary} />);
+    const reason = () => container.querySelector('[data-kind="end-reason"]');
+    expect(reason()).not.toHaveTextContent('R2');
+    expect(reason()).not.toHaveTextContent('no_supported_followup');
+    rerender(<SummaryCard summary={summary} internal />);
+    expect(reason()).toHaveTextContent('规则码 R2 · no_supported_followup');
+  });
+
+  it('「假设」是 AI 内部推断（缺故障名时是方案 ID），客户页不显示，观测台与复制文本保留', () => {
+    const planIds: EscalationSummary = { ...summary, hypotheses: ['qa_rv_0270', 'qa_rv_0254'] };
+    const { container, rerender } = render(<SummaryCard summary={planIds} />);
+    expect(screen.queryByText('假设')).toBeNull();
+    expect(container).not.toHaveTextContent('qa_rv_0270');
+    rerender(<SummaryCard summary={planIds} internal />);
+    expect(screen.getByText('假设')).toBeVisible();
+    expect(summaryToText(planIds)).toContain('【假设】qa_rv_0270；qa_rv_0254');
+  });
+
+  it('待办诉求显示中文，复制文本仍与后端 summary_to_text 同款', () => {
+    const withBusiness: EscalationSummary = {
+      ...summary,
+      business: { kind: 'device_fault', known: {}, missing: [], pending_requests: [
+        { intent: 'refund_request', quote: '我要退款', status: 'waiting_human' },
+        { intent: 'logistics_query', quote: '包裹到哪了', status: 'pending' },
+        { intent: 'something_new', quote: '', status: 'active' },
+      ] },
+    };
+    const { container } = render(<SummaryCard summary={withBusiness} />);
+    expect(container.querySelector('[data-kind="business-pending"]')).toHaveTextContent('退款（等待人工）；查物流（待处理）；其他诉求（处理中）');
+    expect(container).not.toHaveTextContent('refund_request');
+    expect(summaryToText(withBusiness)).toContain('待办：refund_request(waiting_human)；logistics_query(pending)；something_new(active)');
   });
 
   it('无法操作的步骤在页面和剪贴板都保留真实反馈，不称为已执行', async () => {

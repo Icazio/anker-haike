@@ -87,8 +87,8 @@ def test_describe_never_contains_key(cfg):
 
 def test_probe_alias_defaults_to_deepseek_when_no_other_keys():
     reg = ModelRegistry(load_models_config(REAL_CONFIG), env={"DEEPSEEK_API_KEY": SECRET})
-    # intake 链首 qwen-flash 无 key（且 id 为 TBD）→ 链上第一个可用即 deepseek
-    assert pick_probe_alias(reg, "intake", None) == "deepseek"
+    # intake 链首 deepseek-pro 与 deepseek 同一厂商 key → 链上第一个可用即 deepseek-pro（2026-10-13.2 换主位）
+    assert pick_probe_alias(reg, "intake", None) == "deepseek-pro"
     # 链上没有 deepseek 的 task（reply.stream）也回落到默认测试别名
     assert pick_probe_alias(reg, "reply.stream", None) == DEFAULT_PROBE_ALIAS
     assert pick_probe_alias(reg, "intake", "sonnet") == "sonnet"

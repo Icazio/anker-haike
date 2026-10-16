@@ -262,6 +262,19 @@ def test_device_message_contact_phrase_is_not_a_human_request():
     assert state["symptoms"] == ["error while adding clean water"]
 
 
+def test_ungrounded_human_request_on_a_fault_form_is_a_fault_report():
+    """T13（2026-10-12 复测一次）：荷兰语表单带 5116、推送是「Neem contact op met de klantenservice」，模型判 request_human
+    却给不出出自原文的引文，系统反问「要人工还是继续」。表单在报故障，按排障处理。"""
+    from app.official.models import OfficialData
+
+    t13 = next(t.body for t in OfficialData().tickets if t.id == "T13")
+    state = turn({}, "i1", t13, primary_intent="request_human", device_relation="current", human_request_quote=None,
+                 facts=[{"value": "communicatiefout", "quote": "Er is een communicatiefout tussen de robot en het station."}])
+    assert state["turn_decision"]["primary_intent"] == "report_problem"
+    assert state["turn_decision"]["reply_mode"] != "clarify"
+    assert state["turn_decision"]["escalation_trigger"] is None
+
+
 def test_user_written_human_request_still_escalates():
     state = turn(
         {}, "i1", "The robot shows EB1L again and again. Please let me talk to a human.",

@@ -11,7 +11,7 @@ const EVENT_TEXT: Record<string, string> = {
   status_changed: '状态变化', updated: '案件更新', commitment: '记录承诺', execution_attached: '关联服务单',
   order_identified: '关联订单', product_identified: '确认产品', request_changed: '客户变更诉求',
   resolution_disputed: '客户反馈未解决', manual_action: '人工操作', handoff_summary: '更新交接摘要',
-  review_requested: '进入审核时的客户诉求',
+  review_requested: '进入审核时的客户诉求', review_completed: '执行前审查',
 };
 const REQUEST_TEXT: Record<string, string> = { replace: '换货', refund: '退款', address_update: '修改地址' };
 
@@ -24,6 +24,8 @@ function eventDetail(event: CaseEvent): string {
   if (event.type === 'resolution_disputed') return `「${p.quote}」`;
   if (event.type === 'updated') return String(p.reason ?? '');
   if (event.type === 'handoff_summary') return '';
+  // 快照、正向结论、前提绑定在 payload 里供复盘；事件列表只显示结论
+  if (event.type === 'review_completed') return String(p.detail ?? p.outcome);
   return Object.values(p).filter((v) => typeof v === 'string').join(' · ');
 }
 

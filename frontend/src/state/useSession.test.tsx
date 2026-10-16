@@ -76,6 +76,34 @@ describe('session recovery lifecycle', () => {
     expect(stream.cancel).toHaveBeenCalledOnce(); // done 即结束，不等连接关闭
   });
 
+  it('opens a ?session= deep link over the saved session and strips it from the address bar', async () => {
+    sessionStorage.setItem('haike.session_id', 'old');
+    window.history.replaceState(null, '', '/?session=linked&from=desk#top');
+    try {
+      const fetch = vi.fn().mockResolvedValue(json(snapshot({ session_id: 'linked' })));
+      vi.stubGlobal('fetch', fetch);
+      const { result } = renderHook(useSession);
+      await waitFor(() => expect(result.current.state.version).toBe(4));
+      expect(result.current.state.id).toBe('linked');
+      expect(fetch.mock.calls.map(([url]) => String(url))).toEqual(['/sessions/linked']);
+      expect(sessionStorage.getItem('haike.session_id')).toBe('linked');
+      // 其余参数与锚点保留，刷新后按 sessionStorage 恢复，不再被地址栏带回
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe('/?from=desk#top');
+    } finally { window.history.replaceState(null, '', '/'); }
+  });
+
+  it('drops an expired ?session= deep link with a notice', async () => {
+    window.history.replaceState(null, '', '/?session=gone');
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ code: 'session_not_found' }, 404)));
+      const { result } = renderHook(useSession);
+      await waitFor(() => expect(result.current.state.error?.code).toBe('notice'));
+      expect(result.current.state.id).toBeNull();
+      expect(sessionStorage.getItem('haike.session_id')).toBeNull();
+      expect(window.location.search).toBe('');
+    } finally { window.history.replaceState(null, '', '/'); }
+  });
+
   it('keeps the saved session on network failure, but drops a confirmed session_not_found', async () => {
     sessionStorage.setItem('haike.session_id', 's');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('offline'))

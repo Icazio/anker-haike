@@ -3,7 +3,7 @@ from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from haike_contracts.common import WarrantyDecision
+from haike_contracts.common import GateCheck, WarrantyDecision
 
 from app.actions.executor import ActionExecutor, AuthorizationDenied
 from app.actions.gate import AuthorizationGate
@@ -37,6 +37,7 @@ def gate(**overrides):
         "allowed_operations": True,
         "user_confirmed": True,
         "case_status": "awaiting_confirmation",
+        "review": GateCheck(name="review", passed=True, detail="一致"),
     }
     return AuthorizationGate().check(**(values | overrides))
 
@@ -105,12 +106,13 @@ async def test_fault_injection(mode, error):
         {"execution_status": "succeeded"},
         {"case_status": "closed"},
         {"kind": "reship", "logistics_ok": False},
+        {"review": GateCheck(name="review", passed=False, detail="独立审查不一致")},
     ],
 )
 def test_gate_denies_each_constraint(override):
     result = gate(**override)
     assert not result.passed and result.fallback == "await_human"
-    assert [c.name for c in result.checks] == ["eligibility", "evidence", "safety", "idempotency"]
+    assert [c.name for c in result.checks] == ["eligibility", "evidence", "safety", "idempotency", "review"]
 
 
 def test_gate_names_missing_sop_evidence():

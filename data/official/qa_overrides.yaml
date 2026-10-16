@@ -4,9 +4,14 @@
 # title（卡片标题；原文段落不是问句而改成 question 时必须给，question 卡只显示标题与选项）、
 # branches（选项 → 目标：数字是段落位置，字符串是本条的 step_id 或 EXHAUSTED）、default（回答不在选项里时的目标）、
 # retry_options（表示「还没做 / 不知道」的选项：选它或答非所问的短答时卡片不算答完，带提示重发一次）、
+# caution（注意事项，与条目 Tips 一起显示；原文这一段没写、同型号另一条写了的后果）、
 # disabled + reason（已核实不适用的段落，不生成步骤但保留原文）、
 # parts（一段拆成多步：段内夹问句、段内诊断树。每部分可写上面的字段；第一部分从段首开始，之后每部分写 at = 段内唯一的
-# 原文锚点，从锚点处切开，依次生成 s{pos}、s{pos}b、s{pos}c…；切出的文字拼起来就是原段落）。
+# 原文锚点，从锚点处切开，依次生成 s{pos}、s{pos}b、s{pos}c…；切出的文字拼起来就是原段落；media: true 指定由哪一部分挂原段图示 / 链接，
+# 不写时挂第一张出卡的部分）；scope_note（{when: 客户原话正则, text: 系统说明}：客户原话命中时附在这一步的卡片上，
+# 说明这条资料能做什么、做不到什么，系统口吻、不改原文，不新增步骤或承诺）。
+# 条目级 premise（与段落位置并列）：这条指南默认成立、标题没写的前提，选方案时随候选交给模型；客户原话否定它就是对象冲突，
+# 追问前提里的部件，不发这条指南（T52 盒子自身充不进电，讲泵受电的条目都默认盒子能通电）。
 bp-0123:
   1: {kind: statement}                                   # 「Identify the Problem」是标题
   3: {kind: question, options: ["Upon startup", "During breast pumping", "Only at high speed"]}
@@ -65,6 +70,9 @@ rv-0061:
 bp-0114:
   # 第 6 段塞了 4 个子病因（T53）：磁吸线充电；软件错误的 12 秒重置与第 2 段重复，客户已反馈过；
   # 出厂按钮损坏要先确认是到货就坏，才走官方的换机结论；电池耗尽换充电器和线
+  # 前提：开机 / 加热两个小节都在查泵主机本身。2026-10-14 T52 补测：客户说盒子充不进电所以泵充不了，
+  # 模型选了这条并替客户选中「泵无法开机」，发了 5 张泵操作卡
+  premise: "The pump hub itself cannot be turned on or its function fails; the problem is not only that the charging case will not charge."
   6:
     parts:
       - {kind: action}
@@ -73,3 +81,86 @@ bp-0114:
          options: ["Yes, it was damaged on arrival", "No"], branches: {"Yes, it was damaged on arrival": s6d, "No": s6e}, default: s6e}
       - {at: "Please provide your shipping address", kind: handoff}
       - {at: "Breast pump battery depleted", kind: action, title: "Charge the pump with a different charger and cable"}
+rv-0473:
+  # 第 4 段长按红键恢复出厂，原文没写后果；同型号 rv-0312 第 3 段写明长按红色功能键超过 5 秒会删除地图、需重新建图（T31）。
+  # 「Wi-Fi 指示灯旁的红键」与 rv-0312「red function button」是否同一键原文未写明，提示用 may，待官方核实
+  4: {caution: "Restoring factory settings may remove your saved map: map data is removed when the red function button is held for over 5 seconds, and you will then need to re-map the entire house."}
+rv-0363:
+  # 与 rv-0473 正文相同，同一处补同一条提示
+  4: {caution: "Restoring factory settings may remove your saved map: map data is removed when the red function button is held for over 5 seconds, and you will then need to re-map the entire house."}
+rv-0073:
+  # 整条一段：装好清洁液瓶 + 试官方文章里的建议 + 拍照 / 视频（T40）。不拆时一个「未解决」就算官方排查走完，
+  # 文章里的检查做没做无从知道。按原文顺序拆三步，文章链接挂在「是否已按文章检查」那张
+  1:
+    parts:
+      - {kind: action, title: "Make sure the cleaning solution bottle is installed correctly"}
+      - {at: "Also, please try the suggestions in the article below", kind: question, media: true,
+         title: "Have you tried the suggestions in the official article linked on this card?",
+         options: ["Yes, I tried them and it still doesn't dispense", "I haven't tried them yet"],
+         retry_options: ["I haven't tried them yet"]}
+      - {at: "To assist you better", kind: material_request, title: "Share a photo or video of the cleaning solution bottle"}
+bp-0111:
+  # 第 5 段「Check Battery Power」是「Troubleshooting Steps」下的小标题，不是操作（T51 单独出了一张四个词的卡）。
+  # 改成说明，附到下一张「确保充满」卡上
+  5: {kind: statement}
+rv-0111:
+  # 标题本身就是「Clean water tank is full but still says it's empty」，第 2 句「只是缺水提醒、方便时加水即可」对这条的读者
+  # 自相矛盾（T37：满水仍报警并停拖，卡片却说这只是普通缺水提醒），且不含任何排查动作（Fable D2 2026-10-12）。
+  # 拆成：查水箱有没有水、没有就加水重启（操作）→ 仍报错就联系我们（交人工）；中间那句不进卡片，原文仍在证据里
+  1:
+    parts:
+      - {kind: action, title: "Check the clean water tank, refill if needed, and restart the task",
+         scope_note: {when: "\\b(?:full|vol|voll|plein|lleno)\\b",
+                      text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
+      - {at: "*Please note that this is simply a notification", disabled: true, reason: "满水仍报缺水的读者不适用「只是缺水提醒」"}
+      - {at: "*If the error persists after refilling and restarting", kind: handoff}
+rv-0112:
+  # 与 rv-0111 正文相同（E25），同一处理
+  1:
+    parts:
+      - {kind: action, title: "Check the clean water tank, refill if needed, and restart the task",
+         scope_note: {when: "\\b(?:full|vol|voll|plein|lleno)\\b",
+                      text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
+      - {at: "*Please note that this is simply a notification", disabled: true, reason: "满水仍报缺水的读者不适用「只是缺水提醒」"}
+      - {at: "*If the error persists after refilling and restarting", kind: handoff}
+rv-0312:
+  # 客户问维修后能不能找回旧地图、为什么历史记录里看得到却不能用（T34）。S1 Pro 没有维修后恢复地图、历史日志的官方资料；
+  # E28 的「删除后不可找回」不能借用。先如实说明这条资料能做什么，再照发查地图页 / 重建两步（Fable D4 2026-10-12）。
+  # beyond_source：说明里承诺「未解决由同事核查」，指南走完按资料缺口交人工，不进质保收订单（2026-10-13 官方 63 单复评）
+  1: {scope_note: {when: "(?:lost|lose|missing|recover|restore|get back|retrieve|kwijt|verloren|perdu)[^.\\n]{0,40}maps?|maps?[^.\\n]{0,60}(?:history|histor|service|repair|kwijt|verloren)",
+                   text: "You'd like your old map back. I couldn't find official information on restoring a map after a repair, or on why it still shows in the cleaning history, so I can't confirm it can be recovered. The steps below check the map page and rebuilding; if you need the old map itself, mark them as not solved and a colleague will check.",
+                   beyond_source: true}}
+bp-0164:
+  # 第 1 段「查看 App 版本」与第 3 段「提供 App 版本」是同一件事：向客户要版本号。原样是两张「是否解决」的操作卡，
+  # 两次「未解决」就算指南走完、进质保，版本号从没拿到（官方 63 单 T57）。第 1 段改成问题卡收版本号（原文仍以
+  # 「Check the version…」开头，选方案时把「先确认版本」认作计划内检查，不另发追问；2026-10-13 复测禁用第 1 段后
+  # 2/8 次先追问版本、再发问题卡问第二遍）；第 2 段「5.0 以上可能是已知问题」附在后面；第 3 段是交给支持团队
+  1: {kind: question, title: "Which version of the Anker eufy app are you using? You can find it in the app under Settings, then About or App Information."}
+  3: {kind: handoff}
+rv-0021:
+  # 「清水不足降级为纯扫」（6536/6537）。正文后半「Please note: The alert you see is just a reminder… normal protective mechanism」
+  # 讲的是机器人在没有基站的楼层、清水用完自动转纯扫；客户说水箱满着仍提示加水（T37 主轮选中这条）时，这句把异常解释成正常。
+  # 拆开：查水箱 / 补水重启（操作，含同楼层仍持续请联系）→ 无基站楼层的正常保护说明（不进卡片，原文仍在证据里）
+  # → 结尾「仍有问题请联系」交人工
+  1:
+    parts:
+      - {kind: action, title: "Check the clean water tank, refill if needed, and restart the mopping task",
+         scope_note: {when: "\\b(?:full|vol|voll|plein|lleno)\\b",
+                      text: "You said the tank is already full. Please still check it on this card; if it's full and the message still appears after restarting, mark it as not solved and a colleague will continue from here."}}
+      - {at: "Please note: The alert you see is just a reminder", disabled: true, reason: "只适用于机器人在无基站楼层用完清水；满水仍报警的客户读成「这是正常的」"}
+      - {at: "If the problem continues after refilling the water", kind: handoff}
+bp-0039:
+  # 「充电盒不给泵充电」：对准泵与盒内触点、清触点、复位泵，都默认盒子本身能通电（T52 客户说盒子自身充不进电，首卡禁止项）
+  premise: "The charging case itself powers on and charges when plugged in; the problem is only with charging the pumps."
+bp-0067:
+  # 「泵在盒里充不上」：第 3 步才提「确认盒子本身有电」，前两步已默认盒子能通电（T52）
+  premise: "The charging case itself powers on and charges when plugged in; the problem is only with charging the pumps."
+bp-0122:
+  # 「泵马达不充电」：同上，盒子自身不进电时泵充不上只是下游结果（B11 / T52）
+  premise: "The charging case itself powers on and charges when plugged in; the problem is only with charging the pumps."
+bp-0127:
+  # 「盒子一侧不给泵充电」：另一侧能充说明盒子本身有电（T52 首轮主轮被读成盒子自身不进电）
+  premise: "The charging case itself powers on and charges when plugged in; only one side does not charge its pump."
+bp-0066:
+  # 「充电盒充满要多久」是规格说明：客户说盒子充不进电时它不是排障指南（2026-10-13 T52 复测 2/5 以 0.9 判可执行发了一张说明卡）
+  premise: "The customer is asking how long charging takes, not reporting that the case or pumps fail to charge."

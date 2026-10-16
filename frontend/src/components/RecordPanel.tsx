@@ -10,13 +10,12 @@ type Props = {
   /** 当前悬停步骤卡引用的 evidence_ids，联动高亮依据 */
   highlight?: string[];
   busy?: boolean;
-  onRequestHuman?: () => void;
   onNewIssue?: () => void;
   onResumeIssue?: (issueId: string) => void;
 };
 
 /** 服务记录面板（方案 A）：客服工单的客户侧投影，产品 / 问题 / 进度 / 已尝试 / 依据 / 案件随会话实时更新。 */
-export function RecordPanel({ state, highlight = [], busy = false, onRequestHuman, onNewIssue, onResumeIssue }: Props) {
+export function RecordPanel({ state, highlight = [], busy = false, onNewIssue, onResumeIssue }: Props) {
   const record = deriveRecord(state);
   const [copied, setCopied] = useState(false);
   const empty = state.timeline.length === 0;
@@ -104,7 +103,6 @@ export function RecordPanel({ state, highlight = [], busy = false, onRequestHuma
       {!empty && (
         <section className={styles.actions}>
           {record.summary && <button type="button" className={styles.primary} onClick={() => void copy()}>{copied ? '已复制' : '复制排查记录'}</button>}
-          {onRequestHuman && <button type="button" onClick={onRequestHuman}>请求人工</button>}
           {onNewIssue && <button type="button" disabled={lockIssue} onClick={onNewIssue}>新问题</button>}
         </section>
       )}

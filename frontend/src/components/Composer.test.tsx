@@ -122,6 +122,20 @@ describe('pending input modes', () => {
     await waitFor(() => expect(onSkipReceipt).toHaveBeenCalledOnce());
   });
 
+  it('consumes preset files once so a remount does not replay them, and an empty preset clears the tray', async () => {
+    const files = [fileOf(100, 't.png')];
+    const onPresetConsumed = vi.fn();
+    const { rerender } = render(<Composer key="message" value="" onChange={vi.fn()} presetFiles={files} onPresetConsumed={onPresetConsumed} />);
+    await waitFor(() => expect(screen.getByLabelText('待发送图片')).toBeInTheDocument());
+    expect(onPresetConsumed).toHaveBeenCalledOnce();
+    rerender(<Composer key="message" value="" onChange={vi.fn()} presetFiles={[]} onPresetConsumed={onPresetConsumed} />);
+    await waitFor(() => expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument());
+    // 调用方已置空：换卡片导致的重挂载不再带回图片
+    rerender(<Composer key="step-card" value="" onChange={vi.fn()} presetFiles={null} pendingKind="step_feedback" />);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByLabelText('待发送图片')).not.toBeInTheDocument();
+  });
+
   it('preserves attachments and draft when the server rejects the upload', async () => {
     const onSend = vi.fn().mockResolvedValue(false);
     const onChange = vi.fn();
