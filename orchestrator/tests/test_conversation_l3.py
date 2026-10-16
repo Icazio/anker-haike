@@ -330,7 +330,7 @@ async def test_human_approval_submits_held_service_order(l3_runtime, monkeypatch
         response = await client.post(f"/admin/api/cases/{case['case_id']}/decision", json={
             "decision_id": str(uuid.uuid4()), "expected_revision": case["revision"], "decision": "approve",
             "option_id": "replace", "note": "已核实，同意换货",
-        })
+        }, headers={"X-Authenticated-User": "tester"})  # 非 dev 环境（CI 的 APP_ENV=ci）由代理注入管理员身份
         assert response.status_code == 200, response.text
         for _ in range(100):
             if not app.state.run_manager.is_live(response.json()["run_id"]):
