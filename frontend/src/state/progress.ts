@@ -18,7 +18,9 @@ const SERVICE: Step[] = [
 ];
 const QUERY: Step[] = [DIAGNOSIS[0]!, { key: 'query', label: '查询信息', hint: '读取对应订单的业务记录' }, { key: 'result', label: '返回查询结果', hint: '结果注明来源和时间' }];
 
-export const CASE_LABELS: Record<string, string> = { open: '案件已建立', diagnosing: '核实问题中', proposing: '制定方案中', awaiting_confirmation: '等待确认', awaiting_approval: '等待人工审核', approved: '人工已批准', rejected: '人工未批准', executing: '办理中', executing_failed: '办理失败，可重试', tracking: '跟踪中', closed: '已结案', closed_unresolved: '暂未解决，已结束', reopened: '已重新受理', escalated_summary: '已整理交接资料' };
+// closed_unresolved 只来自过保 / 非授权经销商（l3.propose）：结束的是换货退款这一项诉求，排障可能仍在继续（场景 3 / T53），
+// 原文「暂未解决，已结束」与同时显示的步骤卡互相矛盾。
+export const CASE_LABELS: Record<string, string> = { open: '案件已建立', diagnosing: '核实问题中', proposing: '制定方案中', awaiting_confirmation: '等待确认', awaiting_approval: '等待人工审核', approved: '人工已批准', rejected: '人工未批准', executing: '办理中', executing_failed: '办理失败，可重试', tracking: '跟踪中', closed: '已结案', closed_unresolved: '不符合免费换货 / 退款条件', reopened: '已重新受理', escalated_summary: '已整理交接资料' };
 
 const STAGES: Record<Stage, { key: string; label: string; hint: string; flow: 'diagnosis' | 'service' | 'query' | 'result' }> = {
   intake: { ...DIAGNOSIS[0]!, flow: 'diagnosis' },

@@ -48,6 +48,34 @@ def test_cp_in_text(rules, text, rule_ids, escalate):
     assert res.rule_ids == rule_ids and res.escalate is escalate
 
 
+def test_scald_injury_escalates_and_is_recognized_as_injury(rules):
+    # 演示场景 4（T45 中文版）：原词表只有「烫到」「烫手」，「烫伤了我」漏判后只回了一句冒烟 / 鼓包确认问句
+    text = "我买的吸奶器充不上电，加热的部分烫伤了我，外观也变黑了。我是在 Aeroflow 买的，凭证在这里。"
+    res = rules.check_in(text=text)
+    assert "R4" in res.rule_ids and res.escalate
+    assert rules.reports_injury(text)
+    assert rules.reports_injury("The heating part also burned me")
+    assert not rules.reports_injury("扫地机冒烟了")
+    assert not rules.reports_injury("没有受伤，只是机器冒烟")
+
+
+def test_safety_lead_adds_medical_advice_only_for_injury(rules):
+    from app.escalation.summary import INJURY_CARE, SAFETY_STOP, reassurance_text, safety_lead
+
+    set_rules_service(rules)
+    try:
+        hurt = {"text": "加热的部分烫伤了我", "active_issue_id": "i1", "history": []}
+        assert safety_lead(hurt) == INJURY_CARE and "medical attention" in INJURY_CARE
+        assert reassurance_text("R4", hurt).startswith("I'm sorry you were hurt.")
+        # 受伤写在本问题更早的消息里也算
+        later = {"text": "我要快速退款", "active_issue_id": "i1",
+                 "history": [{"role": "user", "issue_id": "i1", "text": "加热的部分烫伤了我"}]}
+        assert safety_lead(later) == INJURY_CARE
+        assert safety_lead({"text": "扫地机冒烟了", "active_issue_id": "i1", "history": []}) == SAFETY_STOP
+    finally:
+        set_rules_service(None)
+
+
 def test_cp_in_observations_actions_and_notes(rules):
     res = rules.check_in(observations=["visible smoke near the brush", "dust on filter"])
     assert (

@@ -47,7 +47,7 @@ from app.diagnose.query import category_label, product_term
 from app.diagnose.vision import VISION_BUDGET_MS, VISION_RESERVE_MS, observe_images
 from app.emotion.policy import complaint_flagged, evaluate_emotion
 from app.escalation.polish import polish_summary
-from app.escalation.summary import build_summary, r5_boundary, reassurance_text
+from app.escalation.summary import build_summary, r5_boundary, reassurance_text, safety_lead
 from app.guide import GUIDE_BUDGET_MS, apply_feedback, exhaust_plan, prepare_step
 from app.guide.fact_check import check_plan_facts
 from app.images.runtime import current_image_store
@@ -3121,7 +3121,7 @@ async def summarize(state: SessionState) -> SessionState:
                 "I still couldn't find official troubleshooting guidance that matches it, so they'll continue from here.")
     elif handoff_status == "requested":
         text = (
-            ("For your safety, please stop using the device and do not charge it. " if reason == "R4" else
+            (safety_lead(dict(state)) if reason == "R4" else
              r5_boundary(state) if reason == "R5" else "")
             + "I've submitted the issue and supporting information for review by a colleague. You can add information here while waiting."
         )

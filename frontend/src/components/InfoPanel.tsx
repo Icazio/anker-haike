@@ -56,7 +56,8 @@ export function InfoPanel({ state, highlight = [], busy = false, onNewIssue, onR
         <p className={styles.problem}>{info.problem ?? <span className={styles.muted}>等待客户描述</span>}</p>
         {(info.tried.total > 0 || info.photos > 0) && (
           <p className={styles.meta}>
-            {info.tried.total > 0 && <span>已排查 {info.tried.done} / {info.tried.total} 步</span>}
+            {/* 步骤逐条生成，total 只是「已发出的步骤数」，当分母会显示成 1/2 → 2/3 → 3/4，客户看不出还剩几步 */}
+            {info.tried.total > 0 && <span>已排查 {info.tried.done} 步</span>}
             {info.photos > 0 && <span>客户图片 {info.photos} 张</span>}
           </p>
         )}

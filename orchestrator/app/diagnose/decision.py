@@ -183,8 +183,8 @@ def explanation(state):
         caution = f" Note: {step['caution']}" if step.get("caution") else ""
         return (
             f"The current step is: {step['instruction']}{caution} "
-            "Asking about it doesn't mark it as done; please tell me the result after trying it, "
-            "or choose \"can't do it\" on the card."
+            "Once you've tried it, let me know the result on the step card, "
+            "or choose \"can't do it\" if it isn't possible."
         )
     if state.get("stage") == "done":
         if (state.get("diagnose_outcome") or {}).get("mode") == "explained":

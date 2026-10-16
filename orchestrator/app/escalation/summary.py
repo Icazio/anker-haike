@@ -29,6 +29,7 @@ from app.conversation.tasks import NOT_EXECUTABLE
 from app.diagnose.decision import concrete, missing_for_retrieval
 from app.diagnose.query import category_label
 from app.official.message import parse_message
+from app.rules import get_rules_service
 from app.sessions.receipt import receipt_outcome
 from app.warranty.service import decide_by_dealer, today
 
@@ -409,16 +410,32 @@ def summary_to_text(s: EscalationSummary) -> str:
     return "\n".join(lines)
 
 
+SAFETY_STOP = "For your safety, please stop using the device and do not charge it. "
+# 客户说自己受了伤（场景 4 / T45 烫伤）：先回应人，再说设备；就医提醒不能省。
+INJURY_CARE = (
+    "I'm sorry you were hurt. Please stop using the device and do not charge it. "
+    "If the injury is serious, please seek medical attention promptly. "
+)
+
+
+def safety_lead(state: dict[str, Any] | None) -> str:
+    """R4 安全话术的开头：本问题里客户说过自己受伤就用 INJURY_CARE，否则只提醒停用。"""
+    state = state or {}
+    texts = [state.get("text") or "", *(
+        e.get("text") or "" for e in state.get("history") or []
+        if e.get("role") == "user" and e.get("issue_id") == state.get("active_issue_id")
+    )]
+    rules = get_rules_service()
+    return INJURY_CARE if any(rules.reports_injury(t) for t in texts) else SAFETY_STOP
+
+
 # 给客户看的结束说明（英文，D2 2026-10-08）；转人工摘要本身仍是中文，给客服看。
 REASSURANCE = {
     "R5": (
         "I couldn't confirm official troubleshooting guidance for the symptoms you reported. "
         "I've put together a record of this issue so a support colleague can continue from here."
     ),
-    "R4": (
-        "For your safety, please stop using the device and do not charge it. "
-        "I've put together a record of this issue so a support colleague can look into it."
-    ),
+    "R4": SAFETY_STOP + "I've put together a record of this issue so a support colleague can look into it.",
     "R3": "I've prepared a summary of your issue for our support team. This summary alone does not confirm submission or that an agent has picked it up.",
 }
 DEFAULT_REASSURANCE = "I've put together a record of this issue so a support colleague can continue from here."
@@ -458,4 +475,6 @@ def reassurance_text(reason: str, state: dict[str, Any] | None = None) -> str:
                 f"{boundary}. I've put together the issue and the steps you tried so a support colleague can continue; "
                 "the summary alone does not confirm submission for review. If anything changes, tell me and we'll continue from the record."
             )
+    if reason == "R4":
+        return safety_lead(state) + "I've put together a record of this issue so a support colleague can look into it."
     return REASSURANCE.get(reason, DEFAULT_REASSURANCE)

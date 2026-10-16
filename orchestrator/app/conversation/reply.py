@@ -149,7 +149,8 @@ def fallback_reply(state: dict) -> str:
         if step:
             if not decision["allowed_operations"]:
                 return "This step was meant to check the fault, but there's an open safety concern, so let's pause hands-on steps. We can keep confirming which device it is and what happened."
-            return f"The current step is: {step.get('instruction', '')} Asking about it doesn't mark it as done; please let me know the result after you try it."
+            # 「Asking about it doesn't mark it as done」是在解释系统内部的记账规则，客户读来像答非所问（场景 3 测试反馈）
+            return f"The current step is: {step.get('instruction', '')} Once you've tried it, let me know the result on the step card."
         return "Please confirm the information on the card so I can link the issue to the right product or receipt. Your question doesn't submit the card."
     if not decision["allowed_operations"]:
         return "There's still an unconfirmed safety concern with this device, so please stop using and charging it. You can correct details or ask about earlier messages."

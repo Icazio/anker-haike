@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from difflib import SequenceMatcher
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 from haike_contracts.common import WarrantyDecision
 
@@ -41,10 +42,16 @@ COUNTRY_ALIASES = {
 
 
 def today(at: str | None = None) -> date:
-    """演示时钟：设置 DEMO_TODAY 时固定，否则取本轮时间。"""
+    """演示时钟：设置 DEMO_TODAY 时固定，否则取本轮时间在会话时区的日期。
+
+    本轮时间是 UTC（…Z）；直接截前 10 位，北京时间 0–8 点会少算一天（场景 3 在 10-17 写成「as of 2026-10-16」）。
+    """
     if settings.demo_today:
         return settings.demo_today
-    return date.fromisoformat(at[:10]) if at else datetime.now(UTC).date()
+    moment = datetime.fromisoformat(at) if at else datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(ZoneInfo(settings.conversation_timezone)).date()
 
 
 def normalize_country(value: str | None) -> str | None:

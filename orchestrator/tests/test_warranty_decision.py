@@ -88,3 +88,11 @@ def test_demo_clock_overrides_turn_time(monkeypatch):
     assert today("2026-10-08T09:00:00+08:00") == date(2026, 10, 8)
     monkeypatch.setattr(settings, "demo_today", date(2026, 9, 28))
     assert today("2026-10-08T09:00:00+08:00") == date(2026, 9, 28)
+
+
+def test_turn_time_uses_conversation_timezone(monkeypatch):
+    # 场景 3：北京时间 10-17 早上的 UTC 时间戳仍是 10-16，质保结论不能写成「as of 2026-10-16」
+    monkeypatch.setattr(settings, "demo_today", None)
+    monkeypatch.setattr(settings, "conversation_timezone", "Asia/Shanghai")
+    assert today("2026-10-16T18:50:00Z") == date(2026, 10, 17)
+    assert today("2026-10-17T03:00:00Z") == date(2026, 10, 17)

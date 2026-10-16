@@ -48,6 +48,7 @@ class RulesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str
     rules: dict[str, RuleSpec]
+    injury_terms: list[str] = Field(default_factory=list)
     pre_step: PreStepSpec = Field(default_factory=PreStepSpec)
 
 
@@ -190,6 +191,7 @@ class RulesService:
         # 否定遮蔽用的词表：长词在前，保证「swollen battery」不会先被「swollen」截断。
         self._text_terms = tuple(sorted({n for _, _, n in self._text_index if n}, key=len, reverse=True))
         self._obs_terms = tuple(sorted({n for _, _, n in self._obs_index if n}, key=len, reverse=True))
+        self._injury_terms = tuple(sorted({n for t in cfg.injury_terms if (n := _norm(t))}, key=len, reverse=True))
         log.info("rules loaded version=%s rules=%s", self.version, list(self.rules))
 
     def reload_if_changed(self) -> bool:
@@ -297,6 +299,15 @@ class RulesService:
             )
             return PreStepResult("drop", "HR", risky[0])
         return PreStepResult("ok", None, None)
+
+    def reports_injury(self, text: str | None) -> bool:
+        """客户是否说自己受了伤（烫伤、触电等）。只决定安全话术要不要加就医提醒，不参与升级判定。"""
+        if self._hot:
+            self.reload_if_changed()
+        if not text:
+            return False
+        norm = _mask_negated(_norm(text), self._injury_terms)
+        return any(term in norm for term in self._injury_terms)
 
     def _match_text(self, text: str, source: Source, ts: str) -> list[RuleHit]:
         norm = _mask_negated(_norm(text), self._text_terms)
